@@ -1,4 +1,3 @@
-import { jsx as _jsx, jsxs as _jsxs } from "react/jsx-runtime";
-export default function CoachMetricsTable({ metrics }) {
-    return (_jsxs("table", { className: "w-full bg-white rounded-xl", children: [_jsx("thead", { children: _jsxs("tr", { className: "text-left border-b text-sm text-[#442F73]", children: [_jsx("th", { className: "p-3", children: "Metric" }), _jsx("th", { className: "p-3", children: "Value" })] }) }), _jsxs("tbody", { className: "text-sm", children: [_jsxs("tr", { className: "border-b", children: [_jsx("td", { className: "p-3", children: "Students" }), _jsx("td", { className: "p-3", children: metrics.students })] }), _jsxs("tr", { className: "border-b", children: [_jsx("td", { className: "p-3", children: "Delay Days" }), _jsx("td", { className: "p-3", children: metrics.elapsedDays })] }), _jsxs("tr", { children: [_jsx("td", { className: "p-3", children: "Status" }), _jsx("td", { className: "p-3", children: _jsx("span", { className: `px-3 py-1 rounded-full text-xs font-medium ${metrics.status.color}`, children: metrics.status.label }) })] })] })] }));
-}
+// Proxy file, keeps existing imports working (./AttendancePage)
+// while the real implementation lives in AttendancePage.tsx
+export { default } from "./CoachMetricsTable.tsx";

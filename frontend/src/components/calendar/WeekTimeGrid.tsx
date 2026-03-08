@@ -246,6 +246,73 @@ type MoreModalState = {
   items: Meeting[];
 };
 
+type HoverState =
+  | { open: false }
+  | { open: true; x: number; y: number; m: Meeting };
+
+const buildHoverDetails = (m: Meeting) => {
+  const title = (m.serviceName || "Meeting").trim();
+  const learner = (m.customerName || "").trim();
+  const coach = (m.coachName || "").trim();
+  const time = `${m.timeFrom || ""}${m.timeTo ? ` - ${m.timeTo}` : ""}`.trim();
+  return { title, learner, coach, time };
+};
+
+function HoverTooltip({ state }: { state: HoverState }) {
+  if (!state.open) return null;
+
+  const { title, learner, coach, time } = buildHoverDetails(state.m);
+
+  const left = Math.min(state.x + 12, window.innerWidth - 360);
+  const top = Math.min(state.y + 12, window.innerHeight - 180);
+
+  return (
+    <div className="fixed z-[80] pointer-events-none" style={{ left, top }}>
+      <div className="w-[340px] rounded-xl border border-[#E6DDF7] bg-white shadow-xl p-3">
+        <div className="text-sm font-semibold text-[#241453] line-clamp-2">{title}</div>
+
+        <div className="mt-1 text-xs text-[#241453]/70 space-y-1">
+          {learner ? (
+            <div>
+              <span className="font-medium">Learner:</span> {learner}
+            </div>
+          ) : null}
+
+          {coach ? (
+            <div>
+              <span className="font-medium">Coach:</span> {coach}
+            </div>
+          ) : null}
+
+          {state.m.date ? (
+            <div>
+              <span className="font-medium">Date:</span> {state.m.date}
+            </div>
+          ) : null}
+
+          {time ? (
+            <div>
+              <span className="font-medium">Time:</span> {time}
+            </div>
+          ) : null}
+
+          {state.m.meetingId ? (
+            <div className="truncate">
+              <span className="font-medium">Event ID:</span> {state.m.meetingId}
+            </div>
+          ) : null}
+
+          {state.m.joinWebUrl ? (
+            <div className="truncate">
+              <span className="font-medium">Join:</span> {String(state.m.joinWebUrl)}
+            </div>
+          ) : null}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function MoreModal({
   state,
   onClose,
@@ -401,6 +468,8 @@ export default function WeekTimeGrid({
     items: [],
   });
 
+  const [hover, setHover] = useState<HoverState>({ open: false });
+
   const openMore = (dayKey: string, dayDate: Date, sliceStart: number, sliceEnd: number, dayMeetings: Meeting[]) => {
     const items = dayMeetings
       .map((m) => {
@@ -432,146 +501,196 @@ export default function WeekTimeGrid({
   return (
     <>
       <div className="border rounded-2xl overflow-hidden bg-white">
-  {/* IMPORTANT: one horizontal scroller for BOTH header + body */}
-  <div className="overflow-x-auto">
-    {/* keep same min width for header + body */}
-    <div style={{ minWidth: 80 + nDays * 180 }}>
-      {/* Header row (sticky) */}
-      <div className="grid grid-cols-[80px_1fr] border-b bg-[#241453]/60 sticky top-0 z-30">
-        <div className="p-3 text-xs text-[#241453]/60" />
-        <div className="grid" style={dayColsStyle}>
-          {days.map((d) => {
-            const key = toISO(d);
-            const label = d.toLocaleDateString("en-GB", { weekday: "short" });
-            const num = d.getDate();
+        {/* IMPORTANT: one horizontal scroller for BOTH header + body */}
+        <div className="overflow-x-auto">
+          {/* keep same min width for header + body */}
+          <div style={{ minWidth: 80 + nDays * 180 }}>
+            {/* Header row (sticky) */}
+            <div className="grid grid-cols-[80px_1fr] border-b bg-[#241453]/60 sticky top-0 z-30">
+              <div className="p-3 text-xs text-[#241453]/60" />
+              <div className="grid" style={dayColsStyle}>
+                {days.map((d) => {
+                  const key = toISO(d);
+                  const label = d.toLocaleDateString("en-GB", { weekday: "short" });
+                  const num = d.getDate();
 
-            return (
-              <div key={key} className="px-3 py-2 border-l border-[#E6DDF7]">
-                <div className="text-xs text-[#FEF9FF]">{label}</div>
-                <div className="text-sm font-semibold text-[#FEF9FF]/80">{num}</div>
+                  return (
+                    <div key={key} className="px-3 py-2 border-l border-[#E6DDF7]">
+                      <div className="text-xs text-[#FEF9FF]">{label}</div>
+                      <div className="text-sm font-semibold text-[#FEF9FF]/80">{num}</div>
+                    </div>
+                  );
+                })}
               </div>
-            );
-          })}
-        </div>
-      </div>
+            </div>
 
-      {/* Body (vertical scroll ONLY) */}
-      <div className="max-h-[1024px] overflow-y-auto overflow-x-hidden">
-        <div className="grid grid-cols-[80px_1fr]">
-          {/* Times (sticky left) */}
-          <div className="border-r border-[#E6DDF7] sticky left-0 z-20 bg-white">
-            <div className="border-b border-[#E6DDF7]" style={{ height: DAY_TOP_PAD }} />
-            {hours.map((h) => (
-              <div
-                key={h}
-                className="px-3 flex items-start pt-2 text-xs text-[#241453]/60 border-b border-[#E6DDF7]"
-                style={{ height: ROW_H }}
-              >
-                {h <= 11 ? `${h} AM` : h === 12 ? `12 PM` : `${h - 12} PM`}
-              </div>
-            ))}
-          </div>
-
-          {/* Days */}
-          <div className="grid" style={dayColsStyle}>
-            {days.map((d) => {
-              const dayKey = toISO(d);
-              const dayMeetings = meetingsByDay[dayKey] ?? [];
-
-              const { positioned, more } = layoutDay(dayMeetings, startMin, endMin);
-
-              const visibleEvents = positioned.filter((m) => m._endMin > startMin && m._startMin < endMin);
-              const visibleMore = more.filter((x) => x.endMin > startMin && x.startMin < endMin && x.count > 0);
-
-              const dayHeight = DAY_TOP_PAD + hoursHeight;
-
-              return (
-                <div key={dayKey} className="relative border-l border-[#E6DDF7]" style={{ height: dayHeight }}>
+            {/* Body (vertical scroll ONLY) */}
+            <div className="max-h-[1024px] overflow-y-auto overflow-x-hidden">
+              <div className="grid grid-cols-[80px_1fr]">
+                {/* Times (sticky left) */}
+                <div className="border-r border-[#E6DDF7] sticky left-0 z-20 bg-white">
                   <div className="border-b border-[#E6DDF7]" style={{ height: DAY_TOP_PAD }} />
                   {hours.map((h) => (
-                    <div key={h} className="border-b border-[#E6DDF7]" style={{ height: ROW_H }} />
+                    <div
+                      key={h}
+                      className="px-3 flex items-start pt-2 text-xs text-[#241453]/60 border-b border-[#E6DDF7]"
+                      style={{ height: ROW_H }}
+                    >
+                      {h <= 11 ? `${h} AM` : h === 12 ? `12 PM` : `${h - 12} PM`}
+                    </div>
                   ))}
+                </div>
 
-                  <div className="absolute inset-0">
-                    {visibleEvents.map((m, i) => {
-                      const clampedS = clamp(m._startMin, startMin, endMin);
-                      const clampedE = clamp(m._endMin, startMin, endMin);
+                {/* Days */}
+                <div className="grid" style={dayColsStyle}>
+                  {days.map((d) => {
+                    const dayKey = toISO(d);
+                    const dayMeetings = meetingsByDay[dayKey] ?? [];
 
-                      const durMin = Math.max(1, clampedE - clampedS);
-                      const naturalH = (durMin / totalMin) * hoursHeight;
+                    const { positioned, more } = layoutDay(dayMeetings, startMin, endMin);
 
-                      const height = Math.max(MIN_EVENT_PX, naturalH) - EVENT_GAP_Y;
+                    const visibleEvents = positioned.filter((m) => m._endMin > startMin && m._startMin < endMin);
+                    const visibleMore = more.filter((x) => x.endMin > startMin && x.startMin < endMin && x.count > 0);
 
-                      const top =
-                        DAY_TOP_PAD + ((clampedS - startMin) / totalMin) * hoursHeight + EVENT_GAP_Y / 2;
+                    const dayHeight = DAY_TOP_PAD + hoursHeight;
 
-                      const leftPct = clamp(m._left ?? 0, 0, 1) * 100;
-                      const widthPct = clamp(m._width ?? 1, 0.02, 1) * 100;
+                    type HoverState =
+                      | { open: false }
+                      | { open: true; x: number; y: number; m: Meeting };
 
-                      const style: React.CSSProperties = {
-                        top,
-                        height: Math.max(8, height),
-                        left: `calc(${leftPct}% + ${EVENT_GAP_X / 2}px)`,
-                        width: `calc(${widthPct}% - ${EVENT_GAP_X}px)`,
-                        zIndex: 10,
-                      };
+                    const buildHoverDetails = (m: Meeting) => {
+                      const title = (m.serviceName || "Meeting").trim();
+                      const sub = (m.customerName || "").trim();
+                      const coach = (m.coachName || "").trim();
+                      const time = `${m.timeFrom || ""}${m.timeTo ? ` - ${m.timeTo}` : ""}`.trim();
+
+                      return { title, sub, coach, time };
+                    };
+
+                    function HoverTooltip({ state }: { state: HoverState }) {
+                      if (!state.open) return null;
+
+                      const { title, sub, coach, time } = buildHoverDetails(state.m);
+
+                      const left = Math.min(state.x + 12, window.innerWidth - 360);
+                      const top = Math.min(state.y + 12, window.innerHeight - 180);
 
                       return (
                         <div
-                          key={`${m.meetingId ?? m.customerName ?? "m"}-${m._startMin}-${i}`}
-                          className="absolute"
-                          style={style}
+                          className="fixed z-[80] pointer-events-none"
+                          style={{ left, top }}
                         >
-                          <EventCard m={m} />
+                          <div className="w-[340px] rounded-xl border border-[#E6DDF7] bg-white shadow-xl p-3">
+                            <div className="text-sm font-semibold text-[#241453] line-clamp-2">{title}</div>
+
+                            <div className="mt-1 text-xs text-[#241453]/70 space-y-1">
+                              {sub ? <div><span className="font-medium">Learner:</span> {sub}</div> : null}
+                              {coach ? <div><span className="font-medium">Coach:</span> {coach}</div> : null}
+                              {state.m.date ? <div><span className="font-medium">Date:</span> {state.m.date}</div> : null}
+                              {time ? <div><span className="font-medium">Time:</span> {time}</div> : null}
+                              {state.m.meetingId ? <div className="truncate"><span className="font-medium">Event ID:</span> {state.m.meetingId}</div> : null}
+                              {state.m.joinWebUrl ? <div className="truncate"><span className="font-medium">Join:</span> {String(state.m.joinWebUrl)}</div> : null}
+                            </div>
+                          </div>
                         </div>
                       );
-                    })}
+                    }
 
-                    {visibleMore.map((x, i) => {
-                      const clampedS = clamp(x.startMin, startMin, endMin);
-                      const clampedE = clamp(x.endMin, startMin, endMin);
+                    return (
+                      <div key={dayKey} className="relative border-l border-[#E6DDF7]" style={{ height: dayHeight }}>
+                        <div className="border-b border-[#E6DDF7]" style={{ height: DAY_TOP_PAD }} />
+                        {hours.map((h) => (
+                          <div key={h} className="border-b border-[#E6DDF7]" style={{ height: ROW_H }} />
+                        ))}
 
-                      const top = DAY_TOP_PAD + ((clampedS - startMin) / totalMin) * hoursHeight + 2;
+                        <div className="absolute inset-0">
+                          {visibleEvents.map((m, i) => {
+                            const clampedS = clamp(m._startMin, startMin, endMin);
+                            const clampedE = clamp(m._endMin, startMin, endMin);
 
-                      const sliceMin = Math.max(1, clampedE - clampedS);
-                      const naturalH = (sliceMin / totalMin) * hoursHeight;
+                            const durMin = Math.max(1, clampedE - clampedS);
+                            const naturalH = (durMin / totalMin) * hoursHeight;
 
-                      return (
-                        <button
-                          key={`more-${dayKey}-${i}`}
-                          type="button"
-                          onClick={() => openMore(dayKey, d, clampedS, clampedE, dayMeetings)}
-                          className="absolute text-left"
-                          style={{
-                            top,
-                            left: "calc(0% + 6px)",
-                            width: "calc(25% - 10px)",
-                            height: Math.min(28, Math.max(18, naturalH)),
-                            zIndex: 15,
-                          }}
-                        >
-                          <div className="h-full rounded-lg border border-[#E6DDF7] bg-[#F9F5FF]/90 shadow-sm px-2 flex items-center text-[11px] text-[#241453]">
-                            +{x.count} more
-                          </div>
-                        </button>
-                      );
-                    })}
-                  </div>
+                            const height = Math.max(MIN_EVENT_PX, naturalH) - EVENT_GAP_Y;
+
+                            const top =
+                              DAY_TOP_PAD + ((clampedS - startMin) / totalMin) * hoursHeight + EVENT_GAP_Y / 2;
+
+                            const leftPct = clamp(m._left ?? 0, 0, 1) * 100;
+                            const widthPct = clamp(m._width ?? 1, 0.02, 1) * 100;
+
+                            const style: React.CSSProperties = {
+                              top,
+                              height: Math.max(8, height),
+                              left: `calc(${leftPct}% + ${EVENT_GAP_X / 2}px)`,
+                              width: `calc(${widthPct}% - ${EVENT_GAP_X}px)`,
+                              zIndex: 10,
+                            };
+
+                            return (
+                              <div
+                                key={`${m.meetingId ?? m.customerName ?? "m"}-${m._startMin}-${i}`}
+                                className="absolute"
+                                style={style}
+                                onMouseEnter={(e) => {
+                                  setHover({ open: true, x: e.clientX, y: e.clientY, m });
+                                }}
+                                onMouseMove={(e) => {
+                                  setHover((prev) => (prev.open ? { ...prev, x: e.clientX, y: e.clientY } : prev));
+                                }}
+                                onMouseLeave={() => setHover({ open: false })}
+                              >
+                                <EventCard m={m} />
+                              </div>
+                            );
+                          })}
+
+                          {visibleMore.map((x, i) => {
+                            const clampedS = clamp(x.startMin, startMin, endMin);
+                            const clampedE = clamp(x.endMin, startMin, endMin);
+
+                            const top = DAY_TOP_PAD + ((clampedS - startMin) / totalMin) * hoursHeight + 2;
+
+                            const sliceMin = Math.max(1, clampedE - clampedS);
+                            const naturalH = (sliceMin / totalMin) * hoursHeight;
+
+                            return (
+                              <button
+                                key={`more-${dayKey}-${i}`}
+                                type="button"
+                                onClick={() => openMore(dayKey, d, clampedS, clampedE, dayMeetings)}
+                                className="absolute text-left"
+                                style={{
+                                  top,
+                                  left: "calc(0% + 6px)",
+                                  width: "calc(25% - 10px)",
+                                  height: Math.min(28, Math.max(18, naturalH)),
+                                  zIndex: 15,
+                                }}
+                              >
+                                <div className="h-full rounded-lg border border-[#E6DDF7] bg-[#F9F5FF]/90 shadow-sm px-2 flex items-center text-[11px] text-[#241453]">
+                                  +{x.count} more
+                                </div>
+                              </button>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    );
+                  })}
                 </div>
-              );
-            })}
+              </div>
+            </div>
           </div>
         </div>
       </div>
-    </div>
-  </div>
-</div>
 
 
       <MoreModal
         state={moreState}
         onClose={() => setMoreState((p) => ({ ...p, open: false }))}
       />
+      <HoverTooltip state={hover} />
     </>
   );
 }

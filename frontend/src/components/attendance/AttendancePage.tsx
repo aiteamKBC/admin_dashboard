@@ -15,16 +15,21 @@ type AttendanceCell = {
   [k: string]: unknown;
 };
 
-type AttendanceMap = Record<string, Record<string, AttendanceCell>>;
+type AttendanceRow = {
+  id: string;
+  fullName: string;
+  email: string;
+  dates: Record<string, AttendanceCell>;
+};
 
 type EvidenceMethod = "Call" | "WhatsApp" | "Email" | "Other";
 
 type EvidenceTarget =
   | {
-    student: string;
-    module?: string | null;
-    kind: "absent" | "unknown";
-  }
+      student: string;
+      module?: string | null;
+      kind: "absent" | "unknown";
+    }
   | null;
 
 /* ================= HELPERS ================= */
@@ -35,25 +40,73 @@ const isObj = (v: unknown): v is Record<string, unknown> =>
 const pickISODateKeys = (obj: Record<string, unknown>) =>
   Object.keys(obj).filter((k) => /^\d{4}-\d{2}-\d{2}$/.test(k));
 
-function toAttendanceMap(raw: unknown): AttendanceMap {
-  if (!isObj(raw)) return {};
-  const out: AttendanceMap = {};
+const parseMaybeJson = (v: unknown): unknown => {
+  if (typeof v !== "string") return v;
+  try {
+    return JSON.parse(v);
+  } catch {
+    return v;
+  }
+};
 
-  for (const [studentName, dates] of Object.entries(raw)) {
-    if (!isObj(dates)) continue;
+function toAttendanceRows(raw: unknown): AttendanceRow[] {
+  raw = parseMaybeJson(raw);
 
-    const dateKeys = pickISODateKeys(dates);
-    if (!dateKeys.length) continue;
+  if (!raw) return [];
 
-    out[studentName] = {};
-    for (const d of dateKeys) {
-      const cell = (dates as any)[d];
-      if (isObj(cell)) out[studentName][d] = cell as AttendanceCell;
-      else out[studentName][d] = { value: cell as any };
-    }
+  // Format A, DB format: { learners: [...] }
+  if (isObj(raw) && Array.isArray((raw as any).learners)) {
+    const learners = (raw as any).learners as any[];
+
+    return learners.map((l) => {
+      const id = String(l.id ?? l.ID ?? l.learner_id ?? "").trim();
+      const fullName = String(l.FullName ?? l.fullName ?? l.name ?? "").trim();
+      const email = String(l.Email ?? l.email ?? "").trim();
+
+      const att = parseMaybeJson(l.Attendance ?? l.attendance ?? {});
+      const dates: Record<string, AttendanceCell> = {};
+
+      if (isObj(att)) {
+        for (const d of pickISODateKeys(att)) {
+          const cell = (att as any)[d];
+          dates[d] = isObj(cell) ? (cell as AttendanceCell) : { value: cell as any };
+        }
+      }
+
+      return {
+        id: id || email || fullName || "unknown",
+        fullName: fullName || "Unknown",
+        email,
+        dates,
+      };
+    });
   }
 
-  return out;
+  // Format B, old format: { "Student": { "YYYY-MM-DD": {...} } }
+  if (isObj(raw)) {
+    const out: AttendanceRow[] = [];
+    for (const [studentName, datesRaw] of Object.entries(raw)) {
+      if (!isObj(datesRaw)) continue;
+      const dateKeys = pickISODateKeys(datesRaw);
+      if (!dateKeys.length) continue;
+
+      const dates: Record<string, AttendanceCell> = {};
+      for (const d of dateKeys) {
+        const cell = (datesRaw as any)[d];
+        dates[d] = isObj(cell) ? (cell as AttendanceCell) : { value: cell as any };
+      }
+
+      out.push({
+        id: studentName,
+        fullName: studentName,
+        email: "",
+        dates,
+      });
+    }
+    return out;
+  }
+
+  return [];
 }
 
 function num01(v: unknown): 0 | 1 | null {
@@ -87,14 +140,13 @@ async function postTask(coachId: number, payload: { text: string; evidence?: any
   }
 }
 
-// Upload evidence image file and get back URL
 async function uploadEvidenceImage(file: File): Promise<string> {
   const fd = new FormData();
   fd.append("file", file);
 
   const res = await fetch("/tasks-api/evidence/upload/", {
     method: "POST",
-    headers: authHeaders(), // Bearer token only (no Content-Type)
+    headers: authHeaders(),
     body: fd,
   });
 
@@ -116,7 +168,8 @@ async function uploadEvidenceImage(file: File): Promise<string> {
   return url;
 }
 
-// custom design for dropdown list
+/* ================= CUSTOM SELECT ================= */
+
 type CustomSelectOption<T extends string> = { value: T; label: string };
 
 function CustomSelect<T extends string>(props: {
@@ -152,40 +205,39 @@ function CustomSelect<T extends string>(props: {
       </button>
 
       {open && !disabled && (
-  <div
-    className="
-      absolute left-0 right-0 mt-2
-      bg-white rounded-xl shadow-lg
-      border border-gray-200
-      overflow-hidden
-      z-50
-    "
-  >
-    <div className="max-h-64 overflow-y-auto custom-scroll">
-      {options.map((opt) => {
-        const active = opt.value === value;
-        return (
-          <button
-            key={opt.value}
-            type="button"
-            onClick={() => {
-              onChange(opt.value);
-              setOpen(false);
-            }}
-            className={[
-              "w-full text-left px-3 py-2 text-sm transition",
-              "hover:bg-[#F9F5FF]",
-              active ? "bg-[#fff9f0] text-[#B27715]" : "text-[#241453]",
-            ].join(" ")}
-          >
-            {opt.label}
-          </button>
-        );
-      })}
-    </div>
-  </div>
-)}
-
+        <div
+          className="
+            absolute left-0 right-0 mt-2
+            bg-white rounded-xl shadow-lg
+            border border-gray-200
+            overflow-hidden
+            z-50
+          "
+        >
+          <div className="max-h-64 overflow-y-auto custom-scroll">
+            {options.map((opt) => {
+              const active = opt.value === value;
+              return (
+                <button
+                  key={opt.value}
+                  type="button"
+                  onClick={() => {
+                    onChange(opt.value);
+                    setOpen(false);
+                  }}
+                  className={[
+                    "w-full text-left px-3 py-2 text-sm transition",
+                    "hover:bg-[#F9F5FF]",
+                    active ? "bg-[#fff9f0] text-[#B27715]" : "text-[#241453]",
+                  ].join(" ")}
+                >
+                  {opt.label}
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -206,7 +258,6 @@ export default function AttendancePage({ onOpenSidebar }: { onOpenSidebar?: () =
   // evidence panel state
   const [evidenceTarget, setEvidenceTarget] = useState<EvidenceTarget>(null);
   const [method, setMethod] = useState<EvidenceMethod | "">("");
-
   const [notes, setNotes] = useState("");
   const [proofFile, setProofFile] = useState<File | null>(null);
 
@@ -226,7 +277,6 @@ export default function AttendancePage({ onOpenSidebar }: { onOpenSidebar?: () =
   const isQA = viewerRole === "qa";
 
   const selfCoachId = Number(localStorage.getItem("coach_id") || "");
-  const userName = localStorage.getItem("username") || "User";
   const canSwitchCoach = isQA;
 
   useEffect(() => {
@@ -246,26 +296,13 @@ export default function AttendancePage({ onOpenSidebar }: { onOpenSidebar?: () =
           })
           .filter((c: any) => Number.isFinite(c.id));
 
-        // Filter coaches based on role and username (same as dashboard)
-        let filteredCoaches = normalized;
-        
-        // If user is a coach, only show their own data
-        if (!isQA && userName) {
-          filteredCoaches = normalized.filter((c: any) => 
-            c.case_owner === userName || c.caseOwner === userName
-          );
-        }
-        // If role is "qa", show all coaches (no filtering)
-
-        setCoaches(filteredCoaches);
+        setCoaches(normalized);
 
         if (isQA) {
-          setSelectedCoachId(filteredCoaches[0]?.id ?? null);
+          setSelectedCoachId(normalized[0]?.id ?? null);
         } else {
-          const mine = filteredCoaches.find((c: any) => 
-            c.case_owner === userName || c.caseOwner === userName
-          );
-          setSelectedCoachId(mine?.id ?? (filteredCoaches[0]?.id ?? null));
+          const mine = normalized.find((c: any) => Number(c.id) === Number(selfCoachId));
+          setSelectedCoachId(mine?.id ?? (Number.isFinite(selfCoachId) ? selfCoachId : null));
         }
       } catch (e: any) {
         console.error(e);
@@ -276,7 +313,7 @@ export default function AttendancePage({ onOpenSidebar }: { onOpenSidebar?: () =
     };
 
     load();
-  }, [isQA, userName]);
+  }, [isQA, selfCoachId]);
 
   const selectedCoach = useMemo(() => {
     if (!coaches.length) return null;
@@ -287,47 +324,297 @@ export default function AttendancePage({ onOpenSidebar }: { onOpenSidebar?: () =
     return String((selectedCoach as any)?.case_owner ?? (isQA ? "QA" : "Coach"));
   }, [selectedCoach, isQA]);
 
-  const attendance = useMemo(() => {
+  const attendanceRows = useMemo(() => {
     const raw = (selectedCoach as any)?.attendance;
-    return toAttendanceMap(raw);
+    return toAttendanceRows(raw);
   }, [selectedCoach]);
 
   const modules = useMemo(() => {
     const set = new Set<string>();
 
-    for (const dates of Object.values(attendance)) {
-      for (const d of Object.keys(dates)) {
-        const m = (dates?.[d] as any)?.module;
-        if (typeof m === "string" && m.trim()) set.add(m.trim());
+    for (const r of attendanceRows) {
+      for (const cell of Object.values(r.dates)) {
+        const m = String((cell as any)?.module || "").trim();
+        if (m) set.add(m);
       }
     }
 
     return ["all", ...Array.from(set).sort((a, b) => a.localeCompare(b))];
-  }, [attendance]);
+  }, [attendanceRows]);
 
   const availableDates = useMemo(() => {
     const all = new Set<string>();
 
-    for (const dates of Object.values(attendance)) {
-      for (const [d, cell] of Object.entries(dates)) {
-        const m = (cell as any)?.module;
+    for (const r of attendanceRows) {
+      for (const [d, cell] of Object.entries(r.dates)) {
+        const m = String((cell as any)?.module || "").trim();
 
-        if (selectedModule === "all") {
-          all.add(d);
-        } else if (typeof m === "string" && m.trim() === selectedModule) {
-          all.add(d);
-        }
+        if (selectedModule === "all") all.add(d);
+        else if (m === selectedModule) all.add(d);
       }
     }
 
     return Array.from(all).sort();
-  }, [attendance, selectedModule]);
+  }, [attendanceRows, selectedModule]);
 
-  //dropdown open states
+  const moduleName = useMemo(() => {
+    if (selectedModule !== "all") return selectedModule;
+    if (!date) return "";
+
+    for (const r of attendanceRows) {
+      const cell = r.dates?.[date];
+      const m = String((cell as any)?.module || "").trim();
+      if (m) return m;
+    }
+    return "";
+  }, [attendanceRows, date, selectedModule]);
+
+  const summary = useMemo(() => {
+    if (!date) return { present: 0, absent: 0, unknown: 0 };
+
+    let present = 0;
+    let absent = 0;
+    let unknown = 0;
+
+    for (const r of attendanceRows) {
+      const belongs =
+        selectedModule === "all"
+          ? true
+          : Object.values(r.dates).some(
+              (c: AttendanceCell) => String(c?.module || "").trim() === selectedModule
+            );
+
+      if (!belongs) continue;
+
+      const cell = r.dates?.[date];
+
+      if (
+        cell &&
+        selectedModule !== "all" &&
+        String((cell as any)?.module || "").trim() !== selectedModule
+      ) {
+        continue;
+      }
+
+      const v = num01((cell as any)?.value);
+      if (v === 1) present++;
+      else if (v === 0) absent++;
+      else unknown++;
+    }
+
+    return { present, absent, unknown };
+  }, [attendanceRows, date, selectedModule]);
+
+  const absenceStats = useMemo(() => {
+    const byModule: Record<string, { present: number; absent: number; unknown: number }> = {};
+    const bySession: Record<
+      string,
+      { date: string; module: string; present: number; absent: number; unknown: number }
+    > = {};
+    const byDate: Record<string, { date: string; present: number; absent: number; unknown: number }> = {};
+
+    let present = 0;
+    let absent = 0;
+    let unknown = 0;
+
+    const rate = (a: number, p: number) => {
+      const denom = a + p;
+      if (!denom) return 0;
+      return Math.round((a / denom) * 1000) / 10;
+    };
+
+    for (const r of attendanceRows) {
+      for (const [d, cell] of Object.entries(r.dates)) {
+        const m = String((cell as any)?.module || "").trim() || "Unknown module";
+        const v = num01((cell as any)?.value);
+
+        if (v === 1) present++;
+        else if (v === 0) absent++;
+        else unknown++;
+
+        if (!byModule[m]) byModule[m] = { present: 0, absent: 0, unknown: 0 };
+        if (v === 1) byModule[m].present++;
+        else if (v === 0) byModule[m].absent++;
+        else byModule[m].unknown++;
+
+        if (!byDate[d]) byDate[d] = { date: d, present: 0, absent: 0, unknown: 0 };
+        if (v === 1) byDate[d].present++;
+        else if (v === 0) byDate[d].absent++;
+        else byDate[d].unknown++;
+
+        const key = `${d}|||${m}`;
+        if (!bySession[key])
+          bySession[key] = { date: d, module: m, present: 0, absent: 0, unknown: 0 };
+        if (v === 1) bySession[key].present++;
+        else if (v === 0) bySession[key].absent++;
+        else bySession[key].unknown++;
+      }
+    }
+
+    const overall = {
+      present,
+      absent,
+      unknown,
+      tracked: present + absent,
+      rate: rate(absent, present),
+    };
+
+    const modulesArr = Object.entries(byModule)
+      .map(([module, s]) => ({
+        module,
+        ...s,
+        tracked: s.present + s.absent,
+        rate: rate(s.absent, s.present),
+      }))
+      .sort((a, b) => b.rate - a.rate);
+
+    const sessionsArr = Object.values(bySession)
+      .map((s) => ({
+        ...s,
+        tracked: s.present + s.absent,
+        rate: rate(s.absent, s.present),
+      }))
+      .sort((a, b) => (a.date === b.date ? a.module.localeCompare(b.module) : a.date.localeCompare(b.date)));
+
+    const datesArr = Object.values(byDate)
+      .map((s) => ({
+        ...s,
+        tracked: s.present + s.absent,
+        rate: rate(s.absent, s.present),
+      }))
+      .sort((a, b) => a.date.localeCompare(b.date));
+
+    let selectedSession: null | {
+      label: string;
+      present: number;
+      absent: number;
+      unknown: number;
+      tracked: number;
+      rate: number;
+    } = null;
+
+    if (date) {
+      if (selectedModule === "all") {
+        const x = byDate[date];
+        if (x) {
+          selectedSession = {
+            label: `${date} , All modules`,
+            present: x.present,
+            absent: x.absent,
+            unknown: x.unknown,
+            tracked: x.present + x.absent,
+            rate: rate(x.absent, x.present),
+          };
+        }
+      } else {
+        const key = `${date}|||${selectedModule}`;
+        const x = bySession[key];
+        if (x) {
+          selectedSession = {
+            label: `${date} , ${selectedModule}`,
+            present: x.present,
+            absent: x.absent,
+            unknown: x.unknown,
+            tracked: x.present + x.absent,
+            rate: rate(x.absent, x.present),
+          };
+        }
+      }
+    }
+
+    return { overall, modulesArr, sessionsArr, datesArr, selectedSession };
+  }, [attendanceRows, date, selectedModule]);
+
+  const absentRows = useMemo(() => {
+    if (!date)
+      return [] as Array<{ id: string; fullName: string; email: string; module?: string | null }>;
+
+    const rows: Array<{ id: string; fullName: string; email: string; module?: string | null }> = [];
+
+    for (const r of attendanceRows) {
+      const belongs =
+        selectedModule === "all"
+          ? true
+          : Object.values(r.dates).some(
+              (c: AttendanceCell) => String(c?.module || "").trim() === selectedModule
+            );
+
+      if (!belongs) continue;
+
+      const cell = r.dates?.[date];
+
+      if (
+        cell &&
+        selectedModule !== "all" &&
+        String((cell as any)?.module || "").trim() !== selectedModule
+      ) {
+        continue;
+      }
+
+      const v = num01((cell as any)?.value);
+      if (v === 0) {
+        rows.push({
+          id: r.id,
+          fullName: r.fullName,
+          email: r.email,
+          module: (cell as any)?.module ?? null,
+        });
+      }
+    }
+
+    const s = q.trim().toLowerCase();
+    return rows
+      .filter((r) => (s ? r.fullName.toLowerCase().includes(s) || r.email.toLowerCase().includes(s) : true))
+      .sort((a, b) => a.fullName.localeCompare(b.fullName));
+  }, [attendanceRows, date, q, selectedModule]);
+
+  const unknownRows = useMemo(() => {
+    if (!date)
+      return [] as Array<{ id: string; fullName: string; email: string; module?: string | null }>;
+
+    const rows: Array<{ id: string; fullName: string; email: string; module?: string | null }> = [];
+
+    for (const r of attendanceRows) {
+      const belongs =
+        selectedModule === "all"
+          ? true
+          : Object.values(r.dates).some(
+              (c: AttendanceCell) => String(c?.module || "").trim() === selectedModule
+            );
+
+      if (!belongs) continue;
+
+      const cell = r.dates?.[date];
+
+      if (
+        cell &&
+        selectedModule !== "all" &&
+        String((cell as any)?.module || "").trim() !== selectedModule
+      ) {
+        continue;
+      }
+
+      const v = num01((cell as any)?.value);
+      if (v === null) {
+        rows.push({
+          id: r.id,
+          fullName: r.fullName,
+          email: r.email,
+          module: (cell as any)?.module ?? null,
+        });
+      }
+    }
+
+    const s = q.trim().toLowerCase();
+    return rows
+      .filter((r) => (s ? r.fullName.toLowerCase().includes(s) || r.email.toLowerCase().includes(s) : true))
+      .sort((a, b) => a.fullName.localeCompare(b.fullName));
+  }, [attendanceRows, date, q, selectedModule]);
+
+  // dropdown open states
   const [moduleOpen, setModuleOpen] = useState(false);
   const [dateOpen, setDateOpen] = useState(false);
 
-  //options
   const moduleOptions = useMemo(
     () =>
       modules.map((m) => ({
@@ -351,9 +638,9 @@ export default function AttendancePage({ onOpenSidebar }: { onOpenSidebar?: () =
   );
 
   const dateLabel = useMemo(() => {
-    return dateOptions.find((o) => o.value === date)?.label ?? (dateOptions[0]?.label ?? "No dates");
+    if (!date) return "Select date";
+    return dateOptions.find((o) => o.value === date)?.label ?? "Select date";
   }, [dateOptions, date]);
-
 
   const methodOptions = useMemo(
     () => [
@@ -368,7 +655,6 @@ export default function AttendancePage({ onOpenSidebar }: { onOpenSidebar?: () =
   const methodLabel = method ? method : "Select method...";
   const [methodOpen, setMethodOpen] = useState(false);
 
-
   useEffect(() => {
     setSelectedModule("all");
     setDate("");
@@ -379,122 +665,11 @@ export default function AttendancePage({ onOpenSidebar }: { onOpenSidebar?: () =
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedCoachId]);
 
-
-  useEffect(() => {
-    if (!availableDates.length) {
-      setDate("");
-      return;
-    }
-
-    const latest = availableDates[availableDates.length - 1]!;
-    setDate((prev) => (prev && availableDates.includes(prev) ? prev : latest));
-  }, [availableDates]);
-
-  // Auto-dismiss saved message after a short time
   useEffect(() => {
     if (!savedMsg) return;
     const t = setTimeout(() => setSavedMsg(null), 3000);
     return () => clearTimeout(t);
   }, [savedMsg]);
-
-  const moduleName = useMemo(() => {
-    if (selectedModule !== "all") return selectedModule;
-
-    if (!date) return "";
-    for (const dates of Object.values(attendance)) {
-      const m = (dates?.[date] as any)?.module;
-      if (typeof m === "string" && m.trim()) return m.trim();
-    }
-    return "";
-  }, [attendance, date, selectedModule]);
-
-  const summary = useMemo(() => {
-    if (!date) return { present: 0, absent: 0, unknown: 0 };
-
-    let present = 0;
-    let absent = 0;
-    let unknown = 0;
-
-    for (const dates of Object.values(attendance)) {
-      const belongs =
-        selectedModule === "all"
-          ? true
-          : Object.values(dates).some((c: any) => String(c?.module || "").trim() === selectedModule);
-
-      if (!belongs) continue;
-
-      const cell = dates?.[date];
-
-      if (cell && selectedModule !== "all" && String((cell as any)?.module || "").trim() !== selectedModule) {
-        continue;
-      }
-
-      const v = num01((cell as any)?.value);
-      if (v === 1) present++;
-      else if (v === 0) absent++;
-      else unknown++;
-    }
-
-    return { present, absent, unknown };
-  }, [attendance, date, selectedModule]);
-
-  const absentRows = useMemo(() => {
-    if (!date) return [] as Array<{ student: string; module?: string | null }>;
-
-    const rows: Array<{ student: string; module?: string | null }> = [];
-
-    for (const [student, dates] of Object.entries(attendance)) {
-      const belongs =
-        selectedModule === "all"
-          ? true
-          : Object.values(dates).some((c: any) => String(c?.module || "").trim() === selectedModule);
-
-      if (!belongs) continue;
-
-      const cell = dates?.[date];
-
-      if (cell && selectedModule !== "all" && String((cell as any)?.module || "").trim() !== selectedModule) {
-        continue;
-      }
-
-      const v = num01((cell as any)?.value);
-      if (v === 0) rows.push({ student, module: (cell as any)?.module ?? null });
-    }
-
-    const s = q.trim().toLowerCase();
-    return rows
-      .filter((r) => (s ? r.student.toLowerCase().includes(s) : true))
-      .sort((a, b) => a.student.localeCompare(b.student));
-  }, [attendance, date, q, selectedModule]);
-
-  const unknownRows = useMemo(() => {
-    if (!date) return [] as Array<{ student: string; module?: string | null }>;
-
-    const rows: Array<{ student: string; module?: string | null }> = [];
-
-    for (const [student, dates] of Object.entries(attendance)) {
-      const belongs =
-        selectedModule === "all"
-          ? true
-          : Object.values(dates).some((c: any) => String(c?.module || "").trim() === selectedModule);
-
-      if (!belongs) continue;
-
-      const cell = dates?.[date];
-
-      if (cell && selectedModule !== "all" && String((cell as any)?.module || "").trim() !== selectedModule) {
-        continue;
-      }
-
-      const v = num01((cell as any)?.value);
-      if (v === null) rows.push({ student, module: (cell as any)?.module ?? null });
-    }
-
-    const s = q.trim().toLowerCase();
-    return rows
-      .filter((r) => (s ? r.student.toLowerCase().includes(s) : true))
-      .sort((a, b) => a.student.localeCompare(b.student));
-  }, [attendance, date, q, selectedModule]);
 
   const handleSaveEvidence = async (student: string, rowModule?: string | null) => {
     if (!selectedCoach || !date) return;
@@ -557,11 +732,30 @@ export default function AttendancePage({ onOpenSidebar }: { onOpenSidebar?: () =
   const studentsList = useMemo(() => {
     const raw = (selectedCoach as any)?.students;
     return Array.isArray(raw)
-      ? raw.map((s: any) => ({
-        id: String(s.ID ?? s.id ?? ""),
-        fullName: String(s.FullName ?? s.fullName ?? "Unknown"),
-        email: String(s.Email ?? s.email ?? ""),
-      }))
+      ? raw.map((s: any) => {
+          const ap =
+            s.accounts_profile ??
+            s.accountsProfile ??
+            s.AccountsProfile ??
+            s.profile ??
+            s.Profile ??
+            null;
+
+          return {
+            ...s,
+            id: String(s.ID ?? s.id ?? ""),
+            fullName: String(s.FullName ?? s.fullName ?? "Unknown"),
+            email: String(s.Email ?? s.email ?? ""),
+            upcomming_sessions:
+              s.upcomming_sessions ??
+              s.upcoming_sessions ??
+              s.upcomingSessions ??
+              ap?.upcomming_sessions ??
+              ap?.upcoming_sessions ??
+              ap ??
+              null,
+          };
+        })
       : [];
   }, [selectedCoach]);
 
@@ -572,10 +766,7 @@ export default function AttendancePage({ onOpenSidebar }: { onOpenSidebar?: () =
   if (loading) return <div className="text-sm text-[#241453]">Loading attendance...</div>;
 
   return (
-    <div
-      id="report-area"
-      className="min-h-[calc(100vh-110px)] flex flex-col gap-4"
-    >
+    <div id="report-area" className="min-h-[calc(100vh-110px)] flex flex-col gap-4">
       <TopHeader
         coaches={coaches}
         activeCoachId={selectedCoachId ?? "all"}
@@ -586,10 +777,32 @@ export default function AttendancePage({ onOpenSidebar }: { onOpenSidebar?: () =
           setSelectedCoachId(Number.isFinite(id as any) ? (id as any) : null);
         }}
         onOpenSidebar={onOpenSidebar}
-        userName={userName}
+        userName={isQA ? "QA" : coachName}
+        rightContent={
+          <div className="flex items-center gap-2 min-w-0">
+            <div className="min-w-[140px] bg-white border border-gray-200 rounded-lg px-2.5 py-1.5">
+              <div className="text-[10px] text-gray-500 truncate">Session absence rate</div>
+              <div className="text-sm font-semibold text-[#241453] leading-4">
+                {absenceStats.selectedSession ? `${absenceStats.selectedSession.rate}%` : "—"}
+              </div>
+              <div className="text-[10px] text-gray-400 truncate">
+                {absenceStats.selectedSession?.label ?? "Pick a date"}
+              </div>
+            </div>
+
+            <div className="min-w-[140px] bg-white border border-gray-200 rounded-lg px-2.5 py-1.5">
+              <div className="text-[10px] text-gray-500 truncate">Coach overall absence rate</div>
+              <div className="text-sm font-semibold text-[#241453] leading-4">
+                {absenceStats.overall.rate}%
+              </div>
+              <div className="text-[10px] text-gray-400 truncate">
+                Tracked: {absenceStats.overall.tracked}
+              </div>
+            </div>
+          </div>
+        }
       />
 
-      {/* Toast popup for saved message */}
       {savedMsg && (
         <div className="fixed right-6 top-24 z-50">
           <div className="flex items-center gap-3 bg-green-50 border border-green-100 text-green-700 px-4 py-2 rounded-lg shadow">
@@ -606,44 +819,41 @@ export default function AttendancePage({ onOpenSidebar }: { onOpenSidebar?: () =
         </div>
       )}
 
-      {/* Main layout */}
-      <div className="grid grid-cols-1 lg:grid-cols-12 xl:grid-cols-12 gap-4 items-stretch flex-1 min-h-0">
+      {/* ================= Fixed-height top section (only) ================= */}
+      <div className="grid grid-cols-1 lg:grid-cols-12 xl:grid-cols-12 gap-4 items-stretch min-h-0 lg:h-[620px]">
         {/* Coaches list (QA only) */}
         {isQA && (
-          <div className="lg:col-span-4 xl:col-span-3 order-1 bg-white rounded-2xl shadow-sm p-3 flex flex-col min-h-0 overflow-hidden lg:h-[620px]">
-
+          <div className="lg:col-span-3 xl:col-span-2 order-1 bg-white rounded-2xl shadow-sm p-3 flex flex-col min-h-0 overflow-hidden h-full">
             <div className="flex items-center justify-between mb-2 shrink-0">
               <h3 className="text-base font-semibold text-[#241453]">Coaches</h3>
               <span className="text-xs text-[#442F73]">{coaches.length}</span>
             </div>
 
             <div className="flex-1 min-h-0 overflow-y-auto custom-scroll pr-1">
-  <div className="min-h-0">
-    <CoachesList
-      coaches={coaches}
-      activeCoachId={selectedCoachId}
-      onSelect={(c) => setSelectedCoachId(c.id)}
-    />
-  </div>
-</div>
-
+              <div className="min-h-0">
+                <CoachesList
+                  coaches={coaches}
+                  activeCoachId={selectedCoachId}
+                  onSelect={(c) => setSelectedCoachId(c.id)}
+                />
+              </div>
+            </div>
           </div>
         )}
 
-        {/* Attendance */}
+        {/* Attendance column */}
         <div
           className={[
-            isQA ? "lg:col-span-8 xl:col-span-6 order-2" : "lg:col-span-12 xl:col-span-12",
-            "flex flex-col min-h-0",
+            isQA ? "lg:col-span-7 xl:col-span-7 order-2" : "lg:col-span-12 xl:col-span-12",
+            "flex flex-col min-h-0 h-full overflow-hidden",
           ].join(" ")}
         >
-
           {/* Header card */}
           <div className="bg-white rounded-2xl shadow-sm p-4 shrink-0 relative">
             <div className="flex items-start sm:items-center justify-between gap-3 flex-col sm:flex-row">
               <div className="min-w-0">
                 <h2 className="text-lg font-semibold text-[#241453] truncate whitespace-nowrap">
-                  Attendance{selectedCoach ? ` — ${(selectedCoach as any).case_owner}` : ""}
+                  Attendance{selectedCoach ? ` , ${(selectedCoach as any).case_owner}` : ""}
                 </h2>
               </div>
 
@@ -669,7 +879,6 @@ export default function AttendancePage({ onOpenSidebar }: { onOpenSidebar?: () =
                   />
                 </div>
 
-
                 {/* Date */}
                 <div className="lg:col-span-3 min-w-0">
                   <CustomSelect
@@ -690,7 +899,6 @@ export default function AttendancePage({ onOpenSidebar }: { onOpenSidebar?: () =
                     }}
                   />
                 </div>
-
 
                 {/* Search */}
                 <input
@@ -724,22 +932,16 @@ export default function AttendancePage({ onOpenSidebar }: { onOpenSidebar?: () =
                 <div className="text-lg font-semibold text-red-700">{summary.absent}</div>
               </div>
               <div className="rounded-xl bg-amber-50 border border-amber-100 px-3 py-2">
-                <div className="text-xs text-amber-700">Unknown</div>
+                <div className="text-xs text-amber-700">
+                  Unknown (Counted when there is no attendance record for the selected date)
+                </div>
                 <div className="text-lg font-semibold text-amber-700">{summary.unknown}</div>
               </div>
             </div>
-
-            {/* savedMsg moved to toast popup */}
           </div>
 
-          {/* 3 Panels row */}
-          <div
-            className={[
-              "mt-4 grid grid-cols-1 lg:grid-cols-12 gap-4 items-stretch min-h-0",
-              "lg:h-[410px]",
-            ].join(" ")}
-          >
-
+          {/* 3 Panels row (fills remaining height) */}
+          <div className="mt-4 grid grid-cols-1 lg:grid-cols-12 gap-4 items-stretch flex-1 min-h-0">
             {/* Absent */}
             <div className="lg:col-span-4 bg-white rounded-2xl shadow-sm p-4 flex flex-col min-h-0 h-full">
               <div className="flex items-center justify-between gap-2 pb-3 border-b border-[#F1ECFF] shrink-0">
@@ -761,24 +963,21 @@ export default function AttendancePage({ onOpenSidebar }: { onOpenSidebar?: () =
                 <div className="mt-3 space-y-2 flex-1 min-h-0 overflow-y-auto custom-scroll pr-1">
                   {absentRows.map((r) => {
                     const active =
-                      evidenceTarget?.student === r.student && evidenceTarget?.kind === "absent";
+                      evidenceTarget?.student === r.fullName && evidenceTarget?.kind === "absent";
 
                     return (
                       <div
-                        key={r.student}
+                        key={r.id}
                         className={[
                           "border rounded-xl px-3 py-2.5 transition",
                           "flex items-center justify-between gap-3",
-                          active
-                            ? "border-[#B27715] bg-[#fff9f0]"
-                            : "border-gray-100 hover:border-[#E9E2F7]",
+                          active ? "border-[#B27715] bg-[#fff9f0]" : "border-gray-100 hover:border-[#E9E2F7]",
                         ].join(" ")}
                       >
                         <div className="min-w-0">
-                          <div className="text-sm font-medium text-gray-800 truncate">{r.student}</div>
-                          {r.module && (
-                            <div className="text-xs text-gray-500 mt-0.5 truncate">{r.module}</div>
-                          )}
+                          <div className="text-sm font-medium text-gray-800 truncate">{r.fullName}</div>
+                          {r.email ? <div className="text-xs text-gray-500 truncate">{r.email}</div> : null}
+                          {r.module ? <div className="text-xs text-gray-500 mt-0.5 truncate">{r.module}</div> : null}
                         </div>
 
                         <button
@@ -787,7 +986,7 @@ export default function AttendancePage({ onOpenSidebar }: { onOpenSidebar?: () =
                             setSavedMsg(null);
                             resetEvidenceForm();
                             setEvidenceTarget({
-                              student: r.student,
+                              student: r.fullName,
                               module: r.module ?? null,
                               kind: "absent",
                             });
@@ -829,27 +1028,22 @@ export default function AttendancePage({ onOpenSidebar }: { onOpenSidebar?: () =
                 <div className="mt-3 space-y-2 flex-1 min-h-0 overflow-y-auto custom-scroll pr-1">
                   {unknownRows.map((r) => {
                     const active =
-                      evidenceTarget?.student === r.student && evidenceTarget?.kind === "unknown";
+                      evidenceTarget?.student === r.fullName && evidenceTarget?.kind === "unknown";
 
                     return (
                       <div
-                        key={r.student}
+                        key={r.id}
                         className={[
                           "border rounded-xl px-3 py-2.5 transition",
                           "flex items-center justify-between gap-3",
-                          active
-                            ? "border-[#B27715] bg-[#fff9f0]"
-                            : "border-gray-100 hover:border-[#E9E2F7]",
+                          active ? "border-[#B27715] bg-[#fff9f0]" : "border-gray-100 hover:border-[#E9E2F7]",
                         ].join(" ")}
                       >
                         <div className="min-w-0">
-                          <div className="text-sm font-medium text-gray-800 truncate">{r.student}</div>
-                          <div className="text-xs text-amber-700 mt-0.5">
-                            No attendance record for this date
-                          </div>
-                          {r.module && (
-                            <div className="text-xs text-gray-500 mt-0.5 truncate">{r.module}</div>
-                          )}
+                          <div className="text-sm font-medium text-gray-800 truncate">{r.fullName}</div>
+                          {r.email ? <div className="text-xs text-gray-500 truncate">{r.email}</div> : null}
+                          <div className="text-xs text-amber-700 mt-0.5">No attendance record for this date</div>
+                          {r.module ? <div className="text-xs text-gray-500 mt-0.5 truncate">{r.module}</div> : null}
                         </div>
 
                         <button
@@ -858,7 +1052,7 @@ export default function AttendancePage({ onOpenSidebar }: { onOpenSidebar?: () =
                             setSavedMsg(null);
                             resetEvidenceForm();
                             setEvidenceTarget({
-                              student: r.student,
+                              student: r.fullName,
                               module: r.module ?? null,
                               kind: "unknown",
                             });
@@ -900,34 +1094,28 @@ export default function AttendancePage({ onOpenSidebar }: { onOpenSidebar?: () =
 
               {!evidenceTarget ? (
                 <div className="flex-1 min-h-0 flex items-center justify-center text-sm text-gray-400 px-6 text-center">
-                  Select a student from <span className="font-medium mx-1">Absent</span> or
+                  Select a student from <span className="font-medium mx-1">Absent</span> or{" "}
                   <span className="font-medium mx-1">Unknown</span> to add evidence.
                 </div>
               ) : (
                 <div className="mt-3 border rounded-xl p-3 flex-1 min-h-0 flex flex-col overflow-y-auto custom-scroll">
-                  {/* Selected student summary */}
                   <div className="mb-3">
-                    <div className="text-sm font-semibold text-[#241453] truncate">
-                      {evidenceTarget.student}
-                    </div>
+                    <div className="text-sm font-semibold text-[#241453] truncate">{evidenceTarget.student}</div>
                     <div className="text-xs text-gray-500 mt-1">
                       <span className="font-medium">Date:</span> {date || "—"}
                       {evidenceTarget.module || moduleName ? (
                         <>
                           {" "}
                           <span className="text-gray-300">•</span>{" "}
-                          <span className="font-medium">Module:</span>{" "}
-                          {String(evidenceTarget.module ?? moduleName)}
+                          <span className="font-medium">Module:</span> {String(evidenceTarget.module ?? moduleName)}
                         </>
-                      ) : null}
-                      {" "}
+                      ) : null}{" "}
                       <span className="text-gray-300">•</span>{" "}
                       <span className="font-medium">Type:</span>{" "}
                       {evidenceTarget.kind === "absent" ? "Absent" : "Unknown"}
                     </div>
                   </div>
 
-                  {/* Method */}
                   <label className="text-xs font-medium text-gray-700">Method</label>
                   <label className="text-xs text-[#644D93] mb-1 block">Method</label>
 
@@ -940,8 +1128,6 @@ export default function AttendancePage({ onOpenSidebar }: { onOpenSidebar?: () =
                     onChange={(val) => setMethod(val as any)}
                   />
 
-
-                  {/* Notes */}
                   <label className="mt-3 text-xs font-medium text-gray-700">Notes (optional)</label>
                   <textarea
                     value={notes}
@@ -951,14 +1137,10 @@ export default function AttendancePage({ onOpenSidebar }: { onOpenSidebar?: () =
                     className="mt-1 w-full border rounded-lg px-3 py-2 text-sm resize-none"
                   />
 
-                  {/* Proof upload */}
                   <label className="mt-3 text-xs font-medium text-gray-700">Proof image</label>
 
                   <div className="mt-1 flex items-center gap-2">
-                    <label
-                      className="h-10 inline-flex items-center justify-center px-3 rounded-xl border border-[#E9E2F7]
-               bg-white text-sm text-[#241453] cursor-pointer hover:bg-[#F9F5FF] transition"
-                    >
+                    <label className="h-10 inline-flex items-center justify-center px-3 rounded-xl border border-[#E9E2F7] bg-white text-sm text-[#241453] cursor-pointer hover:bg-[#F9F5FF] transition">
                       Choose file
                       <input
                         type="file"
@@ -973,13 +1155,10 @@ export default function AttendancePage({ onOpenSidebar }: { onOpenSidebar?: () =
                         {proofFile ? proofFile.name : "No file chosen"}
                       </div>
                       {proofFile ? (
-                        <div className="text-xs text-gray-400">
-                          {Math.round(proofFile.size / 1024)} KB
-                        </div>
+                        <div className="text-xs text-gray-400">{Math.round(proofFile.size / 1024)} KB</div>
                       ) : null}
                     </div>
                   </div>
-
 
                   {proofFile ? (
                     <div className="mt-2 text-xs text-gray-600">
@@ -990,7 +1169,6 @@ export default function AttendancePage({ onOpenSidebar }: { onOpenSidebar?: () =
                     <div className="mt-2 text-xs text-gray-400">No file selected.</div>
                   )}
 
-                  {/* Actions */}
                   <div className="mt-4 flex gap-2">
                     <button
                       type="button"
@@ -1024,13 +1202,8 @@ export default function AttendancePage({ onOpenSidebar }: { onOpenSidebar?: () =
                     </div>
                   )}
 
-                  {!method && (
-                    <div className="mt-2 text-xs text-gray-400">
-                      Tip: pick a method to enable saving.
-                    </div>
-                  )}
+                  {!method && <div className="mt-2 text-xs text-gray-400">Tip: pick a method to enable saving.</div>}
                 </div>
-
               )}
             </div>
           </div>
@@ -1038,7 +1211,7 @@ export default function AttendancePage({ onOpenSidebar }: { onOpenSidebar?: () =
 
         {/* QA-only tasks panel */}
         {isQA && selectedCoach && (
-          <div className="lg:col-span-12 xl:col-span-3 order-3 min-h-0 lg:h-[620px] overflow-hidden">
+          <div className="lg:col-span-12 xl:col-span-3 order-3 min-h-0 h-full overflow-hidden">
             <div className="h-full min-h-0 overflow-y-auto custom-scroll">
               <AttendanceTasksPanel coachId={selectedCoach.id} viewerRole="qa" />
             </div>
@@ -1046,13 +1219,16 @@ export default function AttendancePage({ onOpenSidebar }: { onOpenSidebar?: () =
         )}
       </div>
 
-      {/* Monthly sessions */}
+      {/* ================= Monthly sessions (below, normal page flow) ================= */}
       <div className="mt-4">
         {selectedCoach && (
-          <MonthlySessionsWithLearners students={studentsList} meetingSubject={meetingSubject} />
+          <MonthlySessionsWithLearners
+            students={studentsList}
+            meetingSubject={meetingSubject}
+            coachUpcomingSessions={selectedCoach?.upcomming_sessions ?? selectedCoach?.upcomming_sessions}
+          />
         )}
       </div>
     </div>
   );
-
 }

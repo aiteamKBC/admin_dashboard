@@ -1,5 +1,7 @@
 import React, { useEffect, useMemo, useState } from "react";
 
+import { fetchWithAuth } from "@/services/fetchWithAuth";
+
 type Props = {
   coachId: number;
   viewerRole?: "qa" | "coach";
@@ -26,17 +28,8 @@ type EvidenceItem = {
   reviewed: boolean;
 };
 
-function authHeaders(extra?: Record<string, string>) {
-  const token = localStorage.getItem("token");
-  return {
-    ...(extra ?? {}),
-    ...(token ? { Authorization: `Bearer ${token}` } : {}),
-  };
-}
-
 async function fetchCoachTasks(coachId: number): Promise<Task[]> {
-  const res = await fetch(`/tasks-api/coaches/${coachId}/tasks`, {
-    headers: authHeaders(),
+  const res = await fetchWithAuth(`/tasks-api/coaches/${coachId}/tasks/`, {
   });
 
   if (!res.ok) {
@@ -50,9 +43,9 @@ async function fetchCoachTasks(coachId: number): Promise<Task[]> {
 
 // PATCH reviewed flag 
 async function patchTaskReviewed(coachId: number, taskId: string, reviewed: boolean) {
-  const res = await fetch(`/tasks-api/coaches/${coachId}/tasks/${taskId}/`, {
+  const res = await fetchWithAuth(`/tasks-api/coaches/${coachId}/tasks/${taskId}/`, {
     method: "PATCH",
-    headers: authHeaders({ "Content-Type": "application/json" }),
+    headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
     evidence: { reviewed },
     }),
@@ -70,9 +63,8 @@ async function patchTaskReviewed(coachId: number, taskId: string, reviewed: bool
 
 //DELETE task 
 async function deleteTask(coachId: number, taskId: string) {
-  const res = await fetch(`/tasks-api/coaches/${coachId}/tasks/${taskId}/`, {
+  const res = await fetchWithAuth(`/tasks-api/coaches/${coachId}/tasks/${taskId}/`, {
     method: "DELETE",
-    headers: authHeaders(),
   });
 
   const text = await res.text().catch(() => "");

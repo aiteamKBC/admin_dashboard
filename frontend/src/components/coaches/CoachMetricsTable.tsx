@@ -25,7 +25,7 @@ export default function CoachMetricsTable({ metrics }: { metrics: Metrics }) {
         </tr>
 
         <tr className="border-b">
-          <td className="p-3">Delay Days</td>
+          <td className="p-3">No. of  Delayed Days (oldest submission assigned from student)</td>
           <td className="p-3">{metrics.elapsedDays}</td>
         </tr>
 

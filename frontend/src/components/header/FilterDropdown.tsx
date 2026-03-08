@@ -15,8 +15,10 @@ type FilterDropdownProps = {
   activeCoachId?: number | "all" | null;
   activePeriod?: string; // "7" | "30" | "90" | "180" | "365"
 
-  // ✅ NEW
   disabled?: boolean;
+
+  // for AnalyticsMeetings when coach role should not change the filter (always locked to self)
+  lockCoach?: boolean;
 };
 
 type Option = { value: string; label: string };
@@ -28,7 +30,8 @@ export default function FilterDropdown({
   onApply,
   activeCoachId = "all",
   activePeriod = "7",
-  disabled = false, // ✅ NEW
+  disabled = false,
+  lockCoach = false,
 }: FilterDropdownProps) {
   const [open, setOpen] = useState(false);
 
@@ -84,7 +87,6 @@ export default function FilterDropdown({
     return () => document.removeEventListener("keydown", onKey);
   }, []);
 
-  // ✅ لو اتقفل (disabled) وإنتِ فاتحاه → اقفليه
   useEffect(() => {
     if (disabled) {
       setOpen(false);
@@ -199,11 +201,16 @@ export default function FilterDropdown({
               label={coachLabel}
               open={coachOpen}
               setOpen={(v) => {
+                if (lockCoach) return;
                 setCoachOpen(v);
                 if (v) setPeriodOpen(false);
               }}
               options={coachOptions}
-              onChange={(val) => setFilters((p) => ({ ...p, coach: val }))}
+              onChange={(val) => {
+                if (lockCoach) return;
+                setFilters((p) => ({ ...p, coach: val }));
+              }}
+              disabled={lockCoach}
             />
           </div>
 
@@ -264,6 +271,7 @@ function CustomSelect({
   setOpen,
   options,
   onChange,
+  disabled = false,
 }: {
   value: string;
   label: string;
@@ -271,21 +279,25 @@ function CustomSelect({
   setOpen: (v: boolean) => void;
   options: Option[];
   onChange: (val: string) => void;
+  disabled?: boolean;
 }) {
   return (
     <div className="relative">
       <button
         type="button"
         onClick={() => setOpen(!open)}
-        className="
-          w-full h-9 px-3
-          border border-gray-200
-          rounded-lg
-          text-sm text-left
-          bg-white
-          focus:outline-none focus:ring-2 focus:ring-[#A88CD9]
-          flex items-center justify-between
-        "
+        className={[
+          `
+    w-full h-9 px-3
+    border border-gray-200
+    rounded-lg
+    text-sm text-left
+    bg-white
+    focus:outline-none focus:ring-2 focus:ring-[#A88CD9]
+    flex items-center justify-between
+    `,
+          disabled ? "opacity-60 cursor-not-allowed" : "",
+        ].join(" ")}
       >
         <span className="truncate">{label}</span>
         <svg
@@ -325,10 +337,9 @@ function CustomSelect({
                     w-full px-3 py-2 text-sm text-left
                     flex items-center justify-between
                     transition
-                    ${
-                      active
-                        ? "bg-gray-100 text-gray-900"
-                        : "text-gray-700 hover:bg-gray-100"
+                    ${active
+                      ? "bg-gray-100 text-gray-900"
+                      : "text-gray-700 hover:bg-gray-100"
                     }
                   `}
                 >

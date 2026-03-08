@@ -3,6 +3,7 @@ import type { Meeting } from "../../types/meetings";
 
 type CalendarProps = {
   meetingsByDate?: Record<string, Meeting[]>;
+  onWeeksChange?: (weeks: number) => void;
 };
 
 const dateKeyToday = () => {
@@ -13,7 +14,40 @@ const dateKeyToday = () => {
   return `${y}-${m}-${d}`; // YYYY-MM-DD
 };
 
-export default function Calendar({ meetingsByDate = {} }: CalendarProps) {
+const norm = (s: string) => s.toLowerCase().replace(/\s+/g, " ").trim();
+
+const SERVICE_ALIASES: Array<[RegExp, string]> = [
+  [/monthly coaching review/i, "MCM"],
+  [/progress review/i, "PR"],
+  [/support session/i, "Support"],
+  [/coaching/i, "Coaching"],
+  [/induction/i, "Induction"],
+  [/workshop/i, "Workshop"],
+];
+
+function shortServiceName(serviceName?: unknown) {
+  const s = typeof serviceName === "string" ? serviceName.trim() : "";
+  if (!s) return "Session";
+
+  for (const [re, label] of SERVICE_ALIASES) {
+    if (re.test(s)) return label;
+  }
+
+  // fallback: remove "with X", take first 2 to 3 words, then hard-trim
+  const lower = s.toLowerCase();
+  const token = " with ";
+  const pos = lower.indexOf(token);
+  const base = (pos >= 0 ? s.slice(0, pos) : s).trim();
+
+  const firstWords = base
+    .split(" ")
+    .filter(Boolean)
+    .slice(0, 3)
+    .join(" ");
+  return firstWords.length > 14 ? `${firstWords.slice(0, 14)}...` : firstWords;
+}
+
+export default function Calendar({ meetingsByDate = {}, onWeeksChange }: CalendarProps) {
   const today = new Date();
   const todayKey = useMemo(() => dateKeyToday(), []);
 
@@ -25,13 +59,18 @@ export default function Calendar({ meetingsByDate = {} }: CalendarProps) {
   const month = currentDate.getMonth();
 
   const daysInMonth = new Date(year, month + 1, 0).getDate();
-
   const firstDayIndex = (new Date(year, month, 1).getDay() + 6) % 7;
+
+  const weeksInMonth = Math.ceil((firstDayIndex + daysInMonth) / 7);
+
+  useMemo(() => {
+    onWeeksChange?.(weeksInMonth);
+    return null;
+  }, [weeksInMonth, onWeeksChange]);
 
   const meetingsByDateFuture = useMemo<Record<string, Meeting[]>>(() => {
     const out: Record<string, Meeting[]> = {};
     for (const [k, v] of Object.entries(meetingsByDate || {})) {
-
       if (k >= todayKey) out[k] = Array.isArray(v) ? v : [];
     }
     return out;
@@ -46,14 +85,14 @@ export default function Calendar({ meetingsByDate = {} }: CalendarProps) {
     );
   }, [meetingsByDateFuture, month, year]);
 
-  const formatDateKey = (year: number, month: number, day: number) =>
-    `${year}-${String(month + 1).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+  const formatDateKey = (y: number, m: number, d: number) =>
+    `${y}-${String(m + 1).padStart(2, "0")}-${String(d).padStart(2, "0")}`;
 
   const prevMonth = () => setCurrentDate(new Date(year, month - 1, 1));
   const nextMonth = () => setCurrentDate(new Date(year, month + 1, 1));
 
   return (
-    <div className="w-full ">
+    <div className="w-full">
       {/* Header */}
       <div className="flex items-center justify-between mb-4">
         <button
@@ -90,7 +129,6 @@ export default function Calendar({ meetingsByDate = {} }: CalendarProps) {
 
         {Array.from({ length: daysInMonth }).map((_, i) => {
           const day = i + 1;
-
           const dateKey = formatDateKey(year, month, day);
 
           const meetingsForDay = Array.isArray(meetingsByDateFuture[dateKey])
@@ -110,12 +148,11 @@ export default function Calendar({ meetingsByDate = {} }: CalendarProps) {
                 className={`
                   w-9 h-9 flex items-center justify-center rounded-full cursor-pointer
                   transition
-                  ${
-                    isHighlighted
-                      ? "bg-gradient-to-r from-[#b27715] to-[#cea769] text-white font-semibold shadow-sm"
-                      : isToday
-                        ? "border border-[#B27715] text-[#241453] font-medium"
-                        : "text-[#241453] hover:bg-gray-100"
+                  ${isHighlighted
+                    ? "bg-gradient-to-r from-[#b27715] to-[#cea769] text-white font-semibold shadow-sm"
+                    : isToday
+                      ? "border border-[#B27715] text-[#241453] font-medium"
+                      : "text-[#241453] hover:bg-gray-100"
                   }
                 `}
               >
@@ -132,17 +169,25 @@ export default function Calendar({ meetingsByDate = {} }: CalendarProps) {
                     shadow-lg whitespace-nowrap
                   "
                 >
-                  {meetingsForDay.map((m, idx) => (
-                    <div key={idx} className="mb-1 last:mb-0">
-                      <span className="font-medium">
-                        {typeof m.customerName === "string" ? m.customerName : "Unknown student"}
-                      </span>
-                      <span className="text-gray-300">
-                        {" "}
-                        ({String(m.timeFrom ?? "--")}–{String(m.timeTo ?? "--")})
-                      </span>
-                    </div>
-                  ))}
+                  {meetingsForDay.map((m, idx) => {
+                    const student =
+                      typeof m.customerName === "string" ? m.customerName : "Unknown student";
+                    const serviceShort = shortServiceName((m as any).serviceName);
+
+                    return (
+                      <div key={idx} className="mb-1 last:mb-0 flex items-center gap-2">
+                        <span className="inline-flex items-center rounded bg-white/10 px-2 py-0.5 text-[10px] font-semibold">
+                          {serviceShort}
+                        </span>
+
+                        <span className="font-medium">{student}</span>
+
+                        <span className="text-gray-300">
+                          ({String((m as any).timeFrom ?? "--")} to {String((m as any).timeTo ?? "--")})
+                        </span>
+                      </div>
+                    );
+                  })}
                 </div>
               )}
             </div>

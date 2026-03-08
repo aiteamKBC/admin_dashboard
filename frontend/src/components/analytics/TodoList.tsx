@@ -28,32 +28,81 @@ type TodoListProps = {
   viewerRole?: ViewerRole;
 };
 
-/** ✅ Auth header helper (JWT) */
-function authHeaders(extra?: Record<string, string>) {
-  const token = localStorage.getItem("token");
-  return {
-    ...(extra ?? {}),
-    ...(token ? { Authorization: `Bearer ${token}` } : {}),
-  };
-}
+const API_ORIGIN =
+  (import.meta as any).env?.VITE_API_ORIGIN?.toString().trim() ||
+  "http://127.0.0.1:8000";
 
-/** ✅ JSON fetch wrapper with auth + safe body parsing */
-async function http<T>(url: string, opts?: RequestInit): Promise<T> {
-  const res = await fetch(url, {
-    ...opts,
-    headers: authHeaders({
-      "Content-Type": "application/json",
-      ...(opts?.headers as Record<string, string> | undefined),
-    }),
+async function refreshAccessToken(): Promise<string> {
+  const refresh = localStorage.getItem("refresh_token");
+  if (!refresh) throw new Error("Session expired, please login again");
+
+  const res = await fetch(`${API_ORIGIN}/tasks-api/api/token/refresh/`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ refresh }),
   });
 
   const text = await res.text().catch(() => "");
+  let data: any = null;
+  try {
+    data = text ? JSON.parse(text) : null;
+  } catch {
+    data = null;
+  }
+
+  if (!res.ok || !data?.access) {
+    localStorage.removeItem("token");
+    localStorage.removeItem("refresh_token");
+    throw new Error(data?.detail || "Session expired, please login again");
+  }
+
+  localStorage.setItem("token", data.access);
+  return data.access;
+}
+
+/** JSON fetch wrapper with auth + auto refresh */
+async function http<T>(url: string, opts?: RequestInit): Promise<T> {
+  const fullUrl = /^https?:\/\//i.test(url) ? url : `${API_ORIGIN}${url}`;
+
+  const doFetch = async (token?: string) => {
+    const res = await fetch(fullUrl, {
+      ...opts,
+      headers: {
+        "Content-Type": "application/json",
+        ...(opts?.headers as Record<string, string> | undefined),
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+    });
+
+    const text = await res.text().catch(() => "");
+    let json: any = null;
+    try {
+      json = text ? JSON.parse(text) : null;
+    } catch {
+      json = null;
+    }
+
+    return { res, text, json };
+  };
+
+  // 1) try with current access
+  let access = localStorage.getItem("token") || "";
+  let { res, text, json } = await doFetch(access);
+
+  // 2) if token expired, refresh and retry once
+  if (res.status === 401) {
+  access = await refreshAccessToken();
+  ({ res, text, json } = await doFetch(access));
+}
 
   if (!res.ok) {
-    throw new Error(text || `Request failed (${res.status})`);
+    throw new Error(json?.detail || json?.message || text || `Request failed (${res.status})`);
   }
 
   if (res.status === 204) return undefined as T;
+
+  // json already parsed if possible
+  if (json != null) return json as T;
 
   try {
     return (text ? JSON.parse(text) : undefined) as T;
@@ -62,7 +111,7 @@ async function http<T>(url: string, opts?: RequestInit): Promise<T> {
   }
 }
 
-/** ✅ Attendance task even if no proof */
+/**  Attendance task even if no proof */
 function isAttendanceTask(t: ApiTask) {
   const ev = t?.evidence;
   const isAttendanceType = String(ev?.type || "") === "attendance_followup";
@@ -73,9 +122,6 @@ function isAttendanceTask(t: ApiTask) {
 }
 
 /** ✅ Django origin (local) or production origin */
-const API_ORIGIN =
-  (import.meta as any).env?.VITE_API_ORIGIN?.toString().trim() ||
-  "http://127.0.0.1:5055";
 
 function toAbsoluteUrlMaybe(url: string) {
   if (!url) return "";

@@ -8,6 +8,12 @@ type Coach = {
   case_owner: string;
 };
 
+type HeaderStat = {
+  label: string;
+  value: string;
+  sub?: string;
+};
+
 type TopHeaderProps = {
   coaches: Coach[];
   onApplyFilters: (filters: { coach: string; period: string }) => void;
@@ -23,8 +29,12 @@ type TopHeaderProps = {
   userName?: string;
   onLogout?: () => void;
 
-  // ✅ NEW: QA only can switch coach
-  canSwitchCoach?: boolean; // default true
+  canSwitchCoach?: boolean;
+
+  lockCoachFilter?: boolean;
+
+  stats?: HeaderStat[];
+  rightContent?: React.ReactNode;
 };
 
 export default function TopHeader({
@@ -36,8 +46,10 @@ export default function TopHeader({
   students = [],
   onSelectStudent,
   userName = "User",
-  onLogout,
   canSwitchCoach = true,
+  lockCoachFilter = false,
+  stats,
+  rightContent,
 }: TopHeaderProps) {
   const [q, setQ] = useState("");
   const [listOpen, setListOpen] = useState(false);
@@ -114,7 +126,6 @@ export default function TopHeader({
       return;
     }
 
-    // Open list if closed and user navigates
     if (!listOpen && (e.key === "ArrowDown" || e.key === "ArrowUp")) {
       setListOpen(true);
     }
@@ -155,7 +166,24 @@ export default function TopHeader({
     const last = parts.length > 1 ? parts[parts.length - 1]?.[0] : "";
     return (first + last).toUpperCase();
   }, [userName]);
-    
+
+  const renderStats = (statsArr: HeaderStat[]) => {
+    return (
+      <div className="flex items-center gap-2 min-w-0">
+        {statsArr.map((s) => (
+          <div
+            key={s.label}
+            className="min-w-[160px] max-w-[220px] bg-white border border-gray-200 rounded-xl px-3 py-2"
+          >
+            <div className="text-[11px] text-gray-500 truncate">{s.label}</div>
+            <div className="text-base font-semibold text-[#241453] leading-5">{s.value}</div>
+            {s.sub ? <div className="text-[11px] text-gray-400 truncate">{s.sub}</div> : null}
+          </div>
+        ))}
+      </div>
+    );
+  };
+
   /* ================= render ================= */
   return (
     <header
@@ -207,7 +235,6 @@ export default function TopHeader({
             Welcome {userName}!
           </h2>
 
-          {/* ✅ Hint for coaches */}
           {!canSwitchCoach && (
             <div className="text-[11px] text-gray-500 mt-0.5">
               You can view only your own coach account
@@ -218,97 +245,101 @@ export default function TopHeader({
 
       {/* Right */}
       <div className="flex items-center gap-2 md:gap-3 justify-between md:justify-end">
-
-        {/* Student Search */}
-        <div ref={searchWrapRef} className="relative w-full sm:w-[260px]">
-          <input
-            value={q}
-            onChange={(e) => {
-              setQ(e.target.value);
-              setListOpen(true);
-              setActiveIndex(-1);
-            }}
-            onFocus={() => setListOpen(true)}
-            onKeyDown={onSearchKeyDown}
-            placeholder="Search student..."
-            className="
-              w-full h-9 px-3
-              rounded-lg
-              border border-gray-200
-              text-sm
-              focus:outline-none focus:ring-2 focus:ring-[#A88CD9]
-            "
-            role="combobox"
-            aria-expanded={listOpen}
-            aria-controls="students-listbox"
-            aria-autocomplete="list"
-          />
-
-          {listOpen && filtered.length > 0 && (
-            <div
+        {/* Replaceable right area */}
+        {rightContent ? (
+          rightContent
+        ) : stats && stats.length ? (
+          renderStats(stats)
+        ) : (
+          /* Student Search, unchanged */
+          <div ref={searchWrapRef} className="relative w-full sm:w-[260px]">
+            <input
+              value={q}
+              onChange={(e) => {
+                setQ(e.target.value);
+                setListOpen(true);
+                setActiveIndex(-1);
+              }}
+              onFocus={() => setListOpen(true)}
+              onKeyDown={onSearchKeyDown}
+              placeholder="Search student..."
               className="
-                absolute z-50 mt-2 w-full
-                rounded-xl border border-gray-200
-                bg-white shadow-lg overflow-hidden custom-scroll
+                w-full h-9 px-3
+                rounded-lg
+                border border-gray-200
+                text-sm
+                focus:outline-none focus:ring-2 focus:ring-[#A88CD9]
               "
-              role="listbox"
-              id="students-listbox"
-            >
-              <div ref={listRef} className="max-h-56 overflow-auto">
-                {filtered.map((name, idx) => {
-                  const active = idx === activeIndex;
-                  return (
-                    <button
-                      key={name}
-                      type="button"
-                      data-idx={idx}
-                      onClick={() => pickStudent(name)}
-                      onMouseEnter={() => setActiveIndex(idx)}
-                      className={[
-                        "w-full px-3 py-2 text-sm text-left transition text-gray-700",
-                        active ? "bg-gray-100" : "hover:bg-gray-100",
-                      ].join(" ")}
-                      role="option"
-                      aria-selected={active}
-                    >
-                      <span className="truncate block">{name}</span>
-                    </button>
-                  );
-                })}
-              </div>
+              role="combobox"
+              aria-expanded={listOpen}
+              aria-controls="students-listbox"
+              aria-autocomplete="list"
+            />
 
-              <div className="px-3 py-2 border-t text-[11px] text-gray-500 flex justify-between">
-                <span>{filtered.length} results</span>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setListOpen(false);
-                    setActiveIndex(-1);
-                  }}
-                  className="text-[#644D93] hover:underline"
-                >
-                  Close
-                </button>
+            {listOpen && filtered.length > 0 && (
+              <div
+                className="
+                  absolute z-50 mt-2 w-full
+                  rounded-xl border border-gray-200
+                  bg-white shadow-lg overflow-hidden custom-scroll
+                "
+                role="listbox"
+                id="students-listbox"
+              >
+                <div ref={listRef} className="max-h-56 overflow-auto">
+                  {filtered.map((name, idx) => {
+                    const active = idx === activeIndex;
+                    return (
+                      <button
+                        key={name}
+                        type="button"
+                        data-idx={idx}
+                        onClick={() => pickStudent(name)}
+                        onMouseEnter={() => setActiveIndex(idx)}
+                        className={[
+                          "w-full px-3 py-2 text-sm text-left transition text-gray-700",
+                          active ? "bg-gray-100" : "hover:bg-gray-100",
+                        ].join(" ")}
+                        role="option"
+                        aria-selected={active}
+                      >
+                        <span className="truncate block">{name}</span>
+                      </button>
+                    );
+                  })}
+                </div>
+
+                <div className="px-3 py-2 border-t text-[11px] text-gray-500 flex justify-between">
+                  <span>{filtered.length} results</span>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setListOpen(false);
+                      setActiveIndex(-1);
+                    }}
+                    className="text-[#644D93] hover:underline"
+                  >
+                    Close
+                  </button>
+                </div>
               </div>
-            </div>
-          )}
-        </div>
+            )}
+          </div>
+        )}
 
         {/* Filter */}
         <FilterDropdown
           coaches={coaches}
-          disabled={!canSwitchCoach} //  NEW
+          disabled={false}                 
+          lockCoach={lockCoachFilter}      
           onApply={(f) => {
             setListOpen(false);
             setActiveIndex(-1);
-            if (!canSwitchCoach) return; //  safety
-            onApplyFilters(f);
+            onApplyFilters(f);            
           }}
           activeCoachId={activeCoachId}
           activePeriod={activePeriod}
         />
-
-        
       </div>
     </header>
   );

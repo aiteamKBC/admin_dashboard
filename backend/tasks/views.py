@@ -8,6 +8,8 @@ from rest_framework.response import Response
 from rest_framework import status
 from rest_framework.parsers import MultiPartParser, FormParser
 from rest_framework.permissions import IsAuthenticated
+from rest_framework_simplejwt.views import TokenObtainPairView
+from .jwt_serializers import EmailOrUsernameTokenObtainPairSerializer
 
 import uuid
 
@@ -21,6 +23,8 @@ from django.core.files.storage import FileSystemStorage
 
 from django.utils.text import get_valid_filename
 
+class EmailOrUsernameTokenObtainPairView(TokenObtainPairView):
+    serializer_class = EmailOrUsernameTokenObtainPairSerializer
 
 def _ensure_list(value):
     return value if isinstance(value, list) else []

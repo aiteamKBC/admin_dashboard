@@ -19,6 +19,104 @@ import { fetchAllCoachesAnalytics, CoachAnalytics } from "../../api";
 
 /* ================= helpers ================= */
 
+// Progress review parsing helpers
+const isObj = (v: unknown): v is Record<string, any> =>
+  !!v && typeof v === "object" && !Array.isArray(v);
+
+const parseMaybeJson = (v: unknown): any => {
+  if (typeof v !== "string") return v;
+  try { return JSON.parse(v); } catch { return v; }
+};
+
+const isMonthKey = (k: string) => /^\d{4}-\d{2}$/.test(k);
+
+const normKey = (x: any) => String(x ?? "").trim().toLowerCase();
+
+function extractLearnerKeys(list: any[]): string[] {
+  if (!Array.isArray(list)) return [];
+  return list
+    .map((l) => normKey(l?.ID || l?.id || l?.Email || l?.email || l?.FullName || l?.fullName))
+    .filter(Boolean);
+}
+
+function buildDueSetFromPR(
+  pr: any,
+  months: string[],
+  opts?: { includeDueUpcoming?: boolean }
+) {
+  const includeDueUpcoming = opts?.includeDueUpcoming ?? true;
+
+  const set = new Set<string>();
+  const byMonth = isObj(pr?.byMonth) ? pr.byMonth : {};
+
+  for (const m of months) {
+    const node = byMonth?.[m];
+    const lists = node?.lists || {};
+    const overdue = lists?.overdueLearners || [];
+    const dueUpcoming = lists?.dueUpcomingLearners || [];
+
+    for (const k of extractLearnerKeys(overdue)) set.add(k);
+
+    if (includeDueUpcoming) {
+      for (const k of extractLearnerKeys(dueUpcoming)) set.add(k);
+    }
+  }
+
+  return set;
+}
+
+const parseDDMMYYYY = (s?: string) => {
+  if (!s || typeof s !== "string") return null;
+  const parts = s.trim().split("-");
+  if (parts.length !== 3) return null;
+
+  const dd = Number(parts[0]);
+  const mm = Number(parts[1]);
+  const yyyy = Number(parts[2]);
+
+  if (!Number.isFinite(dd) || !Number.isFinite(mm) || !Number.isFinite(yyyy)) return null;
+  return new Date(yyyy, mm - 1, dd);
+};
+
+const getLastProgressReview = (items: ProgressReviewItem[]) => {
+  let best: (ProgressReviewItem & { _d: Date }) | null = null;
+
+  for (const it of items) {
+    const d = parseDDMMYYYY(it.date);
+    if (!d) continue;
+
+    if (!best || d.getTime() > best._d.getTime()) {
+      best = { ...(it as any), _d: d };
+    }
+  }
+
+  return best ? { date: best.date || null, status: best.status || null, raw: best.raw || null } : null;
+};
+
+const prStatusBadgeClass = (status?: string) => {
+  const s = String(status || "").toLowerCase().trim();
+
+  if (s.includes("completed")) return "bg-emerald-50 text-emerald-700 border-emerald-200";
+  if (s.includes("in progress")) return "bg-[#FCF3FF] text-[#72587A] border-[#BA8FC7]";
+  if (s.includes("not started")) return "bg-gray-100 text-gray-700 border-gray-200";
+
+  return "bg-slate-50 text-slate-700 border-slate-200";
+};
+
+const addMonthsToKey = (ym: string, delta: number) => {
+  const [yStr, mStr] = ym.split("-");
+  const y = Number(yStr);
+  const m = Number(mStr);
+  if (!Number.isFinite(y) || !Number.isFinite(m)) return ym;
+
+  const d = new Date(y, m - 1, 1);
+  d.setMonth(d.getMonth() + delta);
+
+  const yy = d.getFullYear();
+  const mm = String(d.getMonth() + 1).padStart(2, "0");
+  return `${yy}-${mm}`;
+};
+
 const countCancelledSessions = (cancelledSessions: any): number => {
   const sessions = cancelledSessions?.sessions;
   if (!Array.isArray(sessions)) return 0;
@@ -99,6 +197,53 @@ const filterMeetingsByRange = (meetings: any[] | undefined, start: Date, end: Da
   return meetings.filter((m) => inRange(m?.date, start, end));
 };
 
+// progress review parsing (from JSONB string)
+type ProgressReviewItem = {
+  key: string;
+  date?: string;
+  status?: string;
+  raw?: string;
+};
+
+type StudentLike = {
+  id?: string;
+  fullName?: string;
+  email?: string;
+  overall: number;
+  lmsProgress: number;
+  aptemProgress: number;
+  progressReviewRaw?: any;
+  [k: string]: any;
+};
+
+// helper to extract progress review items from the raw JSONB field
+const extractProgressReviews = (raw: any): ProgressReviewItem[] => {
+  if (!raw || typeof raw !== "object") return [];
+
+  const keys = Object.keys(raw).filter((k) =>
+    /^Review\s?Status\d+$/i.test(k.replace(/\s+/g, ""))
+  );
+
+  keys.sort((a, b) => {
+    const na = parseInt(a.match(/\d+/)?.[0] || "0", 10);
+    const nb = parseInt(b.match(/\d+/)?.[0] || "0", 10);
+    return na - nb;
+  });
+
+  const parseValue = (v: any) => {
+    const s = typeof v === "string" ? v.trim() : "";
+    if (!s) return { raw: s };
+    const m = s.match(/^(.+?)\s*\((.+?)\)\s*$/);
+    if (!m) return { raw: s };
+    return { date: m[1]?.trim(), status: m[2]?.trim(), raw: s };
+  };
+
+  return keys.map((k) => ({
+    key: k,
+    ...parseValue(raw[k]),
+  }));
+};
+
 // sessions:(date/completedAt/cancelledAt/createdAt)
 const extractSessionDate = (s: any): string | null => {
   return (
@@ -138,14 +283,32 @@ export default function AnalyticsMeetings({ onOpenSidebar }: { onOpenSidebar?: (
   const [coaches, setCoaches] = useState<CoachAnalytics[]>([]);
   const [selectedCoachId, setSelectedCoachId] = useState<number | null>(null);
 
+  // selectedCoach is the coach 
+  const selectedCoach = useMemo(() => {
+    if (!coaches?.length) return null;
+    return coaches.find((c: any) => Number(c.id) === Number(selectedCoachId)) ?? coaches[0] ?? null;
+  }, [coaches, selectedCoachId]);
+
+  const prRaw =
+    (selectedCoach as any)?.overall_progress_review ??
+    (selectedCoach as any)?.overallProgressReview;
+
+  const prData = useMemo(() => {
+    const x = parseMaybeJson(prRaw);
+    return isObj(x) ? x : null;
+  }, [prRaw]);
+
   const role =
-  (localStorage.getItem("role") as "qa" | "coach" | "admin" | null) || "coach";
+    (localStorage.getItem("role") as "qa" | "coach" | "admin" | null) || "coach";
 
-const selfCoachId = Number(localStorage.getItem("coach_id") || "");
-const userName = localStorage.getItem("username") || "User";
+  const isCoachRole = role === "coach";
+  const filterDisabled = false;
 
-const todoCoachId: number | null =
-  role === "coach" ? (Number.isFinite(selfCoachId) ? selfCoachId : null) : selectedCoachId;
+  const selfCoachId = Number(localStorage.getItem("coach_id") || "");
+  const userName = localStorage.getItem("username") || "User";
+
+  const todoCoachId: number | null =
+    role === "coach" ? (Number.isFinite(selfCoachId) ? selfCoachId : null) : selectedCoachId;
 
   // ---- filters state ----
   const [periodFilter, setPeriodFilter] = useState("7");
@@ -187,12 +350,12 @@ const todoCoachId: number | null =
         // Filter coaches based on role and username
         const role = localStorage.getItem("role");
         const username = localStorage.getItem("username");
-        
+
         let filteredCoaches = normalized;
-        
+
         // If user is a coach, only show their own data
         if (role === "coach" && username) {
-          filteredCoaches = normalized.filter((c: any) => 
+          filteredCoaches = normalized.filter((c: any) =>
             c.case_owner === username || c.caseOwner === username
           );
         }
@@ -201,7 +364,11 @@ const todoCoachId: number | null =
         setCoaches(filteredCoaches);
 
         const firstId = filteredCoaches[0]?.id ?? null;
-        setSelectedCoachId(firstId);
+        if (role === "coach" && firstId != null) {
+          setCoachFilterId(firstId);
+        } else {
+          setCoachFilterId("all");
+        }
         setCoachFilterId("all");
       } catch (err) {
         console.error(err);
@@ -250,6 +417,11 @@ const todoCoachId: number | null =
       setPeriodFilter(filters.period);
       setTimePeriod(periodToTimePeriod(filters.period));
 
+      if (role === "coach") {
+        // الكوتش ما يغيرش coach, بس يفلتر وقت
+        return;
+      }
+
       if (filters.coach === "all") {
         setCoachFilterId("all");
         return;
@@ -259,7 +431,7 @@ const todoCoachId: number | null =
       setCoachFilterId(id);
       setSelectedCoachId(id);
     },
-    [coaches]
+    [role]
   );
 
   // ---- range (based on timePeriod) ----
@@ -361,7 +533,8 @@ const todoCoachId: number | null =
           .filter((m): m is Meeting => !!m) ?? [];
 
       return {
-        name: coach.case_owner,
+        key: String(coach.id), // unique
+        name: String(coach.case_owner || `Coach ${coach.id}`), // fallback
         completed: completed.totalSessions,
         cancelled: cancelledCount,
         upcomming: normalizedMeetings.length,
@@ -418,14 +591,142 @@ const todoCoachId: number | null =
     overall: number;      // 0..100
     lmsProgress: number;  // 0..100
     aptemProgress: number;// 0..100
+    raw: Record<string, any>;
   };
 
   const [studentsModal, setStudentsModal] = useState<{
     open: boolean;
+    coachId?: number;
     coachName?: string;
     students?: StudentAnalytics[];
   }>({ open: false });
 
+  // PR filter for the modal (this_month, last_month, last_3_months)
+  const [prFilter, setPrFilter] = useState<"this_month" | "last_month" | "last_3_months">("this_month");
+
+  const modalCoach = useMemo(() => {
+    if (!studentsModal.open || !studentsModal.coachId) return null;
+    return coaches.find((c) => Number(c.id) === Number(studentsModal.coachId)) ?? null;
+  }, [studentsModal.open, studentsModal.coachId, coaches]);
+
+  const prRawForModal = useMemo(() => {
+    const c: any = modalCoach;
+    return c?.overall_progress_review ?? c?.overallProgressReview ?? null;
+  }, [modalCoach]);
+
+  const prDataForModal = useMemo(() => {
+    const x = parseMaybeJson(prRawForModal);
+    return isObj(x) ? x : null;
+  }, [prRawForModal]);
+
+  const nowMonthKey = useMemo(() => new Date().toISOString().slice(0, 7), []);
+
+  const selectedMonthsForModal = useMemo(() => {
+    const base = nowMonthKey;
+
+    if (prFilter === "this_month") return [base];
+
+    if (prFilter === "last_month") return [addMonthsToKey(base, -1)];
+
+    // last 3 months
+    return [addMonthsToKey(base, -3), addMonthsToKey(base, -2), addMonthsToKey(base, -1)];
+  }, [nowMonthKey, prFilter]);
+
+  const completedSetForModal = useMemo(() => {
+    if (!prDataForModal) return new Set<string>();
+
+    const set = new Set<string>();
+    const byMonth = isObj(prDataForModal?.byMonth) ? prDataForModal.byMonth : {};
+
+    for (const m of selectedMonthsForModal) {
+      const node = byMonth?.[m];
+      const lists = node?.lists || {};
+      const completed = lists?.completedLearners || [];
+
+      for (const k of extractLearnerKeys(completed)) set.add(k);
+    }
+
+    return set;
+  }, [prDataForModal, selectedMonthsForModal]);
+
+  const isPrCompletedThisPeriod = useCallback(
+    (st: StudentAnalytics) => {
+      const idKey = normKey(st?.id);
+      const emailKey = normKey(st?.email);
+      return (idKey && completedSetForModal.has(idKey)) || (emailKey && completedSetForModal.has(emailKey));
+    },
+    [completedSetForModal]
+  );
+
+  const completedReviewsForFilter = useMemo(() => {
+    if (!prDataForModal) return 0;
+
+    // this_month or last_month
+    if (prFilter === "this_month" || prFilter === "last_month") {
+      const m = selectedMonthsForModal[0];
+      const n = m ? prDataForModal?.byMonth?.[m]?.reviews?.completed : 0;
+      return Number(n) || 0;
+    }
+
+    // 3 months => sum of the 3 months
+    return selectedMonthsForModal.reduce((sum, m) => {
+      const n = prDataForModal?.byMonth?.[m]?.reviews?.completed;
+      return sum + (Number(n) || 0);
+    }, 0);
+  }, [prDataForModal, prFilter, selectedMonthsForModal]);
+
+  const dueSetForModal = useMemo(() => {
+    if (!prDataForModal) return new Set<string>();
+
+    const includeDueUpcoming = prFilter !== "last_3_months";
+    return buildDueSetFromPR(prDataForModal, selectedMonthsForModal, { includeDueUpcoming });
+  }, [prDataForModal, selectedMonthsForModal, prFilter]);
+
+  const isPrDueThisPeriod = useCallback(
+    (st: StudentAnalytics) => {
+      const idKey = normKey(st?.id);
+      const emailKey = normKey(st?.email);
+      return (idKey && dueSetForModal.has(idKey)) || (emailKey && dueSetForModal.has(emailKey));
+    },
+    [dueSetForModal]
+  );
+
+  const prDueNotDoneCount = useMemo(() => {
+    const list = studentsModal.students ?? [];
+    return list.filter((s) => isPrDueThisPeriod(s)).length;
+  }, [studentsModal.students, isPrDueThisPeriod]);
+
+  const overdueGeneralCount = useMemo(() => {
+    const n = prDataForModal?.overall?.learners?.overdueCount ?? 0;
+    return Number(n) || 0;
+  }, [prDataForModal]);
+
+  const overdueRateForFilter = useMemo(() => {
+    if (!prDataForModal) return null;
+
+    if (prFilter === "last_month") {
+      const m = selectedMonthsForModal[0];
+      const r = m ? prDataForModal?.byMonth?.[m]?.learners?.overdueRate : null;
+      return typeof r === "number" ? r : null;
+    }
+
+    const months = selectedMonthsForModal;
+    const rates = months
+      .map((m) => prDataForModal?.byMonth?.[m]?.learners?.overdueRate)
+      .filter((x): x is number => typeof x === "number");
+
+    if (!rates.length) return null;
+    return Math.round((rates.reduce((a, b) => a + b, 0) / rates.length) * 10) / 10; // 1 decimal
+  }, [prDataForModal, prFilter, selectedMonthsForModal]);
+
+  const overallOverdueRate = useMemo(() => {
+    const r = prDataForModal?.overall?.learners?.overdueRate;
+    return typeof r === "number" ? r : null;
+  }, [prDataForModal]);
+
+  // ---- progress review ----
+  const [studentsView, setStudentsView] = useState<"list" | "review">("list");
+  const [activeStudent, setActiveStudent] = useState<StudentLike | null>(null);
 
   const [studentSearch, setStudentSearch] = useState("");
 
@@ -479,6 +780,7 @@ const todoCoachId: number | null =
       overall: Number.isFinite(overall) ? clamp01(overall) : 0,
       lmsProgress: Number.isFinite(lms) ? clamp01(lms) : 0,
       aptemProgress: Number.isFinite(aptem) ? clamp01(aptem) : 0,
+      raw: x,
     };
   }
 
@@ -492,10 +794,12 @@ const todoCoachId: number | null =
 
     setStudentsModal({
       open: true,
+      coachId: coach.id,
       coachName: coach.case_owner,
       students: normalized,
     });
 
+    setPrFilter("this_month");
     setStudentSearch("");
   };
 
@@ -557,7 +861,7 @@ const todoCoachId: number | null =
   // Parse evidence data from JSON string
   const parseEvidenceData = (evidenceString: string | null | undefined) => {
     if (!evidenceString || typeof evidenceString !== 'string') return [];
-    
+
     try {
       // Evidence data is a JSON array string
       const parsed = JSON.parse(evidenceString);
@@ -574,7 +878,7 @@ const todoCoachId: number | null =
     } catch (e) {
       console.error('Failed to parse evidence data:', e);
     }
-    
+
     return [];
   };
 
@@ -774,6 +1078,13 @@ const todoCoachId: number | null =
     return r || "—";
   }, [selectedCoachSafe]);
 
+  /* ================= for calender hight ================= */
+
+  const [calendarWeeks, setCalendarWeeks] = useState(5);
+
+  const coachesH =
+    calendarWeeks >= 6 ? "h-[640px]" : calendarWeeks <= 4 ? "h-[550px]" : "h-[595px]";
+
   /* ================= render ================= */
 
   return (
@@ -799,72 +1110,75 @@ const todoCoachId: number | null =
             activePeriod={periodFilter}
             userName={userName}
             canSwitchCoach={role === "qa"}
+            lockCoachFilter={isCoachRole}
           />
 
           <section className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
-  {/* LEFT: Coaches */}
-  <div className="lg:col-span-3">
-    <div className="bg-white rounded-2xl p-4 shadow-sm h-[595px] overflow-y-auto custom-scroll">
-      <h3 className="text-lg font-bold text-[#442F73] mb-3">Coaches</h3>
+            {/* LEFT: Coaches */}
+            <div className="lg:col-span-3">
+              <div className={`bg-white rounded-2xl p-4 shadow-sm ${coachesH} overflow-y-auto custom-scroll`}>
+                <h3 className="text-lg font-bold text-[#442F73] mb-3">Coaches</h3>
 
-      <CoachesList
-        coaches={coaches}
-        activeCoachId={activeCoachIdForList}
-        onSelect={selectCoach}
-        onViewStudents={handleViewStudents}
-      />
-    </div>
-  </div>
+                <CoachesList
+                  coaches={coaches}
+                  activeCoachId={activeCoachIdForList}
+                  onSelect={selectCoach}
+                  onViewStudents={handleViewStudents}
+                />
+              </div>
+            </div>
 
-  {/* RIGHT: Everything stacked with NO empty gap */}
-  <div className="lg:col-span-9 flex flex-col gap-6">
-    {/* Row 1: Sessions Overview + Upcoming */}
-    <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-stretch">
-      <div className="lg:col-span-8">
-        <StatsOverview
-          stats={{
-            completed: completedStats.totalSessions,
-            hours: Math.round(completedStats.totalMinutes / 60),
-            reviews: selectedCoachSafe.evidence_accepted ?? 0,
-            cancelled: cancelledCountSelected,
-            overdue: selectedCoachSafe.evidence_submitted ?? 0,
-          }}
-        />
-      </div>
+            {/* RIGHT: Everything stacked with NO empty gap */}
+            <div className="lg:col-span-9 flex flex-col gap-6">
+              {/* Row 1: Sessions Overview + Upcoming */}
+              <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-stretch">
+                <div className="lg:col-span-8">
+                  <StatsOverview
+                    stats={{
+                      completed: completedStats.totalSessions,
+                      hours: Math.round(completedStats.totalMinutes / 60),
+                      reviews: selectedCoachSafe.evidence_accepted ?? 0,
+                      cancelled: cancelledCountSelected,
+                      overdue: selectedCoachSafe.evidence_submitted ?? 0,
+                    }}
+                  />
+                </div>
 
-      <div className="lg:col-span-4">
-        <UpcomingMeetingCard meeting={nextMeeting} meetings={todayMeetings} />
-      </div>
-    </div>
+                <div className="lg:col-span-4">
+                  <UpcomingMeetingCard meeting={nextMeeting} meetings={todayMeetings} />
+                </div>
+              </div>
 
-    {/* Row 2: Coach Overview + Calendar (directly under Row 1) */}
-    <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 items-stretch">
-      <div className="bg-white rounded-xl p-4 flex flex-col">
-        <h3 className="text-lg font-bold text-[#442F73] mb-3">Coach Overview</h3>
+              {/* Row 2: Coach Overview + Calendar (directly under Row 1) */}
+              <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 items-stretch">
+                <div className="bg-white rounded-xl p-4 flex flex-col">
+                  <h3 className="text-lg font-bold text-[#442F73] mb-3">Coach Overview</h3>
 
-        <CoachesOverview
-          metrics={{
-            sessions: completedStats.totalSessions,
-            students: selectedCoachSafe.with_student?.length ?? 0,
-            rating: 4.7,
-            elapsedDays: selectedCoachSafe.elapsed_days ?? 0,
-            status:
-              (selectedCoachSafe.elapsed_days ?? 0) <= 5
-                ? { label: "Safe", color: "bg-green-100 text-green-700" }
-                : (selectedCoachSafe.elapsed_days ?? 0) <= 10
-                  ? { label: "Need Attention", color: "bg-yellow-100 text-yellow-700" }
-                  : { label: "Delayed", color: "bg-red-100 text-red-700" },
-          }}
-        />
-      </div>
+                  <CoachesOverview
+                    metrics={{
+                      sessions: completedStats.totalSessions,
+                      students: selectedCoachSafe.with_student?.length ?? 0,
+                      rating: 4.7,
+                      elapsedDays: selectedCoachSafe.elapsed_days ?? 0,
+                      status:
+                        (selectedCoachSafe.elapsed_days ?? 0) <= 5
+                          ? { label: "Safe", color: "bg-green-100 text-green-700" }
+                          : (selectedCoachSafe.elapsed_days ?? 0) <= 10
+                            ? { label: "Need Attention", color: "bg-yellow-100 text-yellow-700" }
+                            : { label: "Delayed", color: "bg-red-100 text-red-700" },
+                    }}
+                  />
+                </div>
 
-      <div className="bg-white rounded-xl p-4 flex flex-col">
-        <h3 className="text-lg font-bold text-[#442F73] mb-3">Coach Calendar</h3>
-        <Calendar meetingsByDate={meetingsByDate} />
-      </div>
-    </div>
-  </div>
-</section>
+                <div className="bg-white rounded-xl p-4 flex flex-col">
+                  <h3 className="text-lg font-bold text-[#442F73] mb-3">Coach Calendar</h3>
+                  <Calendar meetingsByDate={meetingsByDate} 
+                  onWeeksChange={setCalendarWeeks}
+                  />
+                </div>
+              </div>
+            </div>
+          </section>
 
 
           {/* Charts */}
@@ -923,22 +1237,19 @@ const todoCoachId: number | null =
       {studentsModal.open && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm">
           <div className="bg-[#F9F5FF]/50 w-full max-w-5xl h-[80vh] rounded-2xl shadow-xl flex flex-col">
-
             {/* Header */}
             <div className="flex items-center justify-between px-5 py-4 border-b">
               <div>
-                <h3 className="text-lg font-semibold text-[#442F73]">
-                  Students
-                </h3>
-                <p className="text-xs text-gray-500">
-                  {studentsModal.coachName}
-                </p>
+                <h3 className="text-lg font-semibold text-[#442F73]">Students</h3>
+                <p className="text-xs text-gray-500">{studentsModal.coachName}</p>
               </div>
 
               <button
                 onClick={() => {
                   setStudentsModal({ open: false });
                   setStudentSearch("");
+                  setStudentsView("list");
+                  setActiveStudent(null);
                 }}
                 className="w-8 h-8 rounded-full flex items-center justify-center bg-[#E9D9BD] hover:bg-[#B27715] text-[#241453] hover:text-white transition"
               >
@@ -963,421 +1274,388 @@ const todoCoachId: number | null =
               <div className="text-sm text-[#442F73] mt-1 font-medium">
                 {filteredStudents.length} students
               </div>
-
             </div>
 
-            {/* List */}
-            <div className="flex-1 overflow-y-auto px-5 py-4 space-y-2 custom-scroll custom-scroll--soft">
-              {filteredStudents.length > 0 ? (
-                filteredStudents.map((s) => {
-                  const status =
-                    s.overall >= 70
-                      ? { label: "Good", cls: "bg-emerald-50 text-emerald-700 border-emerald-200" }
-                      : s.overall >= 40
-                        ? { label: "Need Attention", cls: "bg-amber-50 text-amber-700 border-amber-200" }
-                        : { label: "Critical", cls: "bg-rose-50 text-rose-700 border-rose-200" };
+            {/* Body */}
+            <div className="flex-1 overflow-y-auto px-5 py-4 custom-scroll custom-scroll--soft">
+              {studentsView === "list" ? (
+                <div className="grid grid-cols-1 lg:grid-cols-12 gap-4">
+                  {/* Sidebar */}
+                  <div className="lg:col-span-3">
+                    <div className="bg-white/70 rounded-2xl border border-violet-100 p-3">
+                      <div className="text-xs font-semibold text-[#241453] mb-2">Progress Review</div>
 
-                  const Progress = ({ value }: { value: number }) => (
-                    <div className="h-2 w-full rounded-full bg-gray-100 overflow-hidden">
-                      <div
-                        className="h-full rounded-full bg-[#A880F7]"
-                        style={{ width: `${clamp01(value)}%` }}
-                      />
-                    </div>
-                  );
+                      <div className="space-y-2">
+                        <button
+                          type="button"
+                          onClick={() => setPrFilter("this_month")}
+                          className={[
+                            "w-full h-9 rounded-xl text-xs font-medium border transition",
+                            prFilter === "this_month"
+                              ? "bg-[#fff9f0] border-[#B27715] text-[#B27715]"
+                              : "bg-white border-gray-200 text-[#241453] hover:bg-[#F9F5FF]",
+                          ].join(" ")}
+                        >
+                          This month
+                        </button>
 
-                  // helper: view dashboard
-                  const studentDashboardUrl = (email?: string) => {
-                    const base = "https://www.kentbusinesscollege.net/student_corner/";
-                    if (!email) return base;
-                    return `${base}?email=${encodeURIComponent(email)}`;
-                  };
+                        <button
+                          type="button"
+                          onClick={() => setPrFilter("last_month")}
+                          className={[
+                            "w-full h-9 rounded-xl text-xs font-medium border transition",
+                            prFilter === "last_month"
+                              ? "bg-[#fff9f0] border-[#B27715] text-[#B27715]"
+                              : "bg-white border-gray-200 text-[#241453] hover:bg-[#F9F5FF]",
+                          ].join(" ")}
+                        >
+                          Last month
+                        </button>
 
-                  return (
-                    <div
-                      key={`${s.id}-${s.email}`}
-                      className="rounded-2xl border border-violet-100 bg-violet-50/60 hover:bg-violet-50 transition px-4 py-3"
-                    >
-                      <div className="flex items-start justify-between gap-3">
-                        <div className="min-w-0">
-                          <div className="flex items-center gap-2">
-                            <h4 className="text-sm font-semibold text-violet-950 truncate">
-                              {s.fullName}
-                            </h4>
+                        <button
+                          type="button"
+                          onClick={() => setPrFilter("last_3_months")}
+                          className={[
+                            "w-full h-9 rounded-xl text-xs font-medium border transition",
+                            prFilter === "last_3_months"
+                              ? "bg-[#fff9f0] border-[#B27715] text-[#B27715]"
+                              : "bg-white border-gray-200 text-[#241453] hover:bg-[#F9F5FF]",
+                          ].join(" ")}
+                        >
+                          Last 3 months
+                        </button>
+                      </div>
 
-                            <span className={`text-[11px] px-2 py-0.5 rounded-full border ${status.cls}`}>
-                              {status.label}
+                      <div className="mt-4 space-y-2">
+                        <div className="rounded-xl bg-red-50 border border-red-200 p-3">
+                          <div className="text-[11px] text-red-700 font-semibold">PR due, not done</div>
+                          <div className="text-lg font-bold text-red-800">{prDueNotDoneCount}</div>
+                          <div className="text-[11px] text-red-700">
+                            {selectedMonthsForModal.length ? selectedMonthsForModal.join(", ") : "No PR data"}
+                          </div>
+                        </div>
+
+                        <div className="rounded-xl bg-emerald-50 border border-emerald-200 p-3">
+                          <div className="text-[11px] text-emerald-700 font-semibold">PR completed</div>
+                          <div className="text-lg font-bold text-emerald-800">{completedReviewsForFilter}</div>
+                          <div className="text-[11px] text-emerald-700">
+                            {prFilter === "this_month"
+                              ? selectedMonthsForModal[0]
+                              : prFilter === "last_month"
+                                ? selectedMonthsForModal[0]
+                                : selectedMonthsForModal.join(", ")}
+                          </div>
+                        </div>
+
+                        <div className="rounded-xl bg-gray-50 border border-gray-200 p-3">
+                          <div className="text-[11px] text-gray-600 font-semibold">Overdue learners, overall</div>
+
+                          <div className="mt-1 flex items-end justify-between gap-2">
+                            <div className="text-lg font-bold text-gray-800">{overdueGeneralCount}</div>
+
+                            <span className="text-[11px] font-semibold px-2 py-1 rounded-full border bg-white text-gray-700 border-gray-200">
+                              {overallOverdueRate == null ? "—" : `${overallOverdueRate}%`}
                             </span>
                           </div>
-
-                          <div className="mt-0.5 text-xs text-gray-600">
-                            <span className="font-medium">ID:</span> {s.id || "—"}
-                            <span className="mx-2 text-gray-300">•</span>
-                            <span className="truncate">{s.email || "—"}</span>
-                          </div>
-
-                          {/* Metrics */}
-                          <div className="mt-3 grid grid-cols-1 sm:grid-cols-3 gap-3">
-                            <div className="bg-white/70 rounded-xl p-3 border border-gray-100">
-                              <div className="flex justify-between text-xs text-gray-600 mb-1">
-                                <span>Overall</span>
-                                <span className="font-semibold text-gray-800">{Math.round(s.overall)}%</span>
-                              </div>
-                              <Progress value={s.overall} />
-                            </div>
-
-                            <div className="bg-white/70 rounded-xl p-3 border border-gray-100">
-                              <div className="flex justify-between text-xs text-gray-600 mb-1">
-                                <span>LMS</span>
-                                <span className="font-semibold text-gray-800">{Math.round(s.lmsProgress)}%</span>
-                              </div>
-                              <Progress value={s.lmsProgress} />
-                            </div>
-
-                            <div className="bg-white/70 rounded-xl p-3 border border-gray-100">
-                              <div className="flex justify-between text-xs text-gray-600 mb-1">
-                                <span>APTEM</span>
-                                <span className="font-semibold text-gray-800">{Math.round(s.aptemProgress)}%</span>
-                              </div>
-                              <Progress value={s.aptemProgress} />
-                            </div>
-                          </div>
                         </div>
 
-                        {/* Actions */}
-                        <div className="flex shrink-0 items-center gap-2">
-                          <button
-                            onClick={() => {
-                              const url = studentDashboardUrl(s.email);
-                              window.open(url, "_blank", "noopener,noreferrer");
-                            }}
-                            className="
-                          text-xs px-3 py-1.5 rounded-lg
-                          border border-violet-300
-                          text-violet-700
-                          bg-white/60
-                          hover:bg-violet-600 hover:text-white
-                          transition
-                          "
-                          >
-                            View dashboard
-                          </button>
-
-                          <button
-                            onClick={() => handleLoadEvidence(s)}
-                            className="
-                  text-xs px-3 py-1.5 rounded-lg
-                  border border-blue-300
-                  text-blue-700
-                  bg-white/60
-                  hover:bg-blue-600 hover:text-white
-                  transition
-                "
-                          >
-                            Load evidences
-                          </button>
+                        <div className="rounded-xl bg-white border border-gray-200 p-3">
+                          <div className="text-[11px] text-gray-600 font-semibold">Overdue rate</div>
+                          <div className="text-lg font-bold text-gray-800">
+                            {overdueRateForFilter == null ? "—" : `${overdueRateForFilter}%`}
+                          </div>
+                          <div className="text-[11px] text-gray-500">
+                            {prFilter === "this_month"
+                              ? "This month"
+                              : prFilter === "last_month"
+                                ? "Last month"
+                                : "Avg, last 3 months"}
+                          </div>
                         </div>
                       </div>
                     </div>
-                  );
-                })
+                  </div>
+
+                  {/* List */}
+                  <div className="lg:col-span-9">
+                    <div className="space-y-2">
+                      {filteredStudents.length > 0 ? (
+                        filteredStudents.map((s) => {
+                          const prDue = isPrDueThisPeriod(s);
+                          const prCompleted = isPrCompletedThisPeriod(s);
+                          const showPrCard = prDue || prCompleted;
+
+                          const status =
+                            s.overall >= 70
+                              ? { label: "Good", cls: "bg-emerald-50 text-emerald-700 border-emerald-200" }
+                              : s.overall >= 40
+                                ? { label: "Need Attention", cls: "bg-amber-50 text-amber-700 border-amber-200" }
+                                : { label: "Critical", cls: "bg-rose-50 text-rose-700 border-rose-200" };
+
+                          const Progress = ({ value }: { value: number }) => (
+                            <div className="h-2 w-full rounded-full bg-gray-100 overflow-hidden">
+                              <div className="h-full rounded-full bg-[#A880F7]" style={{ width: `${clamp01(value)}%` }} />
+                            </div>
+                          );
+
+                          const studentDashboardUrl = (email?: string) => {
+                            const base = "https://www.kentbusinesscollege.net/student_corner/";
+                            if (!email) return base;
+                            return `${base}?email=${encodeURIComponent(email)}`;
+                          };
+
+                          const progressReviewRaw = s.raw;
+                          const hasProgressReviews = extractProgressReviews(progressReviewRaw).length > 0;
+
+                          return (
+                            <div
+                              key={`${s.id}-${s.email}`}
+                              className="rounded-2xl border border-violet-100 bg-violet-50/60 hover:bg-violet-50 transition px-4 py-3"
+                            >
+                              <div className="flex items-start justify-between gap-3">
+                                <div className="min-w-0">
+                                  <div className="flex items-center gap-2">
+                                    <h4 className="text-sm font-semibold text-violet-950 truncate">{s.fullName}</h4>
+                                    <span className={`text-[11px] px-2 py-0.5 rounded-full border ${status.cls}`}>
+                                      {status.label}
+                                    </span>
+                                  </div>
+
+                                  <div className="mt-0.5 text-xs text-gray-600">
+                                    <span className="font-medium">ID:</span> {s.id || "—"}
+                                    <span className="mx-2 text-gray-300">•</span>
+                                    <span className="truncate">{s.email || "—"}</span>
+                                  </div>
+
+                                  {/* Metrics */}
+                                  <div
+                                    className={[
+                                      "mt-3 grid grid-cols-1 gap-3",
+                                      showPrCard ? "sm:grid-cols-4" : "sm:grid-cols-3",
+                                    ].join(" ")}
+                                  >
+                                    <div className="bg-white/70 rounded-xl p-3 border border-gray-100">
+                                      <div className="flex justify-between text-xs text-gray-600 mb-1">
+                                        <span>Overall</span>
+                                        <span className="font-semibold text-gray-800">{Math.round(s.overall)}%</span>
+                                      </div>
+                                      <Progress value={s.overall} />
+                                    </div>
+
+                                    <div className="bg-white/70 rounded-xl p-3 border border-gray-100">
+                                      <div className="flex justify-between text-xs text-gray-600 mb-1">
+                                        <span>LMS</span>
+                                        <span className="font-semibold text-gray-800">{Math.round(s.lmsProgress)}%</span>
+                                      </div>
+                                      <Progress value={s.lmsProgress} />
+                                    </div>
+
+                                    <div className="bg-white/70 rounded-xl p-3 border border-gray-100">
+                                      <div className="flex justify-between text-xs text-gray-600 mb-1">
+                                        <span>APTEM</span>
+                                        <span className="font-semibold text-gray-800">{Math.round(s.aptemProgress)}%</span>
+                                      </div>
+                                      <Progress value={s.aptemProgress} />
+                                    </div>
+
+                                    {prDue ? (
+                                      <div className="bg-red-50 border border-red-200 rounded-xl p-3">
+                                        <div className="flex justify-between text-xs text-red-700 mb-1">
+                                          <span className="font-semibold">PR Due</span>
+                                          <span className="font-semibold">Now</span>
+                                        </div>
+                                        <div className="text-[11px] text-red-700">
+                                          {selectedMonthsForModal.length ? selectedMonthsForModal.join(", ") : ""}
+                                        </div>
+                                      </div>
+                                    ) : prCompleted ? (
+                                      <div className="bg-emerald-50 border border-emerald-200 rounded-xl p-3">
+                                        <div className="flex justify-between text-xs text-emerald-700 mb-1">
+                                          <span className="font-semibold">PR Completed</span>
+                                          {/* <span className="font-semibold">Done</span> */}
+                                        </div>
+                                        <div className="text-[11px] text-emerald-700">
+                                          {selectedMonthsForModal.length ? selectedMonthsForModal.join(", ") : ""}
+                                        </div>
+                                      </div>
+                                    ) : null}
+                                  </div>
+                                </div>
+
+                                {/* Actions */}
+                                <div className="flex shrink-0 items-center gap-2">
+                                  <button
+                                    onClick={() => {
+                                      const url = studentDashboardUrl(s.email);
+                                      window.open(url, "_blank", "noopener,noreferrer");
+                                    }}
+                                    className="
+                                text-xs px-3 py-1.5 rounded-lg
+                                border border-violet-300
+                                text-violet-700
+                                bg-white/60
+                                hover:bg-violet-600 hover:text-white
+                                transition
+                              "
+                                  >
+                                    View dashboard
+                                  </button>
+
+                                  <button
+                                    onClick={() => {
+                                      setActiveStudent(s as any);
+                                      setStudentsView("review");
+                                    }}
+                                    className={`
+                                text-xs px-3 py-1.5 rounded-lg border
+                                ${hasProgressReviews
+                                        ? "border-[#CEA869] text-[#B27715] bg-white/60 hover:bg-[#B27715] hover:text-white"
+                                        : "border-gray-300 text-gray-400 bg-white/50 cursor-not-allowed"
+                                      }
+                                transition
+                              `}
+                                    disabled={!hasProgressReviews}
+                                    title={!hasProgressReviews ? "No Progress Review data" : "View Progress Review"}
+                                  >
+                                    Progress Review
+                                  </button>
+
+                                  <button
+                                    onClick={() => handleLoadEvidence(s)}
+                                    className="
+                                text-xs px-3 py-1.5 rounded-lg
+                                border border-blue-300
+                                text-blue-700
+                                bg-white/60
+                                hover:bg-blue-600 hover:text-white
+                                transition
+                              "
+                                  >
+                                    Load evidences
+                                  </button>
+                                </div>
+                              </div>
+                            </div>
+                          );
+                        })
+                      ) : (
+                        <div className="text-sm text-gray-500 text-center mt-10">No students found</div>
+                      )}
+                    </div>
+                  </div>
+                </div>
               ) : (
-                <div className="text-sm text-gray-500 text-center mt-10">
-                  No students found
-                </div>
-              )}
-            </div>
-
-
-          </div>
-        </div>
-      )
-      }
-
-      {/* Evidence Modal */}
-      {evidenceModal.open && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm">
-          <div className="bg-white w-full max-w-3xl max-h-[80vh] rounded-2xl shadow-xl flex flex-col">
-            {/* Header */}
-            <div className="flex items-center justify-between px-5 py-4 border-b">
-              <div>
-                <h3 className="text-lg font-semibold text-[#442F73]">
-                  Student Evidence
-                </h3>
-                <p className="text-xs text-gray-500">
-                  {evidenceModal.studentName} ({evidenceModal.studentEmail || evidenceModal.studentId})
-                </p>
-              </div>
-
-              <button
-                onClick={() => setEvidenceModal({ open: false, loading: false, error: null, data: null })}
-                className="w-8 h-8 rounded-full flex items-center justify-center bg-[#E9D9BD] hover:bg-[#B27715] text-[#241453] hover:text-white transition"
-              >
-                ✕
-              </button>
-            </div>
-
-            {/* Content */}
-            <div className="flex-1 overflow-y-auto px-5 py-4 custom-scroll">
-              {evidenceModal.loading && (
-                <div className="flex items-center justify-center py-12">
-                  <div className="text-center">
-                    <div className="inline-block w-8 h-8 border-4 border-[#A880F7] border-t-transparent rounded-full animate-spin mb-3"></div>
-                    <p className="text-sm text-gray-600">Loading evidence...</p>
-                  </div>
-                </div>
-              )}
-
-              {evidenceModal.error && !evidenceModal.loading && (
-                <div className="bg-red-50 border border-red-200 rounded-lg p-4">
-                  <div className="flex items-start gap-3">
-                    <i className="fa-solid fa-exclamation-circle text-red-500 mt-0.5"></i>
-                    <div>
-                      <h4 className="text-sm font-semibold text-red-800 mb-1">Error</h4>
-                      <p className="text-sm text-red-700">{evidenceModal.error}</p>
-                    </div>
-                  </div>
-                </div>
-              )}
-
-              {evidenceModal.data && !evidenceModal.loading && !evidenceModal.error && (
+                // ===================== Review Details View =====================
                 <div className="space-y-4">
-                  {/* Student Info */}
-                  <div className="bg-violet-50 rounded-lg p-4 border border-violet-200">
-                    <h4 className="text-sm font-semibold text-violet-900 mb-2">Student Information</h4>
-                    <div className="grid grid-cols-2 gap-3 text-sm">
-                      <div>
-                        <span className="text-gray-600">ID:</span>
-                        <span className="ml-2 font-medium">{evidenceModal.data.student_id || "—"}</span>
-                      </div>
-                      <div>
-                        <span className="text-gray-600">Email:</span>
-                        <span className="ml-2 font-medium">{evidenceModal.data.student_email || "—"}</span>
-                      </div>
-                      <div>
-                        <span className="text-gray-600">Group:</span>
-                        <span className="ml-2 font-medium">{evidenceModal.data.group || "—"}</span>
-                      </div>
-                      <div>
-                        <span className="text-gray-600">Sheet:</span>
-                        <span className="ml-2 font-medium">{evidenceModal.data.target_sheet || "—"}</span>
+                  <button
+                    onClick={(e) => {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      setStudentsView("list");
+                      setActiveStudent(null);
+                    }}
+                    className="inline-flex items-center gap-2 text-sm text-violet-700 hover:text-violet-900"
+                  >
+                    <span className="text-lg">←</span>
+                    Back to students
+                  </button>
+
+                  <div className="rounded-2xl border border-violet-100 bg-white/60 p-4">
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="min-w-0">
+                        <div className="text-sm font-semibold text-violet-950 truncate">
+                          {activeStudent?.fullName || "—"}
+                        </div>
+                        <div className="mt-0.5 text-xs text-gray-600">
+                          <span className="font-medium">ID:</span> {activeStudent?.id || "—"}
+                          <span className="mx-2 text-gray-300">•</span>
+                          <span className="truncate">{activeStudent?.email || "—"}</span>
+                        </div>
                       </div>
                     </div>
-                  </div>
 
-                  {/* Evidence */}
-                  {evidenceModal.data.evidence && (() => {
-                    const evidenceItems = parseEvidenceData(evidenceModal.data.evidence);
-                    
-                    return (
-                      <div className="bg-green-50 rounded-lg p-4 border border-green-200">
-                        <h4 className="text-sm font-semibold text-green-900 mb-3">Evidence ({evidenceItems.length})</h4>
-                        
-                        {evidenceItems.length === 0 ? (
-                          <div className="bg-white rounded p-3 text-sm text-gray-600">
-                            No evidence items found
+                    <div className="mt-4">
+                      <div className="text-xs font-semibold text-gray-700 mb-2">Progress Review Details</div>
+
+                      {(() => {
+                        const raw = (activeStudent as any)?.raw;
+                        const items = extractProgressReviews(raw);
+
+                        const stForFlags: any = activeStudent;
+                        const prDue = stForFlags ? isPrDueThisPeriod(stForFlags) : false;
+                        const prCompleted = stForFlags ? isPrCompletedThisPeriod(stForFlags) : false;
+
+                        if (!items.length) {
+                          return <div className="text-sm text-gray-500">No Progress Review data available.</div>;
+                        }
+
+                        const lastPR = getLastProgressReview(items);
+
+                        return (
+                          <div className="space-y-2">
+                            {/* Last PR Summary */}
+                            {lastPR?.date ? (
+                              <div className="mb-2 text-xs text-gray-700">
+                                <span className="font-semibold">Last Progress Review:</span>{" "}
+                                <span className="font-medium">{lastPR.date}</span>
+
+                                {lastPR.status ? (
+                                  <>
+                                    <span className="mx-2 text-gray-300">•</span>
+                                    <span
+                                      className={[
+                                        "inline-flex items-center rounded-full border px-2 py-0.5 text-xs font-medium",
+                                        prStatusBadgeClass(lastPR.status),
+                                      ].join(" ")}
+                                    >
+                                      {lastPR.status}
+                                    </span>
+                                  </>
+                                ) : null}
+                              </div>
+                            ) : (
+                              <div className="mb-2 text-xs text-gray-500">Last Progress Review: —</div>
+                            )}
+
+                            {/* List */}
+                            {items.map((it) => (
+                              <div
+                                key={it.key}
+                                className="flex items-center justify-between gap-3 rounded-xl border border-gray-100 bg-white/70 px-3 py-2"
+                              >
+                                <div className="text-xs font-medium text-gray-700">{it.key}</div>
+
+                                <div className="text-xs text-gray-600 truncate">
+                                  {it.date ? <span className="mr-2">{it.date}</span> : null}
+
+                                  {it.status ? (
+                                    <span
+                                      className={[
+                                        "inline-flex items-center rounded-full border px-2 py-0.5 text-xs font-medium",
+                                        prStatusBadgeClass(it.status),
+                                      ].join(" ")}
+                                    >
+                                      {!prDue && prCompleted && (
+                                        <span className="text-[11px] px-2 py-0.5 rounded-full border bg-emerald-50 text-emerald-700 border-emerald-200">
+                                          PR Completed
+                                        </span>
+                                      )}
+                                      {it.status}
+                                    </span>
+                                  ) : (
+                                    <span className="text-gray-500">{it.raw || "—"}</span>
+                                  )}
+                                </div>
+                              </div>
+                            ))}
                           </div>
-                        ) : (
-                          <div className="bg-white rounded-lg overflow-hidden border border-gray-200">
-                            <table className="w-full text-sm">
-                              <thead className="bg-gray-50 border-b border-gray-200">
-                                <tr>
-                                  <th className="text-left px-4 py-2 font-semibold text-gray-700">Evidence Name</th>
-                                  <th className="text-left px-4 py-2 font-semibold text-gray-700">Status</th>
-                                  <th className="text-left px-4 py-2 font-semibold text-gray-700">Created Date</th>
-                                  <th className="text-center px-4 py-2 font-semibold text-gray-700">Action</th>
-                                </tr>
-                              </thead>
-                              <tbody>
-                                {evidenceItems.map((item) => (
-                                  <tr key={item.id} className="border-b border-gray-100 hover:bg-gray-50">
-                                    <td className="px-4 py-3 text-gray-800">{item.name}</td>
-                                    <td className="px-4 py-3">
-                                      <span className={`inline-block px-2 py-1 rounded text-xs font-medium ${
-                                        item.status === 'PendingAssessment' 
-                                          ? 'bg-yellow-100 text-yellow-800' 
-                                          : item.status === 'Assessed'
-                                          ? 'bg-green-100 text-green-800'
-                                          : 'bg-gray-100 text-gray-800'
-                                      }`}>
-                                        {item.status}
-                                      </span>
-                                    </td>
-                                    <td className="px-4 py-3 text-gray-600">
-                                      {item.createdDate ? new Date(item.createdDate).toLocaleDateString() : '—'}
-                                    </td>
-                                    <td className="px-4 py-3 text-center">
-                                      <button
-                                        onClick={() => handleMarkEvidence(item)}
-                                        disabled={evidenceModal.markingInProgress === item.id}
-                                        className={`px-3 py-1.5 rounded text-xs font-medium transition ${
-                                          evidenceModal.markingInProgress === item.id
-                                            ? 'bg-gray-200 text-gray-500 cursor-wait'
-                                            : 'bg-[#442F73] text-white hover:bg-[#5a3f94]'
-                                        }`}
-                                      >
-                                        {evidenceModal.markingInProgress === item.id ? (
-                                          <>
-                                            <i className="fa-solid fa-spinner fa-spin mr-1"></i>
-                                            Marking...
-                                          </>
-                                        ) : (
-                                          <>
-                                            <i className="fa-solid fa-check-circle mr-1"></i>
-                                            Mark
-                                          </>
-                                        )}
-                                      </button>
-                                    </td>
-                                  </tr>
-                                ))}
-                              </tbody>
-                            </table>
-                          </div>
-                        )}
-                      </div>
-                    );
-                  })()}
+                        );
+                      })()}
+
+                    </div>
+                  </div>
                 </div>
               )}
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Assessment Result Modal */}
-      {resultModal.open && resultModal.data && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm">
-          <div className="bg-white w-full max-w-4xl max-h-[85vh] rounded-2xl shadow-2xl flex flex-col m-4">
-            {/* Header */}
-            <div className="flex items-center justify-between px-6 py-5 border-b bg-gradient-to-r from-[#442F73] to-[#5a3f94]">
-              <div className="flex items-center gap-3">
-                <div className="w-12 h-12 rounded-full bg-white/20 flex items-center justify-center">
-                  <i className="fa-solid fa-trophy text-2xl text-white"></i>
-                </div>
-                <div>
-                  <h3 className="text-xl font-bold text-white">Assessment Result</h3>
-                  <p className="text-sm text-white/80">AI-Powered Evidence Evaluation</p>
-                </div>
-              </div>
-              <button
-                onClick={() => setResultModal({ open: false, data: null })}
-                className="w-10 h-10 rounded-full flex items-center justify-center bg-white/20 hover:bg-white/30 text-white transition"
-              >
-                ✕
-              </button>
-            </div>
-
-            {/* Content */}
-            <div className="flex-1 overflow-y-auto px-6 py-5 custom-scroll">
-              <div className="space-y-6">
-                {/* Student Info */}
-                <div className="bg-gradient-to-r from-violet-50 to-purple-50 rounded-xl p-5 border border-violet-200">
-                  <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-sm">
-                    <div>
-                      <span className="text-gray-600 block mb-1">Student</span>
-                      <span className="font-semibold text-gray-900">{resultModal.data.UserName || '—'}</span>
-                    </div>
-                    <div>
-                      <span className="text-gray-600 block mb-1">Component</span>
-                      <span className="font-semibold text-gray-900">{resultModal.data.ComponentName || '—'}</span>
-                    </div>
-                    <div>
-                      <span className="text-gray-600 block mb-1">Evidence</span>
-                      <span className="font-semibold text-gray-900 truncate block" title={resultModal.data.EvidenceName}>
-                        {resultModal.data.EvidenceName || '—'}
-                      </span>
-                    </div>
-                    <div>
-                      <span className="text-gray-600 block mb-1">Status</span>
-                      <span className="inline-block px-3 py-1 rounded-full text-xs font-semibold bg-green-100 text-green-800">
-                        {resultModal.data.EvidenceStatus || 'Assessed'}
-                      </span>
-                    </div>
-                  </div>
-                </div>
-
-                {/* AI Feedback */}
-                {resultModal.data.AI_Feedback && (
-                  <div className="bg-white rounded-xl border-2 border-blue-200 shadow-sm">
-                    <div className="bg-gradient-to-r from-blue-500 to-blue-600 px-5 py-3 rounded-t-xl">
-                      <h4 className="font-bold text-white flex items-center gap-2">
-                        <i className="fa-solid fa-robot"></i>
-                        AI Assessment Feedback
-                      </h4>
-                    </div>
-                    <div className="p-5">
-                      <div className="prose prose-sm max-w-none">
-                        <p className="text-gray-800 leading-relaxed whitespace-pre-wrap">
-                          {resultModal.data.AI_Feedback}
-                        </p>
-                      </div>
-                    </div>
-                  </div>
-                )}
-
-                {/* Evidence Details Grid */}
-                <div className="grid md:grid-cols-2 gap-4">
-                  {/* Evidence URL */}
-                  {resultModal.data.EvidenceUrl && resultModal.data.EvidenceUrl !== 'Download failed' && (
-                    <div className="bg-gray-50 rounded-lg p-4 border border-gray-200">
-                      <h5 className="text-xs font-semibold text-gray-600 mb-2 uppercase tracking-wide">Evidence Link</h5>
-                      <a 
-                        href={resultModal.data.EvidenceUrl}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="text-blue-600 hover:text-blue-800 text-sm break-all flex items-start gap-2"
-                      >
-                        <i className="fa-solid fa-external-link mt-0.5"></i>
-                        <span className="underline">View Evidence</span>
-                      </a>
-                    </div>
-                  )}
-
-                  {/* Created Date */}
-                  {resultModal.data.EvidenceCreatedDate && (
-                    <div className="bg-gray-50 rounded-lg p-4 border border-gray-200">
-                      <h5 className="text-xs font-semibold text-gray-600 mb-2 uppercase tracking-wide">Created Date</h5>
-                      <p className="text-sm text-gray-800">
-                        {new Date(resultModal.data.EvidenceCreatedDate).toLocaleString()}
-                      </p>
-                    </div>
-                  )}
-                </div>
-
-                {/* Additional Fields (if any) */}
-                {Object.keys(resultModal.data).filter(
-                  key => !['UserId', 'UserName', 'ComponentId', 'ComponentName', 'EvidenceId', 
-                           'EvidenceName', 'EvidenceUrl', 'EvidenceStatus', 'EvidenceCreatedDate', 
-                           'AI_Feedback'].includes(key)
-                ).length > 0 && (
-                  <div className="bg-gray-50 rounded-lg p-4 border border-gray-200">
-                    <h5 className="text-sm font-semibold text-gray-700 mb-3">Additional Information</h5>
-                    <div className="grid gap-2 text-sm">
-                      {Object.entries(resultModal.data)
-                        .filter(([key]) => !['UserId', 'UserName', 'ComponentId', 'ComponentName', 'EvidenceId', 
-                                              'EvidenceName', 'EvidenceUrl', 'EvidenceStatus', 'EvidenceCreatedDate', 
-                                              'AI_Feedback'].includes(key))
-                        .map(([key, value]) => (
-                          <div key={key} className="flex gap-2">
-                            <span className="font-medium text-gray-600 min-w-[120px]">{key}:</span>
-                            <span className="text-gray-800">{String(value)}</span>
-                          </div>
-                        ))}
-                    </div>
-                  </div>
-                )}
-              </div>
-            </div>
-
-            {/* Footer */}
-            <div className="px-6 py-4 border-t bg-gray-50 rounded-b-2xl flex justify-end">
-              <button
-                onClick={() => setResultModal({ open: false, data: null })}
-                className="px-6 py-2.5 bg-[#442F73] hover:bg-[#5a3f94] text-white rounded-lg font-medium transition shadow-sm"
-              >
-                Close
-              </button>
             </div>
           </div>
         </div>

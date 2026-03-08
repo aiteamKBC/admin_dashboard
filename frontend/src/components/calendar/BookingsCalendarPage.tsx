@@ -77,6 +77,20 @@ export default function BookingsCalendarPage() {
   type ViewMode = "workweek" | "week" | "month";
   const [view, setView] = useState<ViewMode>("workweek");
 
+  const shouldHideCoach = (name: string) => {
+    const n = (name ?? "").trim().toLowerCase();
+
+    if (!n) return true;
+
+    // hide "Coach 1234"
+    if (/^coach\s*\d+$/.test(n)) return true;
+
+    // hide API rows like "API Do Not Delete"
+    if (n.includes("api")) return true; // لو عايزاها أضيق: n.includes("api") && n.includes("delete")
+
+    return false;
+  };
+
   useEffect(() => {
     let mounted = true;
 
@@ -102,14 +116,15 @@ export default function BookingsCalendarPage() {
             return { id, case_owner: name };
           })
           .filter((c) => Boolean(c.case_owner))
+          .filter((c) => !shouldHideCoach(c.case_owner)) // add this line
           .sort((a, b) => a.case_owner.localeCompare(b.case_owner, "en", { sensitivity: "base" }));
 
         // Filter coaches based on role and username
         const role = localStorage.getItem("role");
         const username = localStorage.getItem("username");
-        
+
         let filteredList = list;
-        
+
         // If user is a coach, only show their own data
         if (role === "coach" && username) {
           filteredList = list.filter((c) => c.case_owner === username);
@@ -246,18 +261,18 @@ export default function BookingsCalendarPage() {
     <div className="bg-white rounded-2xl shadow-sm overflow-hidden">
       {/* Top bar */}
       <div className="px-4 py-3 border-b flex items-center gap-3">
-  {/* ☰ يظهر تحت lg */}
-  <button
-    type="button"
-    onClick={() => setCalOpen(true)}
-    className="lg:hidden w-9 h-9 rounded-lg border border-gray-200 hover:bg-gray-50 transition flex items-center justify-center text-[#442F73] bg-[#E4E4E4]"
-    aria-label="Open calendars"
-    title="Open calendars"
-  >
-    ☰
-  </button>
+        {/* ☰ يظهر تحت lg */}
+        <button
+          type="button"
+          onClick={() => setCalOpen(true)}
+          className="lg:hidden w-9 h-9 rounded-lg border border-gray-200 hover:bg-gray-50 transition flex items-center justify-center text-[#442F73] bg-[#E4E4E4]"
+          aria-label="Open calendars"
+          title="Open calendars"
+        >
+          ☰
+        </button>
 
-  <div className="font-semibold text-[#241453]">calendar</div>
+        <div className="font-semibold text-[#241453]">calendar</div>
 
 
         <div className="flex-1">
@@ -278,39 +293,39 @@ export default function BookingsCalendarPage() {
       {/* Body */}
       <div className="grid grid-cols-1 lg:grid-cols-[290px_1fr] min-h-[680px]">
         {/* Overlay (mobile/tablet) */}
-{calOpen && (
-  <button
-    type="button"
-    onClick={() => setCalOpen(false)}
-    className="fixed inset-0 z-40 bg-black/40 backdrop-blur-sm lg:hidden"
-    aria-label="Close calendars"
-  />
-)}
+        {calOpen && (
+          <button
+            type="button"
+            onClick={() => setCalOpen(false)}
+            className="fixed inset-0 z-40 bg-black/40 backdrop-blur-sm lg:hidden"
+            aria-label="Close calendars"
+          />
+        )}
 
         {/* Sidebar */}
         <aside
-  className={[
-    "border-r bg-white p-3 flex flex-col gap-3 h-full",
-    "lg:static lg:translate-x-0 lg:w-auto",             // desktop normal
-    "fixed left-0 top-0 z-50 h-screen w-72 max-w-[85vw]", // drawer on mobile/tablet
-    "transition-transform duration-300",
-    calOpen ? "translate-x-0" : "-translate-x-full",
-    "lg:transform-none lg:transition-none",              // cancel drawer behavior on desktop
-    "lg:block",                                          // show on desktop
-  ].join(" ")}
->
+          className={[
+            "border-r bg-white p-3 flex flex-col gap-3 h-full",
+            "lg:static lg:translate-x-0 lg:w-auto",             // desktop normal
+            "fixed left-0 top-0 z-50 h-screen w-72 max-w-[85vw]", // drawer on mobile/tablet
+            "transition-transform duration-300",
+            calOpen ? "translate-x-0" : "-translate-x-full",
+            "lg:transform-none lg:transition-none",              // cancel drawer behavior on desktop
+            "lg:block",                                          // show on desktop
+          ].join(" ")}
+        >
 
-<div className="flex items-center justify-between lg:hidden">
-  <div className="text-sm font-semibold text-[#241453]">Calendars</div>
-  <button
-    type="button"
-    onClick={() => setCalOpen(false)}
-    className="w-10 h-10 rounded-xl bg-gray-100 hover:bg-gray-200 transition flex items-center justify-center"
-    aria-label="Close"
-  >
-    ✕
-  </button>
-</div>
+          <div className="flex items-center justify-between lg:hidden">
+            <div className="text-sm font-semibold text-[#241453]">Calendars</div>
+            <button
+              type="button"
+              onClick={() => setCalOpen(false)}
+              className="w-10 h-10 rounded-xl bg-gray-100 hover:bg-gray-200 transition flex items-center justify-center"
+              aria-label="Close"
+            >
+              ✕
+            </button>
+          </div>
 
           <div className="rounded-xl border bg-[#F9F5FF]/30 p-3">
             <div className="text-sm font-semibold text-[#241453]">My calendars</div>

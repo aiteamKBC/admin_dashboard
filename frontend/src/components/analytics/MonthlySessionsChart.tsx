@@ -10,8 +10,11 @@ import {
   Legend,
 } from "recharts";
 
+import { useMemo } from "react";
+
 type MonthlySessionsChartProps = {
   data: {
+    key: string;
     name: string;
     completed: number;
     cancelled: number;
@@ -24,10 +27,43 @@ const short = (s: string, n = 14) => (s.length > n ? `${s.slice(0, n)}…` : s);
 export default function MonthlySessionsChart({ data }: MonthlySessionsChartProps) {
   const isMobile = useMediaQuery("(max-width: 640px)");
 
+  // remove empty coach names
+  const cleanData = useMemo(() => {
+  const arr = Array.isArray(data) ? data : [];
+
+  return arr.filter((r) => {
+    const name = String(r?.name ?? "").trim();
+    const key = String(r?.key ?? "").trim();
+    const lname = name.toLowerCase();
+
+    // 1) empty
+    if (!name) return false;
+
+    // 2) auto placeholder like "Coach 3881" or "coach-3881"
+    if (/^coach[\s-]*\d+$/i.test(name)) return false;
+
+    // 3) sometimes name equals key
+    if (key && lname === key.toLowerCase()) return false;
+
+    // 4) remove API placeholders
+    // exact or contains "api"
+    if (lname === "api do not delete") return false;
+    if (lname.includes("api")) return false;
+
+    return true;
+  });
+}, [data]);
+
   // vertical chart
   const rowH = 34;
-  const chartH = Math.max(260, data.length * rowH);
+  const chartH = Math.max(260, cleanData.length * rowH);
   const cardH = 360; // fixed height for card container in mobile
+
+  const nameByKey = useMemo(() => {
+    const m = new Map<string, string>();
+    for (const r of cleanData) m.set(String(r.key), String(r.name));
+    return m;
+  }, [cleanData]);
 
   return (
     <div className="w-full">
@@ -36,7 +72,7 @@ export default function MonthlySessionsChart({ data }: MonthlySessionsChartProps
         <div className={isMobile ? "h-full overflow-y-auto pr-2 custom-scroll" : "h-full"}>
           <ResponsiveContainer width="100%" height={isMobile ? chartH : "100%"}>
             <BarChart
-              data={data}
+              data={cleanData}
               layout={isMobile ? "vertical" : "horizontal"}
               margin={
                 isMobile
@@ -66,14 +102,16 @@ export default function MonthlySessionsChart({ data }: MonthlySessionsChartProps
                 <>
                   {/* Desktop axes */}
                   <XAxis
-                    dataKey="name"
+                    dataKey="key"
                     axisLine={false}
                     tickLine={false}
                     interval={0}
                     height={60}
                     tick={({ x, y, payload }: any) => {
-                      const label = String(payload?.value ?? "");
+                      const k = String(payload?.value ?? "");
+                      const label = nameByKey.get(k) || k;
                       const s = short(label, 14);
+
                       return (
                         <g transform={`translate(${x},${y})`}>
                           <text
@@ -104,7 +142,7 @@ export default function MonthlySessionsChart({ data }: MonthlySessionsChartProps
                   paddingBottom: isMobile ? 10 : 6,
                   display: "flex",
                   flexWrap: "wrap",
-                  justifyContent: "flex-end",  
+                  justifyContent: "flex-end",
                   width: "100%",
                   gap: 12,
                   rowGap: 8,
@@ -114,12 +152,15 @@ export default function MonthlySessionsChart({ data }: MonthlySessionsChartProps
 
               <Tooltip
                 isAnimationActive={false}
+                labelFormatter={(k) => nameByKey.get(String(k)) || String(k)}
                 content={({ active, payload, label }) => {
                   if (!active || !payload?.length) return null;
 
+                  const title = nameByKey.get(String(label)) || String(label);
+
                   return (
                     <div className="bg-[#241453] text-white text-xs rounded-md px-3 py-2 shadow-lg">
-                      <div className="font-semibold mb-1">{String(label)}</div>
+                      <div className="font-semibold mb-1">{title}</div>
                       {payload.map((item, idx) => (
                         <div key={idx} className="flex justify-between gap-6">
                           <span>{String(item.name)}:</span>
