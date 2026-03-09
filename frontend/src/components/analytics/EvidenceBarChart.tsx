@@ -46,15 +46,12 @@ export default function EvidencePieChart({ data }: Props) {
   const accepted = Math.max(0, data.accepted || 0);
   const referred = Math.max(0, data.referred || 0);
 
-  const partsSum = submitted + accepted + referred;
-  const total = Math.max(0, data.total || 0, partsSum);
-  const rest = Math.max(0, total - partsSum);
+  const total = Math.max(0, data.total || 0);
 
   const overlayData = [
     { key: "Submitted", value: submitted },
     { key: "Accepted", value: accepted },
     { key: "Referred", value: referred },
-    { key: "Rest", value: rest },
   ].filter((d) => d.value > 0);
 
   const legendItems = [
@@ -69,20 +66,7 @@ export default function EvidencePieChart({ data }: Props) {
       <div className="h-[240px]">
         <ResponsiveContainer>
           <PieChart>
-            {/* Base: Total full ring */}
-            {total > 0 && (
-              <Pie
-                data={[{ key: "Total", value: total }]}
-                dataKey="value"
-                nameKey="key"
-                innerRadius={60}
-                outerRadius={90}
-                isAnimationActive={false}
-                paddingAngle={0}
-              >
-                <Cell fill={COLOR_MAP.Total} />
-              </Pie>
-            )}
+
 
             {/* Overlay: parts, rest is transparent so base Total shows */}
             <Pie
@@ -97,11 +81,7 @@ export default function EvidencePieChart({ data }: Props) {
               {overlayData.map((item) => (
                 <Cell
                   key={item.key}
-                  fill={
-                    item.key === "Rest"
-                      ? "rgba(0,0,0,0)"
-                      : COLOR_MAP[item.key] || "#ccc"
-                  }
+                  fill={COLOR_MAP[item.key] || "#ccc"}
                 />
               ))}
             </Pie>
