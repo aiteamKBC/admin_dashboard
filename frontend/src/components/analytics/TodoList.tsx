@@ -30,7 +30,7 @@ type TodoListProps = {
 
 const API_ORIGIN =
   (import.meta as any).env?.VITE_API_ORIGIN?.toString().trim() ||
-  "http://127.0.0.1:8000";
+  "/tasks-api";
 
 async function refreshAccessToken(): Promise<string> {
   const refresh = localStorage.getItem("refresh_token");

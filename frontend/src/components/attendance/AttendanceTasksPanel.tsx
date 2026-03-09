@@ -113,7 +113,7 @@ export default function AttendanceTasksPanel({ coachId, viewerRole = "qa" }: Pro
     };
   }, [coachId]);
 
-  const API_ORIGIN = (import.meta as any)?.env?.VITE_API_ORIGIN || "http://127.0.0.1:8000";
+  const API_ORIGIN = (import.meta as any)?.env?.VITE_API_ORIGIN || "/tasks-api";
 
   const toAbsoluteUrl = (u: string) => {
     if (!u) return "";
