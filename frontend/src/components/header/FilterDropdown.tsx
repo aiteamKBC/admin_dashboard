@@ -98,11 +98,21 @@ export default function FilterDropdown({
   /* ================= options ================= */
 
   const coachOptions: Option[] = useMemo(() => {
-    return [
-      { value: "all", label: "All Coaches" },
-      ...coaches.map((c) => ({ value: String(c.id), label: c.case_owner })),
-    ];
-  }, [coaches]);
+  const blockedNames = new Set(["api do not delete"]);
+
+  return [
+    { value: "all", label: "All Coaches" },
+    ...coaches
+      .filter((c) => {
+        const name = String(c.case_owner ?? "").trim();
+        return name !== "" && !blockedNames.has(name.toLowerCase());
+      })
+      .map((c) => ({
+        value: String(c.id),
+        label: String(c.case_owner ?? "").trim(),
+      })),
+  ];
+}, [coaches]);
 
   const periodOptions: Option[] = useMemo(
     () => [
