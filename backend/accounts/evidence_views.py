@@ -263,8 +263,7 @@ def get_sheet_data(service, spreadsheet_id, range_name):
 
 def find_student_in_sheets(service, spreadsheet_id, student_email=None, student_id=None):
     """
-    Find student in the spreadsheet and return their row data and sheet info
-    Similar to PHP ad_get_student_components_internal logic
+    Find student only in the specified program tabs.
     """
     if not student_email and not student_id:
         raise ValueError("Either student_email or student_id is required")
@@ -273,121 +272,16 @@ def find_student_in_sheets(service, spreadsheet_id, student_email=None, student_
     search_email = student_email.lower().strip() if student_email else None
     search_id = str(student_id).strip() if student_id else None
 
-    # New flow: first search student email or ID in program tabs.
-    if search_email or search_id:
-        program_match = find_student_in_program_tabs(service, spreadsheet_id, search_email, search_id)
-        if program_match:
-            return program_match
-    
-    # Get all sheets
-    sheets = get_sheets_list(service, spreadsheet_id)
-    
-    # Search through sheets to find the student
-    found_data = None
-    found_sheet = None
-    
-    for sheet in sheets:
-        sheet_title = sheet['title']
+    # Search student email or ID ONLY in program tabs.
+    program_match = find_student_in_program_tabs(service, spreadsheet_id, search_email, search_id)
+    if program_match:
+        return program_match
         
-        # Skip only output sheets (allow target sheets to be searched)
-        if 'output' in sheet_title.lower():
-            continue
-        
-        # Fetch sheet data
-        range_name = f"{sheet_title}!A:Z"
-        try:
-            rows = get_sheet_data(service, spreadsheet_id, range_name)
-        except:
-            continue
-        
-        if not rows or len(rows) < 2:  # Need at least header + 1 row
-            continue
-        
-        # Search for student in rows
-        # Check multiple columns for email (columns 1-5)
-        for i, row in enumerate(rows):
-            if len(row) < 2:
-                continue
-            
-            # Skip header row if it looks like a header
-            if i == 0 and any(isinstance(cell, str) and 
-                             cell.lower() in ['email', 'student email', 'id', 'student id', 'name'] 
-                             for cell in row[:6]):
-                continue
-            
-            # Match by email - check first 6 columns for email
-            match = False
-            if search_email:
-                for col_idx in range(min(6, len(row))):
-                    cell_value = str(row[col_idx]).lower().strip()
-                    if cell_value == search_email:
-                        match = True
-                        break
-            
-            # Match by ID - check first 2 columns
-            if not match and search_id:
-                for col_idx in range(min(2, len(row))):
-                    cell_value = str(row[col_idx]).strip()
-                    if cell_value == search_id:
-                        match = True
-                        break
-            
-            if match:
-                found_data = {
-                    'row': row,
-                    'row_index': i,
-                    'sheet_title': sheet_title
-                }
-                found_sheet = sheet
-                break
-        
-        if found_data:
-            break
-    
-    if not found_data:
-        # Provide more helpful error message
-        sheets_searched = [s['title'] for s in sheets if 'output' not in s['title'].lower()]
-        raise ValueError(
-            f"Student not found in any sheet. "
-            f"Searched for email='{student_email}' or id='{student_id}'. "
-            f"Sheets searched: {', '.join(sheets_searched[:5])}..."
-        )
-    
-    # Get group from column 4 (index 4)
-    group = found_data['row'][4] if len(found_data['row']) > 4 else None
-    
-    if not group:
-        raise ValueError("Group not found for student")
-    
-    # Get target sheet based on group mapping
-    target_sheet_name = GROUP_SHEET_MAPPING.get(group)
-    
-    if not target_sheet_name:
-        # If no mapping exists, try using the group name directly as sheet name
-        target_sheet_name = group
-    
-    # Verify target sheet exists
-    target_exists = any(s['title'] == target_sheet_name for s in sheets)
-    if not target_exists:
-        available_sheets = [s['title'] for s in sheets if 'output' not in s['title'].lower()]
-        raise ValueError(
-            f"Target sheet '{target_sheet_name}' for group '{group}' not found. "
-            f"Available sheets: {', '.join(available_sheets[:10])}"
-        )
-    
-    fallback_email = ''
-    if len(found_data['row']) > 3 and '@' in str(found_data['row'][3]):
-        fallback_email = found_data['row'][3]
-    elif len(found_data['row']) > 1:
-        fallback_email = found_data['row'][1]
-
-    return {
-        'student_data': found_data,
-        'group': group,
-        'target_sheet': target_sheet_name,
-        'student_email': fallback_email,
-        'student_id': found_data['row'][0] if len(found_data['row']) > 0 else ''
-    }
+    raise ValueError(
+        f"Student not found in Program tabs ({', '.join(PROGRAM_TABS)}). "
+        f"Searched for email='{student_email}' or id='{student_id}'. "
+        f"Please ensure they exist in one of these tabs."
+    )
 
 
 def get_student_components(service, spreadsheet_id, student_email=None, student_id=None):
@@ -431,44 +325,7 @@ def get_student_components(service, spreadsheet_id, student_email=None, student_
             'source_column': 'E'
         }
 
-    # Fallback flow (legacy sheets): read target sheet and try to match row.
-    range_name = f"{target_sheet}!A:Z"
-    rows = get_sheet_data(service, spreadsheet_id, range_name)
-    if not rows:
-        raise ValueError(f"No data in target sheet: {target_sheet}")
-
-    evidence_data = None
-    for row in rows[1:]:
-        if len(row) < 2:
-            continue
-
-        row_id = row[0] if len(row) > 0 else ''
-        row_email_col_d = row[3] if len(row) > 3 else ''
-
-        match = False
-        if student_email_found and isinstance(row_email_col_d, str):
-            match = row_email_col_d.lower().strip() == student_email_found.lower().strip()
-        elif student_id_found:
-            match = str(row_id).strip() == str(student_id_found).strip()
-
-        if match:
-            evidence_data = row[4] if len(row) > 4 else ''
-            break
-
-    if not str(evidence_data or '').strip():
-        raise ValueError("No evidence data found in column E for this student")
-
-    return {
-        'student_id': student_id_found,
-        'student_email': student_email_found,
-        'group': program,
-        'program': program,
-        'target_sheet': target_sheet,
-        'components': [],
-        'evidence': evidence_data,
-        'raw_component_name': None,
-        'source_column': 'E'
-    }
+    raise ValueError(f"Student data improperly formatted in program tab.")
 
 
 class GetStudentComponentsView(APIView):
