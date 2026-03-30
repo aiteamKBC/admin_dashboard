@@ -1,7 +1,3 @@
-"""
-Google Sheets Evidence Loading
-Fetches student components and evidence from Google Sheets
-"""
 import os
 import json
 import time
