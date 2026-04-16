@@ -148,24 +148,32 @@ export default function Sidebar({
               />
             )}
 
+            <SidebarLink
+              to="/coach-wellbeing"
+              collapsed={collapsed && isDesktop}
+              icon="fa-heart-circle-exclamation"
+              label="Wellbeing"
+              onClick={() => !isDesktop && setMobileOpen(false)}
+            />
+
           </nav>
           <div className="p-4 space-y-3">
-  {/* Logout (Desktop + Mobile) */}
-  {isDesktop ? (
-    collapsed ? (
-      <button
-        type="button"
-        title="Sign out"
-        onClick={onLogout}
-        className="h-11 w-11 mx-auto rounded-xl bg-white/15 hover:bg-white/20 text-white flex items-center justify-center transition"
-      >
-        <i className="fa-solid fa-right-from-bracket" />
-      </button>
-    ) : (
-      <button
-        type="button"
-        onClick={onLogout}
-        className="
+            {/* Logout (Desktop + Mobile) */}
+            {isDesktop ? (
+              collapsed ? (
+                <button
+                  type="button"
+                  title="Sign out"
+                  onClick={onLogout}
+                  className="h-11 w-11 mx-auto rounded-xl bg-white/15 hover:bg-white/20 text-white flex items-center justify-center transition"
+                >
+                  <i className="fa-solid fa-right-from-bracket" />
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  onClick={onLogout}
+                  className="
           w-full
           h-11 rounded-xl
           bg-[#241453] text-white
@@ -174,19 +182,19 @@ export default function Sidebar({
           transition
           flex items-center justify-center gap-2
         "
-      >
-        <i className="fa-solid fa-right-from-bracket" />
-        Sign out
-      </button>
-    )
-  ) : (
-    <button
-      type="button"
-      onClick={() => {
-        onLogout?.();
-        setMobileOpen(false);
-      }}
-      className="
+                >
+                  <i className="fa-solid fa-right-from-bracket" />
+                  Sign out
+                </button>
+              )
+            ) : (
+              <button
+                type="button"
+                onClick={() => {
+                  onLogout?.();
+                  setMobileOpen(false);
+                }}
+                className="
         w-full
         h-11 rounded-xl
         bg-[#241453] text-white
@@ -195,13 +203,13 @@ export default function Sidebar({
         transition
         flex items-center justify-center gap-2
       "
-    >
-      <i className="fa-solid fa-right-from-bracket" />
-      Sign out
-    </button>
-  )}
+              >
+                <i className="fa-solid fa-right-from-bracket" />
+                Sign out
+              </button>
+            )}
 
-</div>
+          </div>
         </div>
 
         {/* Bottom CTA */}

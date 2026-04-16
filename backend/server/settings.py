@@ -16,6 +16,7 @@ import os
 from dotenv import load_dotenv
 from urllib.parse import urlparse
 from pathlib import Path
+import dj_database_url
 
 from datetime import timedelta
 
@@ -75,8 +76,9 @@ p = urlparse(db_url)
 db_sslmode = os.getenv("DB_SSLMODE", "").strip()  # e.g. "require"
 db_options = {"sslmode": db_sslmode} if db_sslmode else {}
 
+
 DATABASES = {
-        "default": {
+    "default": {
         "ENGINE": "django.db.backends.postgresql",
         "NAME": (p.path or "").lstrip("/"),
         "USER": p.username,
@@ -84,8 +86,13 @@ DATABASES = {
         "HOST": p.hostname,
         "PORT": p.port or 5432,
         "OPTIONS": db_options,
-    }
-    }
+    },
+    "wellbeing": dj_database_url.parse(
+        os.getenv("DATABASE_URL_WELLBEING"),
+        conn_max_age=600,
+        ssl_require=True,
+    ),
+}
 
 # =========================
 # Cache (used for Microsoft OAuth state)

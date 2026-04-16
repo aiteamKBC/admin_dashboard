@@ -13,6 +13,18 @@ from .jwt_serializers import EmailOrUsernameTokenObtainPairSerializer
 
 import uuid
 
+# wellbeing
+from datetime import datetime
+from rest_framework.decorators import api_view, permission_classes
+from rest_framework.permissions import IsAuthenticated
+from rest_framework.response import Response
+
+# to read the json 
+import json
+
+from .models import SafeguardingWellbeingAutomation, WellbeingSafeguardingMonitoringSystem, CoachData
+
+
 from .models import CoachData
 from .serializers import CoachTaskCreateSerializer, CoachTaskUpdateSerializer
 
@@ -244,3 +256,290 @@ class EvidenceUploadView(APIView):
                 },
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR
             )
+
+# maping for wellbeing 
+def map_urgency_to_priority(value):
+    value = (value or "").strip().lower()
+
+    if value in ["critical", "urgent"]:
+        return "urgent"
+    if value in ["high"]:
+        return "high"
+    if value in ["medium", "moderate"]:
+        return "medium"
+    return "low"
+
+
+def map_urgency_to_risk(value, safeguarding_flag=False):
+    value = (value or "").strip().lower()
+
+    if safeguarding_flag or value in ["critical", "urgent"]:
+        return "red"
+    if value in ["high", "medium", "moderate"]:
+        return "amber"
+    return "green"
+
+
+def safe_date(value):
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00")).date().isoformat()
+    except Exception:
+        return None
+
+# helper to read the json
+def parse_json_field(value, default=None):
+    if value is None:
+        return default if default is not None else {}
+
+    if isinstance(value, (dict, list)):
+        return value
+
+    if isinstance(value, str):
+        value = value.strip()
+        if not value:
+            return default if default is not None else {}
+        try:
+            return json.loads(value)
+        except json.JSONDecodeError:
+            return default if default is not None else {}
+
+    return default if default is not None else {}
+
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+def coach_options(request):
+    rows = (
+        WellbeingSafeguardingMonitoringSystem.objects.using("wellbeing")
+        .all()
+        .values("coach_name", "coach_email")
+        .order_by("coach_name", "coach_email")
+    )
+
+    seen_names = set()
+    data = []
+
+    for row in rows:
+        email = (row.get("coach_email") or "").strip().lower()
+        name = (row.get("coach_name") or "").strip()
+
+        if not email or not name:
+            continue
+
+        normalized_name = name.lower()
+        if normalized_name in seen_names:
+            continue
+
+        seen_names.add(normalized_name)
+
+        data.append({
+            "value": email,
+            "label": name,
+        })
+
+    return Response(data)
+
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+def coach_wellbeing_dashboard(request):
+    user = request.user
+    profile = getattr(user, "profile", None)
+    role = (getattr(profile, "role", "") or "").strip().lower()
+
+    requested_coach_email = (request.query_params.get("coach_email") or "").strip().lower()
+
+    if role == "coach":
+        requested_coach_email = (getattr(user, "email", "") or "").strip().lower()
+
+    rows = (
+        SafeguardingWellbeingAutomation.objects.using("wellbeing")
+        .all()
+        .order_by("-updated_at")
+    )
+
+    monitoring_rows = WellbeingSafeguardingMonitoringSystem.objects.using("wellbeing").all()
+
+    monitoring_by_id = {
+        str(item.id): item
+        for item in monitoring_rows
+    }
+
+    learners = []
+    follow_ups = []
+    suggested_actions = []
+
+    caseload = 0
+    at_risk = 0
+    non_responders = 0
+    open_tickets_total = 0
+
+    trend_buckets = {}
+
+    seen_learner_ids = set()
+    seen_followups = set()
+    seen_actions = set()
+
+    for row in rows:
+        follow = parse_json_field(row.follow_up_by_coach, {})
+        suggested = parse_json_field(row.suggested_coach_actions, {})
+        apprentice = parse_json_field(row.apprentice_dashboard, {})
+
+        learner_id = follow.get("learnerId")
+        learner_name = (
+            follow.get("learnerName")
+            or suggested.get("learnerName")
+            or apprentice.get("learnerName")
+            or "Unknown learner"
+        )
+
+        student_meta = monitoring_by_id.get(str(learner_id)) if learner_id is not None else None
+
+        # اعرض فقط الطلاب اللي تم عمل match لهم فعلا
+        if not student_meta:
+            continue
+
+        row_coach_email = ((getattr(student_meta, "coach_email", "") or "").strip().lower())
+        row_coach_name = getattr(student_meta, "coach_name", "") or ""
+        row_student_email = getattr(student_meta, "learner_email", "") or ""
+        row_programme = getattr(student_meta, "programme", "") or ""
+
+        # فلترة حسب الكوتش
+        if requested_coach_email and row_coach_email != requested_coach_email:
+            continue
+
+        indicators = parse_json_field(follow.get("indicators"), {})
+        summary = parse_json_field(follow.get("summary"), {})
+        issues = parse_json_field(follow.get("issues"), {})
+
+        last_survey_date_raw = indicators.get("lastSurveyDate")
+        last_survey_date = safe_date(last_survey_date_raw)
+
+        urgency = follow.get("urgency")
+        safeguarding_flag = bool(indicators.get("safeguardingFlag"))
+        risk_score = follow.get("riskScore") or 0
+        open_tickets = indicators.get("openTickets") or 0
+
+        risk_level = map_urgency_to_risk(urgency, safeguarding_flag=safeguarding_flag)
+
+        student_unique_key = str(getattr(student_meta, "id", "") or learner_id or row.wellbeing_record_id)
+        is_new_student = student_unique_key not in seen_learner_ids
+
+        if is_new_student:
+            seen_learner_ids.add(student_unique_key)
+
+            if risk_level == "red":
+                at_risk += 1
+
+            open_tickets_total += open_tickets
+            caseload += 1
+
+            learner_row = {
+                "studentId": int(learner_id) if learner_id is not None else row.wellbeing_record_id,
+                "studentName": learner_name,
+                "studentEmail": row_student_email,
+                "coachName": row_coach_name,
+                "coachEmail": row_coach_email,
+                "programme": row_programme,
+                "lastSurveyDate": last_survey_date,
+                "wellbeingScore": None,
+                "engagementScore": None,
+                "providerSupportScore": None,
+                "riskLevel": risk_level,
+                "recommendedAction": summary.get("cardTitle") or "Follow up required",
+                "hasOpenTicket": open_tickets > 0,
+                "nonResponder": last_survey_date is None,
+                "followUpReason": summary.get("followUpReason") or "",
+                "safeguardingFlag": safeguarding_flag,
+                "flaggedDomains": issues.get("flaggedDomains") or [],
+            }
+
+            learners.append(learner_row)
+
+            if last_survey_date is None:
+                non_responders += 1
+
+        followup_key = f"{student_unique_key}|{summary.get('cardTitle') or ''}|{summary.get('followUpReason') or ''}"
+
+        if followup_key not in seen_followups:
+            seen_followups.add(followup_key)
+
+            follow_ups.append({
+                "id": str(row.wellbeing_record_id),
+                "priority": map_urgency_to_priority(urgency),
+                "title": summary.get("cardTitle") or "Coach follow-up required",
+                "learnerName": learner_name,
+                "learnerEmail": row_student_email,
+                "coachName": row_coach_name,
+                "coachEmail": row_coach_email,
+                "dueDate": "Within 24 hours" if str(urgency).lower() == "critical" else "Review soon",
+                "reason": summary.get("followUpReason") or "",
+            })
+
+        actions = parse_json_field(suggested.get("actions"), [])
+        for index, action in enumerate(actions):
+            if not isinstance(action, dict):
+                continue
+
+            action_key = f"{student_unique_key}|{action.get('title') or ''}|{action.get('reason') or ''}"
+
+            if action_key in seen_actions:
+                continue
+
+            seen_actions.add(action_key)
+
+            suggested_actions.append({
+                "id": f"{row.wellbeing_record_id}-{index}",
+                "priority": map_urgency_to_priority(action.get("urgency")),
+                "title": action.get("title") or "Suggested action",
+                "description": action.get("reason") or "",
+                "learnerName": learner_name,
+                "learnerEmail": row_student_email,
+                "coachName": row_coach_name,
+                "coachEmail": row_coach_email,
+                "timeline": action.get("suggestedTimeline") or "",
+                "category": action.get("category") or "",
+            })
+
+        if last_survey_date:
+            month_key = last_survey_date[:7]
+
+            if month_key not in trend_buckets:
+                trend_buckets[month_key] = {
+                    "count": 0,
+                    "risk_total": 0,
+                    "red_count": 0,
+                    "tickets": 0,
+                }
+
+            trend_buckets[month_key]["count"] += 1
+            trend_buckets[month_key]["risk_total"] += risk_score
+            trend_buckets[month_key]["tickets"] += open_tickets
+
+            if risk_level == "red":
+                trend_buckets[month_key]["red_count"] += 1
+
+    trends = []
+    for month_key in sorted(trend_buckets.keys()):
+        item = trend_buckets[month_key]
+        count = item["count"] or 1
+
+        trends.append({
+            "month": month_key,
+            "wellbeing": round(max(0, 10 - (item["risk_total"] / count / 10)), 1),
+            "engagement": round(max(0, 10 - (item["red_count"] / count * 5)), 1),
+            "providerSupport": round(max(0, 10 - (item["tickets"] / count * 2)), 1),
+        })
+
+    return Response({
+        "summary": {
+            "caseload": caseload,
+            "atRisk": at_risk,
+            "nonResponders": non_responders,
+            "openTickets": open_tickets_total,
+        },
+        "learners": learners,
+        "trends": trends,
+        "followUps": follow_ups[:20],
+        "suggestedActions": suggested_actions[:20],
+    })

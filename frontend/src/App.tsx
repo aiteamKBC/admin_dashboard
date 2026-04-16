@@ -8,6 +8,7 @@ import BookingsCalendarPage from "./components/calendar/BookingsCalendarPage";
 import AttendancePage from "./components/attendance/AttendancePage";
 import Login from "./login/Login";
 import RequireRole from "./components/auth/RequireRole";
+import CoachWellbeingPage from "./components/wellbeing/CoachWellbeingPage";
 
 import useMediaQuery from "./helpers/useMediaQuery";
 
@@ -106,6 +107,16 @@ export default function App() {
               element={
                 <RequireRole allow={["qa", "coach"]}>
                   <AttendanceRoute onOpenSidebar={() => setMobileOpen(true)} />
+                </RequireRole>
+              }
+            />
+
+            {/* Coach Wellbeing */}
+            <Route
+              path="/coach-wellbeing"
+              element={
+                <RequireRole allow={["qa", "coach"]}>
+                  <CoachWellbeingPage />
                 </RequireRole>
               }
             />

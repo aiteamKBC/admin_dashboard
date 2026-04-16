@@ -15,7 +15,7 @@ async function refreshAccessToken() {
   const refresh = getRefresh();
   if (!refresh) throw new Error("Missing refresh token");
 
-  const res = await fetch(`${API_ORIGIN}/api/token/refresh/`, {
+  const res = await fetch(`/api/token/refresh/`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ refresh }),
@@ -47,20 +47,46 @@ async function refreshAccessToken() {
 
 export async function fetchWithAuth(input: string, init: RequestInit = {}) {
   const headers = new Headers(init.headers || {});
+
+  if (!headers.has("Content-Type") && !(init.body instanceof FormData)) {
+    headers.set("Content-Type", "application/json");
+  }
+
   const access = getAccess();
 
-  if (access) headers.set("Authorization", `Bearer ${access}`);
+  if (access) {
+    headers.set("Authorization", `Bearer ${access}`);
+  }
 
   let res = await fetch(`${API_BASE}${input}`, { ...init, headers });
 
-  if (res.status !== 401) return res;
+  if (res.status !== 401) {
+    if (!res.ok) {
+      const text = await res.text().catch(() => "");
+      throw new Error(`Request failed: ${res.status} ${text}`);
+    }
+    return res.json();
+  }
+
+  const refresh = getRefresh();
+  if (!refresh) {
+    throw new Error("Unauthorized: missing refresh token");
+  }
 
   const newAccess = await refreshAccessToken();
 
   const headers2 = new Headers(init.headers || {});
+  if (!headers2.has("Content-Type") && !(init.body instanceof FormData)) {
+    headers2.set("Content-Type", "application/json");
+  }
   headers2.set("Authorization", `Bearer ${newAccess}`);
 
   res = await fetch(`${API_BASE}${input}`, { ...init, headers: headers2 });
 
-  return res;
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new Error(`Request failed: ${res.status} ${text}`);
+  }
+
+  return res.json();
 }
