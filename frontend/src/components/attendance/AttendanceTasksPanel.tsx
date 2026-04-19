@@ -29,46 +29,39 @@ type EvidenceItem = {
 };
 
 async function fetchCoachTasks(coachId: number): Promise<Task[]> {
-  const res = await fetchWithAuth(`/coaches/${coachId}/tasks/`, {
-  });
-
-  if (!res.ok) {
-    const msg = await res.text().catch(() => "");
-    throw new Error(msg || `Failed to load tasks (${res.status})`);
-  }
-
-  const data = await res.json();
+  const data = await fetchWithAuth(`/coaches/${coachId}/tasks/`, {});
   return Array.isArray(data) ? data : [];
 }
 
-// PATCH reviewed flag 
 async function patchTaskReviewed(coachId: number, taskId: string, reviewed: boolean) {
-  const res = await fetchWithAuth(`/coaches/${coachId}/tasks/${taskId}/`, {
+  return await fetchWithAuth(`/coaches/${coachId}/tasks/${taskId}/`, {
     method: "PATCH",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       evidence: { reviewed },
     }),
   });
-
-  const text = await res.text().catch(() => "");
-  if (!res.ok) throw new Error(text || `Update failed (${res.status})`);
-
-  try {
-    return text ? JSON.parse(text) : null;
-  } catch {
-    return text;
-  }
 }
 
-//DELETE task 
+function authHeaders(extra?: Record<string, string>) {
+  const token = localStorage.getItem("token");
+  return {
+    ...(extra ?? {}),
+    ...(token ? { Authorization: `Bearer ${token}` } : {}),
+  };
+}
+
 async function deleteTask(coachId: number, taskId: string) {
-  const res = await fetchWithAuth(`/coaches/${coachId}/tasks/${taskId}/`, {
+  const res = await fetch(`/tasks-api/coaches/${coachId}/tasks/${taskId}/`, {
     method: "DELETE",
+    headers: authHeaders(),
   });
 
-  const text = await res.text().catch(() => "");
-  if (!res.ok) throw new Error(text || `Delete failed (${res.status})`);
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new Error(text || `Delete failed (${res.status})`);
+  }
+
   return true;
 }
 
@@ -77,16 +70,12 @@ function safeText(v: unknown) {
 }
 
 export default function AttendanceTasksPanel({ coachId, viewerRole = "qa" }: Props) {
-  // QA-only
   if (viewerRole !== "qa") return null;
 
   const [tasks, setTasks] = useState<Task[]>([]);
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState<string | null>(null);
-
   const [q, setQ] = useState("");
-
-  // per-item loading states
   const [busyId, setBusyId] = useState<string | null>(null);
 
   useEffect(() => {
@@ -97,6 +86,7 @@ export default function AttendanceTasksPanel({ coachId, viewerRole = "qa" }: Pro
     const run = async () => {
       setLoading(true);
       setErr(null);
+
       try {
         const data = await fetchCoachTasks(coachId);
         if (!cancelled) setTasks(data);
@@ -108,17 +98,16 @@ export default function AttendanceTasksPanel({ coachId, viewerRole = "qa" }: Pro
     };
 
     run();
+
     return () => {
       cancelled = true;
     };
   }, [coachId]);
 
-  const API_ORIGIN = (import.meta as any)?.env?.VITE_API_ORIGIN || "";
-
+  // for evidence
   const toAbsoluteUrl = (u: string) => {
     if (!u) return "";
-    if (u.startsWith("http")) return u;
-    return `/tasks-api${u}`;
+    return u;
   };
 
   const evidenceItems = useMemo<EvidenceItem[]>(() => {
@@ -159,7 +148,6 @@ export default function AttendanceTasksPanel({ coachId, viewerRole = "qa" }: Pro
     if (!taskId) return;
     setErr(null);
 
-    // optimistic UI
     const prev = tasks;
     setTasks((old) =>
       old.map((t) => {
@@ -173,7 +161,7 @@ export default function AttendanceTasksPanel({ coachId, viewerRole = "qa" }: Pro
       setBusyId(taskId);
       await patchTaskReviewed(coachId, taskId, next);
     } catch (e: any) {
-      setTasks(prev); // rollback
+      setTasks(prev);
       setErr(e?.message || "Failed to update");
     } finally {
       setBusyId(null);
@@ -183,13 +171,11 @@ export default function AttendanceTasksPanel({ coachId, viewerRole = "qa" }: Pro
   async function removeTask(taskId: string) {
     if (!taskId) return;
 
-    // confirm 
     const ok = window.confirm("Delete this evidence item?");
     if (!ok) return;
 
     setErr(null);
 
-    // optimistic remove
     const prev = tasks;
     setTasks((old) => old.filter((t) => safeText(t.id) !== taskId));
 
@@ -197,7 +183,7 @@ export default function AttendanceTasksPanel({ coachId, viewerRole = "qa" }: Pro
       setBusyId(taskId);
       await deleteTask(coachId, taskId);
     } catch (e: any) {
-      setTasks(prev); // rollback
+      setTasks(prev);
       setErr(e?.message || "Failed to delete");
     } finally {
       setBusyId(null);
@@ -246,7 +232,6 @@ export default function AttendanceTasksPanel({ coachId, viewerRole = "qa" }: Pro
                 <div className="flex items-start justify-between gap-3">
                   <div className="min-w-0">
                     <div className="flex items-start gap-3">
-                      {/*Reviewed checkbox */}
                       <label className="mt-0.5 flex items-center gap-2 text-xs text-gray-600 select-none">
                         <input
                           type="checkbox"
@@ -260,13 +245,13 @@ export default function AttendanceTasksPanel({ coachId, viewerRole = "qa" }: Pro
                       <div className="min-w-0">
                         <div className="text-sm font-medium text-gray-800 truncate">
                           {x.student || "Unknown student"}{" "}
-                          <span className="text-gray-400 font-normal">—</span>{" "}
+                          <span className="text-gray-400 font-normal">-</span>{" "}
                           <span className="text-gray-700">{x.date || "No date"}</span>
                         </div>
 
                         <div className="text-xs text-gray-500 mt-1">
                           {x.module ? `Module: ${x.module} • ` : ""}
-                          {x.method ? `Method: ${x.method}` : "Method: —"}
+                          {x.method ? `Method: ${x.method}` : "Method: -"}
                         </div>
 
                         {!!x.coachName && (
@@ -300,7 +285,6 @@ export default function AttendanceTasksPanel({ coachId, viewerRole = "qa" }: Pro
                       <span className="text-xs text-gray-400">No proof</span>
                     )}
 
-                    {/* delete button */}
                     <button
                       type="button"
                       onClick={() => removeTask(x.taskId)}

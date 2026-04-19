@@ -19,7 +19,7 @@ type AttendanceRow = {
   id: string;
   fullName: string;
   email: string;
-  dates: Record<string, AttendanceCell>;
+  dates: Record<string, AttendanceCell[]>;
 };
 
 type EvidenceMethod = "Call" | "WhatsApp" | "Email" | "Other";
@@ -49,12 +49,91 @@ const parseMaybeJson = (v: unknown): unknown => {
   }
 };
 
+function normalizeAttendanceCells(rawCell: unknown): AttendanceCell[] {
+  const parsed = parseMaybeJson(rawCell);
+
+  if (Array.isArray(parsed)) {
+    return parsed
+      .map((item) => {
+        const x = parseMaybeJson(item);
+
+        if (isObj(x)) {
+          return {
+            ...x,
+            module:
+              x.module == null || String(x.module).trim() === ""
+                ? null
+                : String(x.module).trim(),
+          } as AttendanceCell;
+        }
+
+        if (x == null || x === "") return null;
+
+        return { value: x as any, module: null } as AttendanceCell;
+      })
+      .filter((x): x is AttendanceCell => !!x);
+  }
+
+  if (isObj(parsed)) {
+    return [
+      {
+        ...parsed,
+        module:
+          parsed.module == null || String(parsed.module).trim() === ""
+            ? null
+            : String(parsed.module).trim(),
+      } as AttendanceCell,
+    ];
+  }
+
+  if (parsed == null || parsed === "") return [];
+
+  return [{ value: parsed as any, module: null }];
+}
+
+function getCellsForDate(
+  row: AttendanceRow,
+  date: string,
+  selectedModule: string
+): AttendanceCell[] {
+  const cells = row.dates?.[date] ?? [];
+
+  if (selectedModule === "all") return cells;
+
+  return cells.filter(
+    (c) => String(c?.module || "").trim() === String(selectedModule).trim()
+  );
+}
+
+function getAggregatedValue(cells: AttendanceCell[]): 0 | 1 | null {
+  const values = cells
+    .map((c) => num01(c?.value))
+    .filter((v): v is 0 | 1 => v !== null);
+
+  if (values.includes(1)) return 1;
+  if (values.includes(0)) return 0;
+  return null;
+}
+
+function getDisplayModule(cells: AttendanceCell[]): string {
+  const modules: string[] = Array.from(
+    new Set(
+      cells
+        .map((c) => String(c?.module || "").trim())
+        .filter((m): m is string => m.length > 0)
+    )
+  );
+
+  if (modules.length === 0) return "";
+  if (modules.length === 1) return modules[0] ?? "";
+  return "Multiple modules";
+}
+
 function toAttendanceRows(raw: unknown): AttendanceRow[] {
   raw = parseMaybeJson(raw);
 
   if (!raw) return [];
 
-  // Format A, DB format: { learners: [...] }
   if (isObj(raw) && Array.isArray((raw as any).learners)) {
     const learners = (raw as any).learners as any[];
 
@@ -64,12 +143,11 @@ function toAttendanceRows(raw: unknown): AttendanceRow[] {
       const email = String(l.Email ?? l.email ?? "").trim();
 
       const att = parseMaybeJson(l.Attendance ?? l.attendance ?? {});
-      const dates: Record<string, AttendanceCell> = {};
+      const dates: Record<string, AttendanceCell[]> = {};
 
       if (isObj(att)) {
         for (const d of pickISODateKeys(att)) {
-          const cell = (att as any)[d];
-          dates[d] = isObj(cell) ? (cell as AttendanceCell) : { value: cell as any };
+          dates[d] = normalizeAttendanceCells((att as any)[d]);
         }
       }
 
@@ -82,18 +160,19 @@ function toAttendanceRows(raw: unknown): AttendanceRow[] {
     });
   }
 
-  // Format B, old format: { "Student": { "YYYY-MM-DD": {...} } }
   if (isObj(raw)) {
     const out: AttendanceRow[] = [];
+
     for (const [studentName, datesRaw] of Object.entries(raw)) {
       if (!isObj(datesRaw)) continue;
+
       const dateKeys = pickISODateKeys(datesRaw);
       if (!dateKeys.length) continue;
 
-      const dates: Record<string, AttendanceCell> = {};
+      const dates: Record<string, AttendanceCell[]> = {};
+
       for (const d of dateKeys) {
-        const cell = (datesRaw as any)[d];
-        dates[d] = isObj(cell) ? (cell as AttendanceCell) : { value: cell as any };
+        dates[d] = normalizeAttendanceCells((datesRaw as any)[d]);
       }
 
       out.push({
@@ -103,6 +182,7 @@ function toAttendanceRows(raw: unknown): AttendanceRow[] {
         dates,
       });
     }
+
     return out;
   }
 
@@ -160,12 +240,12 @@ async function uploadEvidenceImage(file: File): Promise<string> {
     data = null;
   }
 
-  const url = data?.url;
-  if (!url || typeof url !== "string") {
-    throw new Error("Upload succeeded but no url returned");
+  const proofUrl = data?.absolute_url || data?.url || "";
+  if (!proofUrl) {
+    throw new Error("Upload succeeded but no file URL was returned");
   }
 
-  return url;
+  return proofUrl;
 }
 
 /* ================= CUSTOM SELECT ================= */
@@ -333,9 +413,11 @@ export default function AttendancePage({ onOpenSidebar }: { onOpenSidebar?: () =
     const set = new Set<string>();
 
     for (const r of attendanceRows) {
-      for (const cell of Object.values(r.dates)) {
-        const m = String((cell as any)?.module || "").trim();
-        if (m) set.add(m);
+      for (const cells of Object.values(r.dates)) {
+        for (const cell of cells) {
+          const m = String(cell?.module || "").trim();
+          if (m) set.add(m);
+        }
       }
     }
 
@@ -346,11 +428,14 @@ export default function AttendancePage({ onOpenSidebar }: { onOpenSidebar?: () =
     const all = new Set<string>();
 
     for (const r of attendanceRows) {
-      for (const [d, cell] of Object.entries(r.dates)) {
-        const m = String((cell as any)?.module || "").trim();
-
-        if (selectedModule === "all") all.add(d);
-        else if (m === selectedModule) all.add(d);
+      for (const [d, cells] of Object.entries(r.dates)) {
+        if (selectedModule === "all") {
+          all.add(d);
+        } else if (
+          cells.some((c) => String(c?.module || "").trim() === selectedModule)
+        ) {
+          all.add(d);
+        }
       }
     }
 
@@ -361,12 +446,19 @@ export default function AttendancePage({ onOpenSidebar }: { onOpenSidebar?: () =
     if (selectedModule !== "all") return selectedModule;
     if (!date) return "";
 
-    for (const r of attendanceRows) {
-      const cell = r.dates?.[date];
-      const m = String((cell as any)?.module || "").trim();
-      if (m) return m;
-    }
-    return "";
+    const modulesForDate = Array.from(
+      new Set(
+        attendanceRows.flatMap((r) =>
+          (r.dates?.[date] ?? [])
+            .map((c) => String(c?.module || "").trim())
+            .filter(Boolean)
+        )
+      )
+    );
+
+    if (!modulesForDate.length) return "";
+    if (modulesForDate.length === 1) return modulesForDate[0];
+    return "Multiple modules";
   }, [attendanceRows, date, selectedModule]);
 
   const summary = useMemo(() => {
@@ -380,23 +472,15 @@ export default function AttendancePage({ onOpenSidebar }: { onOpenSidebar?: () =
       const belongs =
         selectedModule === "all"
           ? true
-          : Object.values(r.dates).some(
-              (c: AttendanceCell) => String(c?.module || "").trim() === selectedModule
+          : Object.values(r.dates).some((cells) =>
+              cells.some((c) => String(c?.module || "").trim() === selectedModule)
             );
 
       if (!belongs) continue;
 
-      const cell = r.dates?.[date];
+      const cells = getCellsForDate(r, date, selectedModule);
+      const v = getAggregatedValue(cells);
 
-      if (
-        cell &&
-        selectedModule !== "all" &&
-        String((cell as any)?.module || "").trim() !== selectedModule
-      ) {
-        continue;
-      }
-
-      const v = num01((cell as any)?.value);
       if (v === 1) present++;
       else if (v === 0) absent++;
       else unknown++;
@@ -424,30 +508,34 @@ export default function AttendancePage({ onOpenSidebar }: { onOpenSidebar?: () =
     };
 
     for (const r of attendanceRows) {
-      for (const [d, cell] of Object.entries(r.dates)) {
-        const m = String((cell as any)?.module || "").trim() || "Unknown module";
-        const v = num01((cell as any)?.value);
+      for (const [d, cells] of Object.entries(r.dates)) {
+        for (const cell of cells) {
+          const m = String(cell?.module || "").trim() || "Unknown module";
+          const v = num01(cell?.value);
 
-        if (v === 1) present++;
-        else if (v === 0) absent++;
-        else unknown++;
+          if (v === 1) present++;
+          else if (v === 0) absent++;
+          else unknown++;
 
-        if (!byModule[m]) byModule[m] = { present: 0, absent: 0, unknown: 0 };
-        if (v === 1) byModule[m].present++;
-        else if (v === 0) byModule[m].absent++;
-        else byModule[m].unknown++;
+          if (!byModule[m]) byModule[m] = { present: 0, absent: 0, unknown: 0 };
+          if (v === 1) byModule[m].present++;
+          else if (v === 0) byModule[m].absent++;
+          else byModule[m].unknown++;
 
-        if (!byDate[d]) byDate[d] = { date: d, present: 0, absent: 0, unknown: 0 };
-        if (v === 1) byDate[d].present++;
-        else if (v === 0) byDate[d].absent++;
-        else byDate[d].unknown++;
+          if (!byDate[d]) byDate[d] = { date: d, present: 0, absent: 0, unknown: 0 };
+          if (v === 1) byDate[d].present++;
+          else if (v === 0) byDate[d].absent++;
+          else byDate[d].unknown++;
 
-        const key = `${d}|||${m}`;
-        if (!bySession[key])
-          bySession[key] = { date: d, module: m, present: 0, absent: 0, unknown: 0 };
-        if (v === 1) bySession[key].present++;
-        else if (v === 0) bySession[key].absent++;
-        else bySession[key].unknown++;
+          const key = `${d}|||${m}`;
+          if (!bySession[key]) {
+            bySession[key] = { date: d, module: m, present: 0, absent: 0, unknown: 0 };
+          }
+
+          if (v === 1) bySession[key].present++;
+          else if (v === 0) bySession[key].absent++;
+          else bySession[key].unknown++;
+        }
       }
     }
 
@@ -474,7 +562,9 @@ export default function AttendancePage({ onOpenSidebar }: { onOpenSidebar?: () =
         tracked: s.present + s.absent,
         rate: rate(s.absent, s.present),
       }))
-      .sort((a, b) => (a.date === b.date ? a.module.localeCompare(b.module) : a.date.localeCompare(b.date)));
+      .sort((a, b) =>
+        a.date === b.date ? a.module.localeCompare(b.module) : a.date.localeCompare(b.date)
+      );
 
     const datesArr = Object.values(byDate)
       .map((s) => ({
@@ -526,8 +616,9 @@ export default function AttendancePage({ onOpenSidebar }: { onOpenSidebar?: () =
   }, [attendanceRows, date, selectedModule]);
 
   const absentRows = useMemo(() => {
-    if (!date)
+    if (!date) {
       return [] as Array<{ id: string; fullName: string; email: string; module?: string | null }>;
+    }
 
     const rows: Array<{ id: string; fullName: string; email: string; module?: string | null }> = [];
 
@@ -535,42 +626,41 @@ export default function AttendancePage({ onOpenSidebar }: { onOpenSidebar?: () =
       const belongs =
         selectedModule === "all"
           ? true
-          : Object.values(r.dates).some(
-              (c: AttendanceCell) => String(c?.module || "").trim() === selectedModule
+          : Object.values(r.dates).some((cells) =>
+              cells.some((c) => String(c?.module || "").trim() === selectedModule)
             );
 
       if (!belongs) continue;
 
-      const cell = r.dates?.[date];
+      const cells = getCellsForDate(r, date, selectedModule);
+      const v = getAggregatedValue(cells);
 
-      if (
-        cell &&
-        selectedModule !== "all" &&
-        String((cell as any)?.module || "").trim() !== selectedModule
-      ) {
-        continue;
-      }
-
-      const v = num01((cell as any)?.value);
       if (v === 0) {
         rows.push({
           id: r.id,
           fullName: r.fullName,
           email: r.email,
-          module: (cell as any)?.module ?? null,
+          module:
+            selectedModule === "all"
+              ? getDisplayModule(cells) || null
+              : selectedModule,
         });
       }
     }
 
     const s = q.trim().toLowerCase();
+
     return rows
-      .filter((r) => (s ? r.fullName.toLowerCase().includes(s) || r.email.toLowerCase().includes(s) : true))
+      .filter((r) =>
+        s ? r.fullName.toLowerCase().includes(s) || r.email.toLowerCase().includes(s) : true
+      )
       .sort((a, b) => a.fullName.localeCompare(b.fullName));
   }, [attendanceRows, date, q, selectedModule]);
 
   const unknownRows = useMemo(() => {
-    if (!date)
+    if (!date) {
       return [] as Array<{ id: string; fullName: string; email: string; module?: string | null }>;
+    }
 
     const rows: Array<{ id: string; fullName: string; email: string; module?: string | null }> = [];
 
@@ -578,36 +668,34 @@ export default function AttendancePage({ onOpenSidebar }: { onOpenSidebar?: () =
       const belongs =
         selectedModule === "all"
           ? true
-          : Object.values(r.dates).some(
-              (c: AttendanceCell) => String(c?.module || "").trim() === selectedModule
+          : Object.values(r.dates).some((cells) =>
+              cells.some((c) => String(c?.module || "").trim() === selectedModule)
             );
 
       if (!belongs) continue;
 
-      const cell = r.dates?.[date];
+      const cells = getCellsForDate(r, date, selectedModule);
+      const v = getAggregatedValue(cells);
 
-      if (
-        cell &&
-        selectedModule !== "all" &&
-        String((cell as any)?.module || "").trim() !== selectedModule
-      ) {
-        continue;
-      }
-
-      const v = num01((cell as any)?.value);
       if (v === null) {
         rows.push({
           id: r.id,
           fullName: r.fullName,
           email: r.email,
-          module: (cell as any)?.module ?? null,
+          module:
+            selectedModule === "all"
+              ? getDisplayModule(cells) || null
+              : selectedModule,
         });
       }
     }
 
     const s = q.trim().toLowerCase();
+
     return rows
-      .filter((r) => (s ? r.fullName.toLowerCase().includes(s) || r.email.toLowerCase().includes(s) : true))
+      .filter((r) =>
+        s ? r.fullName.toLowerCase().includes(s) || r.email.toLowerCase().includes(s) : true
+      )
       .sort((a, b) => a.fullName.localeCompare(b.fullName));
   }, [attendanceRows, date, q, selectedModule]);
 

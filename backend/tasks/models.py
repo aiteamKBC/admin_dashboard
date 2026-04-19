@@ -46,22 +46,12 @@ class WellbeingSafeguardingMonitoringSystem(models.Model):
     coach_name = models.TextField(null=True, blank=True)
     coach_email = models.TextField(null=True, blank=True)
 
-    class Meta:
-        managed = False
-        db_table = "wellbeing_safeguarding_monitoring_system"
-
-# QA role
-class WellbeingSafeguardingMonitoringSystem(models.Model):
-    id = models.BigIntegerField(primary_key=True)
-    learner_name = models.TextField(null=True, blank=True)
-    learner_email = models.TextField(null=True, blank=True)
-    learner_phone = models.TextField(null=True, blank=True)
-    learner_address = models.TextField(null=True, blank=True)
-    programme = models.TextField(null=True, blank=True)
-    manager_name = models.TextField(null=True, blank=True)
-    manager_email = models.TextField(null=True, blank=True)
-    coach_name = models.TextField(null=True, blank=True)
-    coach_email = models.TextField(null=True, blank=True)
+    total_score = models.FloatField(null=True, blank=True)
+    personal_wellbeing_protective_factors_score = models.FloatField(null=True, blank=True)
+    emotional_stress_resilience_score = models.FloatField(null=True, blank=True)
+    provider_culture_support_score = models.FloatField(null=True, blank=True)
+    safeguarding_vulnerability_score = models.FloatField(null=True, blank=True)
+    trigger_count = models.IntegerField(null=True, blank=True)
 
     class Meta:
         managed = False

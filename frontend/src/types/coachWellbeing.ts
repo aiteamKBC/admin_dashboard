@@ -15,6 +15,11 @@ export type CoachLearnerRow = {
   nonResponder?: boolean;
   followUpReason?: string;
   safeguardingFlag?: boolean;
+  programme?: string;
+  coachName?: string;
+  coachEmail?: string;
+  hasWellbeingData?: boolean;
+  countedInSummary?: boolean;
   flaggedDomains?: Array<
     | string
     | {

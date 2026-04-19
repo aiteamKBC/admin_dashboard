@@ -114,11 +114,35 @@ export default function Sidebar({
               onClick={() => !isDesktop && setMobileOpen(false)}
             />
 
+            <SidebarLink
+              to="/coach-wellbeing"
+              collapsed={collapsed && isDesktop}
+              icon="fa-shield-heart"
+              label="Wellbeing"
+              onClick={() => !isDesktop && setMobileOpen(false)}
+            />
+
             <SidebarExternalLink
               href="https://kentbusinesscollege.org/psychological-dashboard/"
               collapsed={collapsed && isDesktop}
               icon="fa-user"
               label="Who I am"
+              onClick={() => !isDesktop && setMobileOpen(false)}
+            />
+
+            <SidebarExternalLink
+              href="https://communicationcentre.kentbusinesscollege.net/login"
+              collapsed={collapsed && isDesktop}
+              icon="fa-comments"
+              label="Communication Centre"
+              onClick={() => !isDesktop && setMobileOpen(false)}
+            />
+
+            <SidebarExternalLink
+              href="https://69d61d0cfa1e73461a9f6dcc--famous-kitten-298c8d.netlify.app/"
+              collapsed={collapsed && isDesktop}
+              icon="fa-circle-nodes"
+              label="Connect Your Microsoft Account"
               onClick={() => !isDesktop && setMobileOpen(false)}
             />
 
@@ -148,13 +172,7 @@ export default function Sidebar({
               />
             )}
 
-            <SidebarLink
-              to="/coach-wellbeing"
-              collapsed={collapsed && isDesktop}
-              icon="fa-heart-circle-exclamation"
-              label="Wellbeing"
-              onClick={() => !isDesktop && setMobileOpen(false)}
-            />
+
 
           </nav>
           <div className="p-4 space-y-3">

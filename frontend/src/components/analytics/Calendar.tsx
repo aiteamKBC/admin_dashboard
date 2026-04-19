@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import type { Meeting } from "../../types/meetings";
 
 type CalendarProps = {
@@ -63,9 +63,8 @@ export default function Calendar({ meetingsByDate = {}, onWeeksChange }: Calenda
 
   const weeksInMonth = Math.ceil((firstDayIndex + daysInMonth) / 7);
 
-  useMemo(() => {
+  useEffect(() => {
     onWeeksChange?.(weeksInMonth);
-    return null;
   }, [weeksInMonth, onWeeksChange]);
 
   const meetingsByDateFuture = useMemo<Record<string, Meeting[]>>(() => {

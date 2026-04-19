@@ -116,7 +116,10 @@ export default function App() {
               path="/coach-wellbeing"
               element={
                 <RequireRole allow={["qa", "coach"]}>
-                  <CoachWellbeingPage />
+                  <CoachWellbeingPage
+                    setMobileOpen={setMobileOpen}
+                    isDesktop={isDesktop}
+                  />
                 </RequireRole>
               }
             />

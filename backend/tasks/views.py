@@ -21,6 +21,7 @@ from rest_framework.response import Response
 
 # to read the json 
 import json
+from collections import Counter
 
 from .models import SafeguardingWellbeingAutomation, WellbeingSafeguardingMonitoringSystem, CoachData
 
@@ -307,6 +308,53 @@ def parse_json_field(value, default=None):
 
     return default if default is not None else {}
 
+from collections import Counter
+
+def _title_from_email_part(value: str) -> str:
+    return " ".join(part.capitalize() for part in value.replace("-", " ").replace("_", " ").split())
+
+def _coach_label_from_name_and_email(name: str, email: str, duplicate_name: bool) -> str:
+    base_name = (name or "").strip()
+    local = (email or "").split("@")[0].strip().lower()
+
+    parts = [p for p in local.replace("_", ".").split(".") if p]
+
+    if not base_name:
+        if len(parts) >= 2:
+            return f"{_title_from_email_part(parts[0])} {_title_from_email_part(parts[1])}"
+        if len(parts) == 1:
+            return _title_from_email_part(parts[0])
+        return email
+
+    if not duplicate_name:
+        return base_name
+
+    if len(parts) >= 2:
+        first_part = _title_from_email_part(parts[0])
+        second_part = _title_from_email_part(parts[1])
+
+        # لو الاسم الأساسي مجرد first name زي Omar
+        if base_name.strip().lower() == first_part.strip().lower():
+            return f"{base_name} {second_part}"
+
+        # fallback
+        return f"{base_name} ({second_part})"
+
+    if len(parts) == 1 and parts[0].lower() != base_name.lower():
+        return f"{base_name} ({_title_from_email_part(parts[0])})"
+
+    return f"{base_name} ({email})"
+
+
+def _title_from_local_part(value: str) -> str:
+    value = (value or "").strip().lower()
+    if not value:
+        return ""
+
+    parts = [p for p in value.replace("-", ".").replace("_", ".").split(".") if p]
+    return " ".join(part.capitalize() for part in parts)
+
+
 @api_view(["GET"])
 @permission_classes([IsAuthenticated])
 def coach_options(request):
@@ -314,31 +362,95 @@ def coach_options(request):
         WellbeingSafeguardingMonitoringSystem.objects.using("wellbeing")
         .all()
         .values("coach_name", "coach_email")
-        .order_by("coach_name", "coach_email")
+        .order_by("coach_email")
     )
 
-    seen_names = set()
-    data = []
+    cleaned_rows = []
+    seen_emails = set()
 
     for row in rows:
         email = (row.get("coach_email") or "").strip().lower()
         name = (row.get("coach_name") or "").strip()
 
-        if not email or not name:
+        if not email:
             continue
 
-        normalized_name = name.lower()
-        if normalized_name in seen_names:
+        if email in seen_emails:
             continue
 
-        seen_names.add(normalized_name)
+        seen_emails.add(email)
+
+        cleaned_rows.append({
+            "coach_name": name,
+            "coach_email": email,
+        })
+
+    data = []
+    for item in cleaned_rows:
+        email = item["coach_email"]
+        name = item["coach_name"]
+
+        local = email.split("@")[0].strip().lower()
+        email_label = _title_from_local_part(local)
+
+        # الأفضل نستخدم الاسم المشتق من الإيميل لأنه أوضح وأدق في حال الداتا فيها أسماء غلط
+        label = email_label or name or email
 
         data.append({
             "value": email,
-            "label": name,
+            "label": label,
         })
 
     return Response(data)
+
+def safe_int(value, default=0):
+    try:
+        if value is None or value == "":
+            return default
+        return int(float(value))
+    except Exception:
+        return default
+
+
+def empty_coach_wellbeing_response():
+    return {
+        "summary": {
+            "caseload": 0,
+            "atRisk": 0,
+            "nonResponders": 0,
+            "openTickets": 0,
+        },
+        "learners": [],
+        "trends": [],
+        "followUps": [],
+        "suggestedActions": [],
+    }
+
+
+def extract_learner_id(*sources):
+    possible_keys = [
+        "learnerId",
+        "learner_id",
+        "studentId",
+        "student_id",
+        "id",
+    ]
+
+    for source in sources:
+        if not isinstance(source, dict):
+            continue
+
+        for key in possible_keys:
+            value = source.get(key)
+            if value is None:
+                continue
+
+            value_str = str(value).strip()
+            if value_str:
+                return value_str
+
+    return None
+
 
 @api_view(["GET"])
 @permission_classes([IsAuthenticated])
@@ -347,23 +459,52 @@ def coach_wellbeing_dashboard(request):
     profile = getattr(user, "profile", None)
     role = (getattr(profile, "role", "") or "").strip().lower()
 
-    requested_coach_email = (request.query_params.get("coach_email") or "").strip().lower()
-
     if role == "coach":
         requested_coach_email = (getattr(user, "email", "") or "").strip().lower()
+        if not requested_coach_email:
+            return Response({"detail": "Coach email not found"}, status=status.HTTP_400_BAD_REQUEST)
 
-    rows = (
+    elif role == "qa":
+        requested_coach_email = (request.query_params.get("coach_email") or "").strip().lower()
+        if not requested_coach_email:
+            return Response(empty_coach_wellbeing_response())
+
+    else:
+        return Response({"detail": "Forbidden"}, status=status.HTTP_403_FORBIDDEN)
+
+    monitoring_qs = WellbeingSafeguardingMonitoringSystem.objects.using("wellbeing").all()
+
+    if requested_coach_email:
+        monitoring_qs = monitoring_qs.filter(coach_email__iexact=requested_coach_email)
+
+    monitoring_rows = list(monitoring_qs.order_by("learner_name", "id"))
+
+    automation_rows = list(
         SafeguardingWellbeingAutomation.objects.using("wellbeing")
         .all()
-        .order_by("-updated_at")
+        .order_by("-updated_at", "-wellbeing_record_id")
     )
 
-    monitoring_rows = WellbeingSafeguardingMonitoringSystem.objects.using("wellbeing").all()
+    latest_automation_by_learner_id = {}
 
-    monitoring_by_id = {
-        str(item.id): item
-        for item in monitoring_rows
-    }
+    for row in automation_rows:
+        follow = parse_json_field(row.follow_up_by_coach, {})
+        suggested = parse_json_field(row.suggested_coach_actions, {})
+        apprentice = parse_json_field(row.apprentice_dashboard, {})
+
+        learner_id = extract_learner_id(follow, suggested, apprentice)
+        if not learner_id:
+            continue
+
+        if learner_id in latest_automation_by_learner_id:
+            continue
+
+        latest_automation_by_learner_id[learner_id] = {
+            "row": row,
+            "follow": follow,
+            "suggested": suggested,
+            "apprentice": apprentice,
+        }
 
     learners = []
     follow_ups = []
@@ -376,91 +517,114 @@ def coach_wellbeing_dashboard(request):
 
     trend_buckets = {}
 
-    seen_learner_ids = set()
+    seen_monitoring_ids = set()
     seen_followups = set()
     seen_actions = set()
 
-    for row in rows:
-        follow = parse_json_field(row.follow_up_by_coach, {})
-        suggested = parse_json_field(row.suggested_coach_actions, {})
-        apprentice = parse_json_field(row.apprentice_dashboard, {})
-
-        learner_id = follow.get("learnerId")
-        learner_name = (
-            follow.get("learnerName")
-            or suggested.get("learnerName")
-            or apprentice.get("learnerName")
-            or "Unknown learner"
-        )
-
-        student_meta = monitoring_by_id.get(str(learner_id)) if learner_id is not None else None
-
-        # اعرض فقط الطلاب اللي تم عمل match لهم فعلا
-        if not student_meta:
+    for student_meta in monitoring_rows:
+        student_unique_key = str(getattr(student_meta, "id", "") or "").strip()
+        if not student_unique_key or student_unique_key in seen_monitoring_ids:
             continue
 
-        row_coach_email = ((getattr(student_meta, "coach_email", "") or "").strip().lower())
-        row_coach_name = getattr(student_meta, "coach_name", "") or ""
-        row_student_email = getattr(student_meta, "learner_email", "") or ""
-        row_programme = getattr(student_meta, "programme", "") or ""
+        seen_monitoring_ids.add(student_unique_key)
 
-        # فلترة حسب الكوتش
-        if requested_coach_email and row_coach_email != requested_coach_email:
+        row_student_name = (getattr(student_meta, "learner_name", "") or "").strip() or "Unknown learner"
+        row_student_email = (getattr(student_meta, "learner_email", "") or "").strip()
+        row_coach_name = (getattr(student_meta, "coach_name", "") or "").strip()
+        row_coach_email = (getattr(student_meta, "coach_email", "") or "").strip().lower()
+        row_programme = (getattr(student_meta, "programme", "") or "").strip()
+
+        matched = latest_automation_by_learner_id.get(student_unique_key)
+
+        if not matched:
+            learners.append({
+                "studentId": int(student_meta.id),
+                "studentName": row_student_name,
+                "studentEmail": row_student_email,
+                "coachName": row_coach_name,
+                "coachEmail": row_coach_email,
+                "programme": row_programme,
+                "lastSurveyDate": None,
+                "wellbeingScore": None,
+                "engagementScore": None,
+                "providerSupportScore": None,
+                "riskLevel": "green",
+                "recommendedAction": "No wellbeing data yet",
+                "hasOpenTicket": False,
+                "nonResponder": False,
+                "followUpReason": "",
+                "safeguardingFlag": False,
+                "flaggedDomains": [],
+                "hasWellbeingData": False,
+                "countedInSummary": False,
+            })
             continue
+
+        row = matched["row"]
+        follow = matched["follow"]
+        suggested = matched["suggested"]
+        apprentice = matched["apprentice"]
 
         indicators = parse_json_field(follow.get("indicators"), {})
         summary = parse_json_field(follow.get("summary"), {})
         issues = parse_json_field(follow.get("issues"), {})
 
-        last_survey_date_raw = indicators.get("lastSurveyDate")
-        last_survey_date = safe_date(last_survey_date_raw)
+        learner_name = (
+            row_student_name
+            or follow.get("learnerName")
+            or suggested.get("learnerName")
+            or apprentice.get("learnerName")
+            or "Unknown learner"
+        )
 
-        urgency = follow.get("urgency")
+        last_survey_date = safe_date(
+            indicators.get("lastSurveyDate")
+            or apprentice.get("lastSurveyDate")
+        )
+
+        urgency = follow.get("urgency") or ""
         safeguarding_flag = bool(indicators.get("safeguardingFlag"))
-        risk_score = follow.get("riskScore") or 0
-        open_tickets = indicators.get("openTickets") or 0
+        risk_score = safe_int(follow.get("riskScore"), 0)
+        open_tickets = safe_int(indicators.get("openTickets"), 0)
 
         risk_level = map_urgency_to_risk(urgency, safeguarding_flag=safeguarding_flag)
 
-        student_unique_key = str(getattr(student_meta, "id", "") or learner_id or row.wellbeing_record_id)
-        is_new_student = student_unique_key not in seen_learner_ids
+        wellbeing_score = getattr(student_meta, "emotional_stress_resilience_score", None)
+        engagement_score = getattr(student_meta, "personal_wellbeing_protective_factors_score", None)
+        provider_support_score = getattr(student_meta, "provider_culture_support_score", None)
 
-        if is_new_student:
-            seen_learner_ids.add(student_unique_key)
+        caseload += 1
+        open_tickets_total += open_tickets
 
-            if risk_level == "red":
-                at_risk += 1
+        if risk_level == "red":
+            at_risk += 1
 
-            open_tickets_total += open_tickets
-            caseload += 1
+        if last_survey_date is None:
+            non_responders += 1
 
-            learner_row = {
-                "studentId": int(learner_id) if learner_id is not None else row.wellbeing_record_id,
-                "studentName": learner_name,
-                "studentEmail": row_student_email,
-                "coachName": row_coach_name,
-                "coachEmail": row_coach_email,
-                "programme": row_programme,
-                "lastSurveyDate": last_survey_date,
-                "wellbeingScore": None,
-                "engagementScore": None,
-                "providerSupportScore": None,
-                "riskLevel": risk_level,
-                "recommendedAction": summary.get("cardTitle") or "Follow up required",
-                "hasOpenTicket": open_tickets > 0,
-                "nonResponder": last_survey_date is None,
-                "followUpReason": summary.get("followUpReason") or "",
-                "safeguardingFlag": safeguarding_flag,
-                "flaggedDomains": issues.get("flaggedDomains") or [],
-            }
-
-            learners.append(learner_row)
-
-            if last_survey_date is None:
-                non_responders += 1
+        learners.append({
+            "studentId": int(student_meta.id),
+            "studentName": learner_name,
+            "studentEmail": row_student_email,
+            "coachName": row_coach_name,
+            "coachEmail": row_coach_email,
+            "programme": row_programme,
+            "lastSurveyDate": last_survey_date,
+            "wellbeingScore": wellbeing_score,
+            "engagementScore": engagement_score,
+            "providerSupportScore": provider_support_score,
+            "riskLevel": risk_level,
+            "recommendedAction": summary.get("cardTitle") or "Follow up required",
+            "hasOpenTicket": open_tickets > 0,
+            "nonResponder": last_survey_date is None,
+            "followUpReason": summary.get("followUpReason") or "",
+            "safeguardingFlag": safeguarding_flag,
+            "flaggedDomains": issues.get("flaggedDomains") or [],
+            "hasWellbeingData": True,
+            "countedInSummary": True,
+        })
 
         followup_key = f"{student_unique_key}|{summary.get('cardTitle') or ''}|{summary.get('followUpReason') or ''}"
-
         if followup_key not in seen_followups:
             seen_followups.add(followup_key)
 
@@ -472,7 +636,7 @@ def coach_wellbeing_dashboard(request):
                 "learnerEmail": row_student_email,
                 "coachName": row_coach_name,
                 "coachEmail": row_coach_email,
-                "dueDate": "Within 24 hours" if str(urgency).lower() == "critical" else "Review soon",
+                "dueDate": "Within 24 hours" if str(urgency).strip().lower() == "critical" else "Review soon",
                 "reason": summary.get("followUpReason") or "",
             })
 
@@ -482,7 +646,6 @@ def coach_wellbeing_dashboard(request):
                 continue
 
             action_key = f"{student_unique_key}|{action.get('title') or ''}|{action.get('reason') or ''}"
-
             if action_key in seen_actions:
                 continue
 
@@ -518,6 +681,13 @@ def coach_wellbeing_dashboard(request):
 
             if risk_level == "red":
                 trend_buckets[month_key]["red_count"] += 1
+
+    learners.sort(
+        key=lambda item: (
+            0 if item.get("hasWellbeingData") else 1,
+            str(item.get("studentName") or "").lower(),
+        )
+    )
 
     trends = []
     for month_key in sorted(trend_buckets.keys()):
