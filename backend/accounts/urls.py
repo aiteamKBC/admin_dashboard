@@ -1,6 +1,6 @@
 from django.urls import path
 from .views import LoginView, MicrosoftCallbackView, MicrosoftLoginView, MicrosoftResultView
-from .evidence_views import GetStudentComponentsView, MarkEvidenceView
+from .evidence_views import GetStudentComponentsView, MarkEvidenceView, PollMarkingReportView
 
 urlpatterns = [
     path("login/", LoginView.as_view(), name="login"),
@@ -10,4 +10,6 @@ urlpatterns = [
     path("callback/", MicrosoftCallbackView.as_view(), name="microsoft_callback"),
     path("student-components/", GetStudentComponentsView.as_view(), name="student_components"),
     path("mark-evidence/", MarkEvidenceView.as_view(), name="mark_evidence"),
+    path("poll-marking-report/", PollMarkingReportView.as_view(), name="poll_marking_report"),
+    path("poll-marking-result/", PollMarkingReportView.as_view(), name="poll_marking_result"),
 ]
