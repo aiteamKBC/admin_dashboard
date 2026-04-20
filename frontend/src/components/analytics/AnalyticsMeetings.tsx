@@ -836,10 +836,16 @@ export default function AnalyticsMeetings({ onOpenSidebar }: { onOpenSidebar?: (
       const params = new URLSearchParams();
       if (student.email) {
         params.append("student_email", student.email);
-      } else if (student.id) {
+      }
+      if (student.id) {
         params.append("student_id", student.id);
-      } else {
-        throw new Error("Student email or ID is required");
+      }
+      if (student.fullName) {
+        params.append("student_name", student.fullName);
+      }
+
+      if (!student.email && !student.id && !student.fullName) {
+        throw new Error("Student email, ID, or name is required");
       }
 
       const response = await fetch(`/api/accounts/student-components/?${params}`, {
@@ -903,7 +909,9 @@ export default function AnalyticsMeetings({ onOpenSidebar }: { onOpenSidebar?: (
     if (!evidenceModal.data) return;
 
     const modalEvidenceId = String(evidenceItem?.id || "");
-    const modalProgram = String(evidenceModal.data?.program || evidenceModal.data?.group || "");
+    const modalProgram = String(
+      evidenceModal.data?.target_sheet || evidenceModal.data?.program || evidenceModal.data?.group || ""
+    );
 
     setEvidenceModal((prev) => ({
       ...prev,
@@ -939,6 +947,7 @@ export default function AnalyticsMeetings({ onOpenSidebar }: { onOpenSidebar?: (
           student_id: evidenceModal.data.student_id,
           student_email: evidenceModal.data.student_email,
           student_name: evidenceModal.studentName || evidenceModal.data.student_email,
+          target_sheet: evidenceModal.data.target_sheet,
           group: evidenceModal.data.group,
           program: evidenceModal.data.program || evidenceModal.data.group,
           evidence_id: evidenceItem.id,
