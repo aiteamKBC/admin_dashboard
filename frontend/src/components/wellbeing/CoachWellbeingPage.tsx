@@ -19,7 +19,7 @@ import {
   YAxis,
 } from "recharts";
 
-import { getCoachWellbeing, getCoachOptions } from "@/services/coachWellbeing";
+import { getCoachWellbeing, getCoachOptions, createSupportTicket, } from "@/services/coachWellbeing";
 import type {
   CoachLearnerRow,
   CoachWellbeingResponse,
@@ -32,6 +32,27 @@ import type {
 type CoachOption = {
   value: string;
   label: string;
+};
+
+type TicketableLearnerRow = CoachLearnerRow & {
+  hasOpenTicket?: boolean;
+  openTicketCount?: number;
+};
+
+type SupportTicketFormState = {
+  ticket_type: "wellbeing" | "safeguarding";
+  subject: string;
+  details: string;
+  urgency: "low" | "medium" | "high" | "urgent";
+  preferred_contact: "email" | "phone";
+};
+
+const initialTicketForm: SupportTicketFormState = {
+  ticket_type: "wellbeing",
+  subject: "",
+  details: "",
+  urgency: "medium",
+  preferred_contact: "email",
 };
 
 const emptyDashboard: CoachWellbeingResponse = {
@@ -109,11 +130,17 @@ function StatCard({
   );
 }
 
-function LearnerTable({ rows }: { rows: CoachLearnerRow[] }) {
+function LearnerTable({
+  rows,
+  onOpenTicket,
+}: {
+  rows: TicketableLearnerRow[];
+  onOpenTicket: (row: TicketableLearnerRow) => void;
+}) {
   return (
     <div className="h-full overflow-hidden">
       <div className="custom-scroll h-full overflow-auto">
-        <table className="w-full min-w-[760px] text-sm">
+        <table className="w-full min-w-[940px] text-sm">
           <thead className="sticky top-0 z-10 bg-white">
             <tr className="border-b border-[#ECE7F7] text-left text-[#7B6D9B]">
               <th className="pb-3 font-medium">Learner</th>
@@ -123,38 +150,57 @@ function LearnerTable({ rows }: { rows: CoachLearnerRow[] }) {
               <th className="pb-3 font-medium">Provider</th>
               <th className="pb-3 font-medium">Risk</th>
               <th className="pb-3 font-medium">Action</th>
+              <th className="pb-3 font-medium">Follow up</th>
             </tr>
           </thead>
 
           <tbody>
-            {rows.map((row, index) => (
-              <tr
-                key={`${row.studentId ?? row.studentName ?? "learner"}-${index}`}
-                className="border-b border-[#F1EDF8] last:border-0"
-              >
-                <td className="py-4">
-                  <div className="font-medium text-[#241453]">{row.studentName || "-"}</div>
-                  <div className="text-xs text-slate-500">{row.studentEmail || ""}</div>
-                </td>
+            {rows.map((row, index) => {
+              const hasOpenTicket = Boolean(row.hasOpenTicket);
+              const openTicketCount = Number(row.openTicketCount || 0);
 
-                <td className="py-4 text-slate-600">{row.lastSurveyDate || "No survey"}</td>
-                <td className="py-4 text-[#241453]">{row.wellbeingScore ?? "-"}</td>
-                <td className="py-4 text-[#241453]">{row.engagementScore ?? "-"}</td>
-                <td className="py-4 text-[#241453]">{row.providerSupportScore ?? "-"}</td>
+              return (
+                <tr
+                  key={`${row.studentId ?? row.studentName ?? "learner"}-${index}`}
+                  className="border-b border-[#F1EDF8] last:border-0"
+                >
+                  <td className="py-4">
+                    <div className="font-medium text-[#241453]">{row.studentName || "-"}</div>
+                    <div className="text-xs text-slate-500">{row.studentEmail || ""}</div>
+                  </td>
 
-                <td className="py-4">
-                  <span
-                    className={`inline-flex rounded-md px-3 py-1 text-xs font-medium capitalize ${riskBadgeClass(
-                      row.riskLevel
-                    )}`}
-                  >
-                    {row.riskLevel}
-                  </span>
-                </td>
+                  <td className="py-4 text-slate-600">{row.lastSurveyDate || "No survey"}</td>
+                  <td className="py-4 text-[#241453]">{row.wellbeingScore ?? "-"}</td>
+                  <td className="py-4 text-[#241453]">{row.engagementScore ?? "-"}</td>
+                  <td className="py-4 text-[#241453]">{row.providerSupportScore ?? "-"}</td>
 
-                <td className="py-4 text-slate-600">{row.recommendedAction || "-"}</td>
-              </tr>
-            ))}
+                  <td className="py-4">
+                    <span
+                      className={`inline-flex rounded-md px-3 py-1 text-xs font-medium capitalize ${riskBadgeClass(
+                        row.riskLevel
+                      )}`}
+                    >
+                      {row.riskLevel}
+                    </span>
+                  </td>
+
+                  <td className="py-4 text-slate-600">{row.recommendedAction || "-"}</td>
+
+                  <td className="py-4">
+                    <button
+                      type="button"
+                      onClick={() => onOpenTicket(row)}
+                      className={`inline-flex min-w-[130px] items-center justify-center rounded-xl px-4 py-2 text-sm font-medium transition ${hasOpenTicket
+                        ? "border border-[#D9CFF3] bg-[#F5F1FC] text-[#6248BE] hover:bg-[#EEE7FB]"
+                        : "bg-[#241453] text-white hover:bg-[#362063]"
+                        }`}
+                    >
+                      {openTicketCount > 0 ? `Open ticket (${openTicketCount})` : "Open ticket"}
+                    </button>
+                  </td>
+                </tr>
+              );
+            })}
           </tbody>
         </table>
       </div>
@@ -252,6 +298,154 @@ function CoachSelect({
   );
 }
 
+function OpenTicketModal({
+  open,
+  learner,
+  form,
+  saving,
+  error,
+  onClose,
+  onChange,
+  onSubmit,
+}: {
+  open: boolean;
+  learner: TicketableLearnerRow | null;
+  form: SupportTicketFormState;
+  saving: boolean;
+  error: string;
+  onClose: () => void;
+  onChange: <K extends keyof SupportTicketFormState>(
+    key: K,
+    value: SupportTicketFormState[K]
+  ) => void;
+  onSubmit: (e: React.FormEvent<HTMLFormElement>) => void;
+}) {
+  if (!open || !learner) return null;
+
+  return (
+    <div className="fixed inset-0 z-[80] flex items-center justify-center bg-black/40 p-4">
+      <div className="w-full max-w-2xl rounded-3xl bg-white p-6 shadow-2xl">
+        <div className="mb-5 flex items-start justify-between gap-4">
+          <div>
+            <h3 className="text-xl font-semibold text-[#241453]">Open support ticket</h3>
+            <p className="mt-1 text-sm text-[#7B6D9B]">
+              Demo form for now, data will still be saved in support_tickets.
+            </p>
+          </div>
+
+          <button
+            type="button"
+            onClick={onClose}
+            disabled={saving}
+            className="rounded-xl border border-[#E7E2F3] px-4 py-2 text-sm text-[#241453]"
+          >
+            Close
+          </button>
+        </div>
+
+        <div className="mb-5 rounded-2xl bg-[#F8F6FC] p-4">
+          <div className="text-sm font-medium text-[#241453]">{learner.studentName || "-"}</div>
+          <div className="mt-1 text-sm text-slate-500">{learner.studentEmail || "-"}</div>
+        </div>
+
+        <form onSubmit={onSubmit} className="space-y-4">
+          <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+            <div>
+              <label className="mb-2 block text-sm font-medium text-[#241453]">Ticket type</label>
+              <select
+                value={form.ticket_type}
+                onChange={(e) =>
+                  onChange("ticket_type", e.target.value as "wellbeing" | "safeguarding")
+                }
+                className="h-11 w-full rounded-xl border border-[#DED5F3] px-3 text-sm outline-none"
+              >
+                <option value="wellbeing">Wellbeing</option>
+                <option value="safeguarding">Safeguarding</option>
+              </select>
+            </div>
+
+            <div>
+              <label className="mb-2 block text-sm font-medium text-[#241453]">Urgency</label>
+              <select
+                value={form.urgency}
+                onChange={(e) =>
+                  onChange("urgency", e.target.value as "low" | "medium" | "high" | "urgent")
+                }
+                className="h-11 w-full rounded-xl border border-[#DED5F3] px-3 text-sm outline-none"
+              >
+                <option value="low">Low</option>
+                <option value="medium">Medium</option>
+                <option value="high">High</option>
+                <option value="urgent">Urgent</option>
+              </select>
+            </div>
+          </div>
+
+          <div>
+            <label className="mb-2 block text-sm font-medium text-[#241453]">Subject</label>
+            <input
+              value={form.subject}
+              onChange={(e) => onChange("subject", e.target.value)}
+              placeholder="Enter ticket subject"
+              className="h-11 w-full rounded-xl border border-[#DED5F3] px-3 text-sm outline-none"
+            />
+          </div>
+
+          <div>
+            <label className="mb-2 block text-sm font-medium text-[#241453]">Details</label>
+            <textarea
+              value={form.details}
+              onChange={(e) => onChange("details", e.target.value)}
+              placeholder="Demo notes for now..."
+              rows={5}
+              className="w-full rounded-xl border border-[#DED5F3] px-3 py-3 text-sm outline-none"
+            />
+          </div>
+
+          <div>
+            <label className="mb-2 block text-sm font-medium text-[#241453]">
+              Preferred contact
+            </label>
+            <select
+              value={form.preferred_contact}
+              onChange={(e) => onChange("preferred_contact", e.target.value as "email" | "phone")}
+              className="h-11 w-full rounded-xl border border-[#DED5F3] px-3 text-sm outline-none"
+            >
+              <option value="email">Email</option>
+              <option value="phone">Phone</option>
+            </select>
+          </div>
+
+          {error ? (
+            <div className="rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-600">
+              {error}
+            </div>
+          ) : null}
+
+          <div className="flex justify-end gap-3 pt-2">
+            <button
+              type="button"
+              onClick={onClose}
+              disabled={saving}
+              className="rounded-xl border border-[#DED5F3] px-5 py-2.5 text-sm font-medium text-[#241453]"
+            >
+              Cancel
+            </button>
+
+            <button
+              type="submit"
+              disabled={saving}
+              className="rounded-xl bg-[#241453] px-5 py-2.5 text-sm font-medium text-white hover:bg-[#362063] disabled:opacity-60"
+            >
+              {saving ? "Saving..." : "Create ticket"}
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+  );
+}
+
 type CoachWellbeingPageProps = {
   setMobileOpen?: React.Dispatch<React.SetStateAction<boolean>>;
   isDesktop?: boolean;
@@ -267,6 +461,12 @@ export default function CoachWellbeingPage({ setMobileOpen, isDesktop }: CoachWe
   const [error, setError] = useState("");
   const [coachOptions, setCoachOptions] = useState<CoachOption[]>([]);
   const [selectedCoachEmail, setSelectedCoachEmail] = useState("");
+
+  const [ticketModalOpen, setTicketModalOpen] = useState(false);
+  const [ticketSaving, setTicketSaving] = useState(false);
+  const [ticketError, setTicketError] = useState("");
+  const [selectedLearner, setSelectedLearner] = useState<TicketableLearnerRow | null>(null);
+  const [ticketForm, setTicketForm] = useState<SupportTicketFormState>(initialTicketForm);
 
   useEffect(() => {
     const token = localStorage.getItem("access") || localStorage.getItem("token");
@@ -322,6 +522,79 @@ export default function CoachWellbeingPage({ setMobileOpen, isDesktop }: CoachWe
     };
   }, [role]);
 
+  function resetTicketModal() {
+    setTicketModalOpen(false);
+    setSelectedLearner(null);
+    setTicketError("");
+    setTicketForm(initialTicketForm);
+  }
+
+  function handleOpenTicket(row: TicketableLearnerRow) {
+    setSelectedLearner(row);
+    setTicketError("");
+
+    setTicketForm({
+      ticket_type: row.riskLevel === "red" ? "safeguarding" : "wellbeing",
+      subject: row.recommendedAction || `Support follow up for ${row.studentName || "learner"}`,
+      details: row.followUpReason || "",
+      urgency: row.riskLevel === "red" ? "high" : "medium",
+      preferred_contact: "email",
+    });
+
+    setTicketModalOpen(true);
+  }
+
+  function handleTicketFieldChange<K extends keyof SupportTicketFormState>(
+    key: K,
+    value: SupportTicketFormState[K]
+  ) {
+    setTicketForm((prev) => ({
+      ...prev,
+      [key]: value,
+    }));
+  }
+
+  async function handleCreateTicket(e: React.FormEvent<HTMLFormElement>) {
+    e.preventDefault();
+
+    if (!selectedLearner?.studentId) {
+      setTicketError("Learner id not found");
+      return;
+    }
+
+    if (!ticketForm.subject.trim()) {
+      setTicketError("Subject is required");
+      return;
+    }
+
+    try {
+      setTicketSaving(true);
+      setTicketError("");
+
+      await createSupportTicket({
+        wellbeing_record_id: selectedLearner.studentId,
+        ticket_type: ticketForm.ticket_type,
+        subject: ticketForm.subject.trim(),
+        details: ticketForm.details.trim(),
+        urgency: ticketForm.urgency,
+        preferred_contact: ticketForm.preferred_contact,
+      });
+
+      const refreshed =
+        role === "qa"
+          ? await getCoachWellbeing(selectedCoachEmail)
+          : await getCoachWellbeing();
+
+      setData(refreshed || emptyDashboard);
+      resetTicketModal();
+    } catch (err: any) {
+      console.error("create support ticket error", err);
+      setTicketError(err?.message || "Failed to create support ticket");
+    } finally {
+      setTicketSaving(false);
+    }
+  }
+
   useEffect(() => {
     let mounted = true;
 
@@ -360,8 +633,8 @@ export default function CoachWellbeingPage({ setMobileOpen, isDesktop }: CoachWe
     };
   }, [role, selectedCoachEmail, optionsLoading]);
 
-  const filteredLearners = useMemo(() => {
-    const learners = data?.learners || [];
+  const filteredLearners = useMemo<TicketableLearnerRow[]>(() => {
+    const learners = (data?.learners || []) as TicketableLearnerRow[];
     const q = search.trim().toLowerCase();
 
     if (!q) return learners;
@@ -472,7 +745,7 @@ export default function CoachWellbeingPage({ setMobileOpen, isDesktop }: CoachWe
     );
   }
 
-    const isPageBootstrapping =
+  const isPageBootstrapping =
     loading ||
     data === null ||
     (role === "qa" && (optionsLoading || !selectedCoachEmail));
@@ -572,7 +845,7 @@ export default function CoachWellbeingPage({ setMobileOpen, isDesktop }: CoachWe
             </h2>
 
             <div className="min-h-0 flex-1 overflow-hidden">
-              <LearnerTable rows={filteredLearners} />
+              <LearnerTable rows={filteredLearners} onOpenTicket={handleOpenTicket} />
             </div>
           </div>
         </div>
@@ -721,6 +994,19 @@ export default function CoachWellbeingPage({ setMobileOpen, isDesktop }: CoachWe
           {error}
         </div>
       ) : null}
+
+      <OpenTicketModal
+        open={ticketModalOpen}
+        learner={selectedLearner}
+        form={ticketForm}
+        saving={ticketSaving}
+        error={ticketError}
+        onClose={() => {
+          if (!ticketSaving) resetTicketModal();
+        }}
+        onChange={handleTicketFieldChange}
+        onSubmit={handleCreateTicket}
+      />
     </div>
   );
 }

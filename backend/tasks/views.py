@@ -23,7 +23,7 @@ from rest_framework.response import Response
 import json
 from collections import Counter
 
-from .models import SafeguardingWellbeingAutomation, WellbeingSafeguardingMonitoringSystem, CoachData
+from .models import SafeguardingWellbeingAutomation, WellbeingSafeguardingMonitoringSystem, CoachData, SupportTicket
 
 
 from .models import CoachData
@@ -451,6 +451,85 @@ def extract_learner_id(*sources):
 
     return None
 
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+def create_support_ticket(request):
+    user = request.user
+    profile = getattr(user, "profile", None)
+    role = (getattr(profile, "role", "") or "").strip().lower()
+
+    if role not in ["coach", "qa"]:
+        return Response({"detail": "Forbidden"}, status=status.HTTP_403_FORBIDDEN)
+
+    wellbeing_record_id = request.data.get("wellbeing_record_id") or request.data.get("studentId")
+    wellbeing_record_id = str(wellbeing_record_id or "").strip()
+
+    if not wellbeing_record_id:
+        return Response(
+            {"detail": "wellbeing_record_id is required"},
+            status=status.HTTP_400_BAD_REQUEST
+        )
+
+    learner = (
+        WellbeingSafeguardingMonitoringSystem.objects.using("wellbeing")
+        .filter(id=wellbeing_record_id)
+        .first()
+    )
+
+    if not learner:
+        return Response({"detail": "Learner not found"}, status=status.HTTP_404_NOT_FOUND)
+
+    if role == "coach":
+        request_coach_email = (getattr(user, "email", "") or "").strip().lower()
+        learner_coach_email = (getattr(learner, "coach_email", "") or "").strip().lower()
+
+        if not request_coach_email or request_coach_email != learner_coach_email:
+            return Response({"detail": "Forbidden"}, status=status.HTTP_403_FORBIDDEN)
+
+    ticket_type = (request.data.get("ticket_type") or "wellbeing").strip().lower()
+    if ticket_type not in ["wellbeing", "safeguarding"]:
+        ticket_type = "wellbeing"
+
+    subject = (request.data.get("subject") or "").strip()
+    if not subject:
+        return Response({"detail": "subject is required"}, status=status.HTTP_400_BAD_REQUEST)
+
+    details = (request.data.get("details") or "").strip()
+
+    urgency = (request.data.get("urgency") or "medium").strip().lower()
+    if urgency not in ["low", "medium", "high", "urgent"]:
+        urgency = "medium"
+
+    preferred_contact = (request.data.get("preferred_contact") or "email").strip().lower()
+    if preferred_contact not in ["email", "phone"]:
+        preferred_contact = "email"
+
+    now = timezone.now()
+
+    ticket = SupportTicket.objects.using("wellbeing").create(
+        wellbeing_record_id=learner.id,
+        ticket_type=ticket_type,
+        full_name=(getattr(learner, "learner_name", "") or "").strip(),
+        email=(getattr(learner, "learner_email", "") or "").strip(),
+        subject=subject,
+        details=details,
+        urgency=urgency,
+        preferred_contact=preferred_contact,
+        status="open",
+        created_at=now,
+        updated_at=now,
+    )
+
+    return Response(
+        {
+            "id": ticket.id,
+            "wellbeing_record_id": learner.id,
+            "status": ticket.status,
+            "message": "Support ticket created successfully",
+        },
+        status=status.HTTP_201_CREATED,
+    )
+
 
 @api_view(["GET"])
 @permission_classes([IsAuthenticated])
@@ -486,6 +565,24 @@ def coach_wellbeing_dashboard(request):
     )
 
     latest_automation_by_learner_id = {}
+
+    open_ticket_rows = list(
+        SupportTicket.objects.using("wellbeing")
+        .filter(status__iexact="open")
+        .values("wellbeing_record_id", "email")
+    )
+
+    open_ticket_counts = Counter()
+
+    for ticket in open_ticket_rows:
+        record_id = str(ticket.get("wellbeing_record_id") or "").strip()
+        if record_id:
+            open_ticket_counts[record_id] += 1
+            continue
+
+        email_key = (ticket.get("email") or "").strip().lower()
+        if email_key:
+            open_ticket_counts[email_key] += 1
 
     for row in automation_rows:
         follow = parse_json_field(row.follow_up_by_coach, {})
@@ -534,6 +631,13 @@ def coach_wellbeing_dashboard(request):
         row_coach_email = (getattr(student_meta, "coach_email", "") or "").strip().lower()
         row_programme = (getattr(student_meta, "programme", "") or "").strip()
 
+        row_open_tickets = open_ticket_counts.get(student_unique_key, 0)
+
+        if not row_open_tickets and row_student_email:
+            row_open_tickets = open_ticket_counts.get(row_student_email.strip().lower(), 0)
+
+        open_tickets_total += row_open_tickets
+
         matched = latest_automation_by_learner_id.get(student_unique_key)
 
         if not matched:
@@ -550,7 +654,8 @@ def coach_wellbeing_dashboard(request):
                 "providerSupportScore": None,
                 "riskLevel": "green",
                 "recommendedAction": "No wellbeing data yet",
-                "hasOpenTicket": False,
+                "hasOpenTicket": row_open_tickets > 0,
+                "openTicketCount": row_open_tickets,
                 "nonResponder": False,
                 "followUpReason": "",
                 "safeguardingFlag": False,
@@ -585,7 +690,7 @@ def coach_wellbeing_dashboard(request):
         urgency = follow.get("urgency") or ""
         safeguarding_flag = bool(indicators.get("safeguardingFlag"))
         risk_score = safe_int(follow.get("riskScore"), 0)
-        open_tickets = safe_int(indicators.get("openTickets"), 0)
+        # open_tickets = safe_int(indicators.get("openTickets"), 0)
 
         risk_level = map_urgency_to_risk(urgency, safeguarding_flag=safeguarding_flag)
 
@@ -594,7 +699,7 @@ def coach_wellbeing_dashboard(request):
         provider_support_score = getattr(student_meta, "provider_culture_support_score", None)
 
         caseload += 1
-        open_tickets_total += open_tickets
+        # open_tickets_total += open_tickets
 
         if risk_level == "red":
             at_risk += 1
@@ -615,7 +720,8 @@ def coach_wellbeing_dashboard(request):
             "providerSupportScore": provider_support_score,
             "riskLevel": risk_level,
             "recommendedAction": summary.get("cardTitle") or "Follow up required",
-            "hasOpenTicket": open_tickets > 0,
+            "hasOpenTicket": row_open_tickets > 0,
+            "openTicketCount": row_open_tickets,
             "nonResponder": last_survey_date is None,
             "followUpReason": summary.get("followUpReason") or "",
             "safeguardingFlag": safeguarding_flag,
@@ -677,7 +783,7 @@ def coach_wellbeing_dashboard(request):
 
             trend_buckets[month_key]["count"] += 1
             trend_buckets[month_key]["risk_total"] += risk_score
-            trend_buckets[month_key]["tickets"] += open_tickets
+            trend_buckets[month_key]["tickets"] += row_open_tickets
 
             if risk_level == "red":
                 trend_buckets[month_key]["red_count"] += 1

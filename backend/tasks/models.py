@@ -56,3 +56,22 @@ class WellbeingSafeguardingMonitoringSystem(models.Model):
     class Meta:
         managed = False
         db_table = "wellbeing_safeguarding_monitoring_system"
+
+# safeguarding
+class SupportTicket(models.Model):
+    id = models.BigAutoField(primary_key=True)
+    wellbeing_record_id = models.BigIntegerField(null=True, blank=True)
+    ticket_type = models.TextField(null=True, blank=True)
+    full_name = models.TextField(null=True, blank=True)
+    email = models.TextField(null=True, blank=True)
+    subject = models.TextField(null=True, blank=True)
+    details = models.TextField(null=True, blank=True)
+    urgency = models.TextField(null=True, blank=True)
+    preferred_contact = models.TextField(null=True, blank=True)
+    status = models.TextField(null=True, blank=True)
+    created_at = models.DateTimeField(null=True, blank=True)
+    updated_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        managed = False
+        db_table = "support_tickets"
