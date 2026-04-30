@@ -35,7 +35,7 @@ export default function Sidebar({
           type="button"
           aria-label="Close sidebar"
           onClick={() => setMobileOpen(false)}
-          className="fixed inset-0 z-40 bg-black/40 backdrop-blur-sm"
+          className="fixed inset-0 z-[55] bg-black/40 backdrop-blur-sm"
         />
       )}
 
@@ -43,7 +43,7 @@ export default function Sidebar({
         className={[
           "bg-gradient-to-b from-[#241453] to-[#442F73] text-gray-200",
           "flex flex-col justify-between transition-all duration-300",
-          "z-50",
+          "z-[60]",
           isDesktop ? "fixed left-0 top-0 h-screen" : "fixed left-0 top-0 h-screen w-64",
           isDrawer ? (mobileOpen ? "translate-x-0" : "-translate-x-full") : "",
           isDesktop ? (collapsed ? "w-20" : "w-64") : "",

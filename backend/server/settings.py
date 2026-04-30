@@ -115,7 +115,10 @@ CORS_ALLOWED_ORIGINS = [o.strip() for o in os.getenv("CORS_ALLOWED_ORIGINS", "ht
 # =========================
 # Media files (uploads)
 MEDIA_URL = "/media/"
-MEDIA_ROOT = BASE_DIR / "media"
+MEDIA_ROOT = os.getenv("MEDIA_ROOT", str(BASE_DIR / "media"))
+# Ensure the media directory exists at startup
+import pathlib
+pathlib.Path(MEDIA_ROOT).mkdir(parents=True, exist_ok=True)
 # =========================
 
 # Optional: allow cookies/auth if you need them later

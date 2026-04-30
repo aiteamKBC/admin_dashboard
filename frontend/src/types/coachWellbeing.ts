@@ -9,6 +9,10 @@ export type CoachLearnerRow = {
   wellbeingScore: number | null;
   engagementScore: number | null;
   providerSupportScore: number | null;
+  totalScore?: number | null;
+  safeguardingScore?: number | null;
+  trend?: "up" | "down" | "stable" | null;
+  trendDelta?: number | null;
   riskLevel: RiskLevel;
   recommendedAction: string;
   hasOpenTicket?: boolean;
@@ -33,9 +37,10 @@ export type CoachLearnerRow = {
 
 export type CoachTrendPoint = {
   month: string;
-  wellbeing: number;
-  engagement: number;
-  providerSupport: number;
+  total: number;
+  red: number;
+  amber: number;
+  green: number;
 };
 
 export type CoachFollowUpItem = {

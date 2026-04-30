@@ -108,7 +108,7 @@ function layoutDay(
   const positioned: Positioned[] = [];
   const more: MoreChip[] = [];
 
-  const MAX_COLS = 4;
+  const MAX_COLS = 3;
 
   for (const cluster of clusters) {
     // assign stable slots (interval partitioning)
@@ -172,65 +172,63 @@ function layoutDay(
   return { positioned, more };
 }
 
-/* ================= UI: Event Card (Light theme) ================= */
+/* ================= UI: Event Card ================= */
 
 function EventCard({ m }: { m: Positioned }) {
   const cancelled = isCancelledMeeting(m);
 
   const title = (m.serviceName || "Meeting").trim();
-  const subtitle = (m.customerName || m.coachName || "").trim();
+  const learner = (m.customerName || "").trim();
+  const time = [m.timeFrom, m.timeTo].filter(Boolean).join(" – ");
 
-  const veryNarrow = m._width <= 0.22;
+  // width thresholds (fraction of day column)
+  const isWide    = m._width > 0.55;   // ≥ 1 meeting alone or 2 wide cols
+  const isMedium  = m._width > 0.28;   // 3 overlapping
+  // below 0.28 = ultra-narrow (≈ 3rd slot in a 3-overlap group on small col)
 
-  const base =
-    "h-full rounded-xl border shadow-sm overflow-hidden px-2 py-1.5 " +
-    "hover:shadow-md hover:z-20 hover:scale-[1.01] transition";
-
-  const normalCard = "bg-[#F9F5FF]/70 border-[#E6DDF7]";
-  const cancelCard = "bg-rose-50 border-rose-200";
-
-  const dot = cancelled ? "bg-rose-500" : "bg-[#644D93]";
-  const badge = cancelled
-    ? "bg-white/70 border-rose-200 text-rose-700"
-    : "bg-white/70 border-[#E6DDF7] text-[#241453]";
+  const accentBar = cancelled ? "bg-rose-400" : "bg-[#644D93]";
+  const cardBg    = cancelled ? "bg-rose-50 border-rose-200" : "bg-[#F9F5FF]/80 border-[#E6DDF7]";
 
   return (
-    <div className={[base, cancelled ? cancelCard : normalCard].join(" ")}>
-      <div className="flex items-start gap-2">
-        <div className={["mt-0.5 w-2.5 h-2.5 rounded-full shrink-0", dot].join(" ")} />
+    <div
+      className={[
+        "h-full flex overflow-hidden rounded-xl border shadow-sm",
+        "hover:shadow-md hover:brightness-95 transition cursor-default select-none",
+        cardBg,
+      ].join(" ")}
+    >
+      {/* coloured left strip */}
+      <div className={["w-1 shrink-0 rounded-l-xl", accentBar].join(" ")} />
 
-        <div className="min-w-0 flex-1">
-          <div className="flex items-center gap-2">
-            <div className="text-[12px] font-semibold text-[#241453] line-clamp-1">{title}</div>
+      <div className="min-w-0 flex-1 px-1.5 py-1 flex flex-col justify-start gap-0.5">
+        {/* Title — always show, truncated */}
+        <p className="text-[11px] font-semibold text-[#241453] truncate leading-tight">
+          {title}
+        </p>
 
-            {!veryNarrow && (
-              <span className={["ml-auto text-[10px] px-2 py-0.5 rounded-full border shrink-0", badge].join(" ")}>
-                {cancelled ? "Cancelled" : "Scheduled"}
-              </span>
+        {/* Time — show on medium+ */}
+        {isMedium && time && (
+          <p className="text-[10px] text-[#241453]/60 truncate leading-tight">{time}</p>
+        )}
+
+        {/* Learner + badge — only when wide enough */}
+        {isWide && (
+          <>
+            {learner && (
+              <p className="text-[10px] text-[#241453]/70 truncate leading-tight">{learner}</p>
             )}
-          </div>
-
-          {!veryNarrow && (
-            <div className="mt-0.5 text-[11px] text-[#241453]/70 line-clamp-1">{subtitle || "—"}</div>
-          )}
-
-          <div className="mt-0.5 text-[11px] text-[#241453]/80">
-            <span className="opacity-90">
-              {m.timeFrom || ""} {m.timeTo ? `- ${m.timeTo}` : ""}
-            </span>
-          </div>
-
-          {!veryNarrow && m.joinWebUrl ? (
-            <a
-              href={m.joinWebUrl as any}
-              target="_blank"
-              rel="noreferrer"
-              className="mt-1 inline-block text-[11px] text-[#241453] underline underline-offset-2"
+            <span
+              className={[
+                "mt-0.5 self-start text-[9px] px-1.5 py-px rounded-full border",
+                cancelled
+                  ? "bg-white/70 border-rose-200 text-rose-700"
+                  : "bg-white/70 border-[#E6DDF7] text-[#644D93]",
+              ].join(" ")}
             >
-              Join
-            </a>
-          ) : null}
-        </div>
+              {cancelled ? "Cancelled" : "Scheduled"}
+            </span>
+          </>
+        )}
       </div>
     </div>
   );
@@ -502,9 +500,9 @@ export default function WeekTimeGrid({
     <>
       <div className="border rounded-2xl overflow-hidden bg-white">
         {/* IMPORTANT: one horizontal scroller for BOTH header + body */}
-        <div className="overflow-x-auto">
+        <div className="overflow-x-auto custom-scroll">
           {/* keep same min width for header + body */}
-          <div style={{ minWidth: 80 + nDays * 180 }}>
+          <div style={{ minWidth: 80 + nDays * 200 }}>
             {/* Header row (sticky) */}
             <div className="grid grid-cols-[80px_1fr] border-b bg-[#241453]/60 sticky top-0 z-30">
               <div className="p-3 text-xs text-[#241453]/60" />

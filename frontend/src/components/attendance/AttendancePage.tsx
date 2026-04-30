@@ -5,7 +5,7 @@ import CoachesList from "../coaches/CoachesList";
 import AttendanceTasksPanel from "./AttendanceTasksPanel";
 import MonthlySessionsWithLearners from "./MonthlySessionsWithLearners";
 
-import { fetchAllCoachesAnalytics, type CoachAnalytics } from "../../api";
+import { fetchAllCoachesAnalytics, getCachedCoachesAnalytics, isCacheFresh, type CoachAnalytics } from "../../api";
 
 /* ================= TYPES ================= */
 
@@ -360,35 +360,47 @@ export default function AttendancePage({ onOpenSidebar }: { onOpenSidebar?: () =
   const canSwitchCoach = isQA;
 
   useEffect(() => {
+    const applyCoaches = (data: any[]) => {
+      const normalized = data
+        .map((c: any) => {
+          const rawId = c.id ?? c.case_owner_id ?? c.caseOwnerId ?? c.coach_id ?? c.coachId;
+          return { ...c, id: Number(rawId) };
+        })
+        .filter((c: any) => Number.isFinite(c.id))
+        .filter((c: any) => !/^phone[12]$/i.test((c.case_owner ?? "").trim()));
+
+      setCoaches(normalized);
+
+      if (isQA) {
+        setSelectedCoachId(normalized[0]?.id ?? null);
+      } else {
+        const mine = normalized.find((c: any) => Number(c.id) === Number(selfCoachId));
+        setSelectedCoachId(mine?.id ?? (Number.isFinite(selfCoachId) ? selfCoachId : null));
+      }
+    };
+
     const load = async () => {
-      setLoading(true);
       setError(null);
+
+      // Show cache immediately
+      const cached = getCachedCoachesAnalytics();
+      if (cached) {
+        applyCoaches(cached);
+        setLoading(false);
+        if (isCacheFresh()) return; // fresh enough — skip network call
+      } else {
+        setLoading(true);
+      }
 
       try {
         const data = await fetchAllCoachesAnalytics();
-        const arr = Array.isArray(data) ? data : [];
-
-        const normalized = arr
-          .map((c: any) => {
-            const rawId = c.id ?? c.case_owner_id ?? c.caseOwnerId ?? c.coach_id ?? c.coachId;
-            const id = Number(rawId);
-            return { ...c, id };
-          })
-          .filter((c: any) => Number.isFinite(c.id));
-
-        setCoaches(normalized);
-
-        if (isQA) {
-          setSelectedCoachId(normalized[0]?.id ?? null);
-        } else {
-          const mine = normalized.find((c: any) => Number(c.id) === Number(selfCoachId));
-          setSelectedCoachId(mine?.id ?? (Number.isFinite(selfCoachId) ? selfCoachId : null));
-        }
-      } catch (e: any) {
-        console.error(e);
-        setError(e?.message || "Failed to load coaches");
-      } finally {
+        applyCoaches(Array.isArray(data) ? data : []);
         setLoading(false);
+      } catch (e: any) {
+        if (!cached) {
+          setError(e?.message || "Failed to load coaches");
+          setLoading(false);
+        }
       }
     };
 

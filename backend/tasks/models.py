@@ -52,6 +52,8 @@ class WellbeingSafeguardingMonitoringSystem(models.Model):
     provider_culture_support_score = models.FloatField(null=True, blank=True)
     safeguarding_vulnerability_score = models.FloatField(null=True, blank=True)
     trigger_count = models.IntegerField(null=True, blank=True)
+    risk_level = models.TextField(null=True, blank=True)
+    history_json = models.JSONField(null=True, blank=True)
 
     class Meta:
         managed = False
@@ -69,8 +71,11 @@ class SupportTicket(models.Model):
     urgency = models.TextField(null=True, blank=True)
     preferred_contact = models.TextField(null=True, blank=True)
     status = models.TextField(null=True, blank=True)
+    notes = models.JSONField(null=True, blank=True, default=list)
+    evidence = models.JSONField(null=True, blank=True, default=list)
     created_at = models.DateTimeField(null=True, blank=True)
     updated_at = models.DateTimeField(null=True, blank=True)
+    created_by = models.TextField(null=True, blank=True)
 
     class Meta:
         managed = False

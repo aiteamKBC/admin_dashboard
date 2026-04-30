@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
+import { Users } from "lucide-react";
 import type { Meeting } from "../../types/meetings";
-import { fetchAllCoachesAnalytics } from "../../api";
+import { fetchAllCoachesAnalytics, getCachedCoachesAnalytics, isCacheFresh } from "../../api";
 import WeekTimeGrid from "./WeekTimeGrid";
 import MonthGrid from "./MonthGrid";
 
@@ -56,11 +57,12 @@ const toHHMM = (v: unknown) => {
   return m ? `${m[1]}:${m[2]}` : "";
 };
 
-export default function BookingsCalendarPage() {
+export default function BookingsCalendarPage({ onOpenSidebar }: { onOpenSidebar?: () => void }) {
   const [calOpen, setCalOpen] = useState(false);
 
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [retryKey, setRetryKey] = useState(0);
 
   const [coaches, setCoaches] = useState<Coach[]>([]);
   const [allMeetings, setAllMeetings] = useState<Meeting[]>([]);
@@ -86,137 +88,138 @@ export default function BookingsCalendarPage() {
     if (/^coach\s*\d+$/.test(n)) return true;
 
     // hide API rows like "API Do Not Delete"
-    if (n.includes("api")) return true; // لو عايزاها أضيق: n.includes("api") && n.includes("delete")
+    if (n.includes("api")) return true;
+
+    // hide Phone1 / Phone2
+    if (/^phone[12]$/.test(n)) return true;
 
     return false;
+  };
+
+  const processRows = (rawData: any[]) => {
+    const rows: any[] = Array.isArray(rawData) ? rawData : [];
+    const role = localStorage.getItem("role");
+    const username = localStorage.getItem("username");
+
+    const hasCalendarEvents = rows.some((r) => {
+      const ce = r?.calendar_events;
+      return ce && typeof ce === "object" && Object.keys(ce).length > 0;
+    });
+
+    const list: Coach[] = rows
+      .map((r: any, idx: number) => {
+        const rawId = Number(r?.case_owner_id ?? r?.id);
+        const id = Number.isFinite(rawId) && rawId > 0 ? rawId : idx + 1;
+        const name = s(r?.case_owner).trim() || `Coach ${id}`;
+        return { id, case_owner: name };
+      })
+      .filter((c) => Boolean(c.case_owner))
+      .filter((c) => !shouldHideCoach(c.case_owner))
+      .sort((a, b) => a.case_owner.localeCompare(b.case_owner, "en", { sensitivity: "base" }));
+
+    const filteredList =
+      role === "coach" && username
+        ? list.filter((c) => c.case_owner === username)
+        : list;
+
+    const meetings: Meeting[] = [];
+
+    if (hasCalendarEvents) {
+      for (const r of rows) {
+        const coachIdRaw = Number(r?.case_owner_id ?? r?.id);
+        const coachId = Number.isFinite(coachIdRaw) ? coachIdRaw : undefined;
+        const coachName = s(r?.case_owner).trim() || (coachId ? `Coach ${coachId}` : "Coach");
+        const ce = (r?.calendar_events ?? {}) as Record<string, RawDbCalendarEvent[]>;
+
+        for (const [dayKey, events] of Object.entries(ce)) {
+          if (!Array.isArray(events)) continue;
+          for (const ev of events) {
+            const date = toDateKey(ev?.date ?? dayKey);
+            if (!date) continue;
+            const svcName = s(ev?.subject);
+            if (/^phone[12]$/i.test(svcName.trim())) continue;
+            meetings.push({
+              date, timeFrom: toHHMM(ev?.start), timeTo: toHHMM(ev?.end),
+              serviceName: svcName, customerName: "", meetingId: s(ev?.id),
+              joinWebUrl: (ev?.joinWebUrl ?? null) as any, coachId, coachName,
+            });
+          }
+        }
+      }
+    } else {
+      for (const r of rows) {
+        if (!Array.isArray(r?.upcomming_sessions?.meetings)) continue;
+        const coachIdRaw = Number(r?.id);
+        const coachId = Number.isFinite(coachIdRaw) ? coachIdRaw : undefined;
+        const coachName = s(r?.case_owner).trim() || (coachId ? `Coach ${coachId}` : "Coach");
+
+        for (const m of r.upcomming_sessions.meetings as RawUpcomingMeeting[]) {
+          const date = toDateKey(m?.date);
+          if (!date) continue;
+          const svcName = s(m?.serviceName);
+          if (/^phone[12]$/i.test(svcName.trim())) continue;
+          meetings.push({
+            date, timeFrom: s(m?.timeFrom), timeTo: s(m?.timeTo),
+            serviceName: svcName, customerName: s(m?.customerName),
+            meetingId: s(m?.meetingId), joinWebUrl: (m?.joinWebUrl ?? null) as any,
+            coachId, coachName,
+          });
+        }
+      }
+    }
+
+    return { filteredList, meetings };
   };
 
   useEffect(() => {
     let mounted = true;
 
     const load = async () => {
-      setLoading(true);
       setError(null);
 
-      try {
-        const data = await fetchAllCoachesAnalytics();
-        const rows: any[] = Array.isArray(data) ? data : (data as any)?.rows ?? [];
-
-        const hasCalendarEvents = rows.some((r) => {
-          const ce = r?.calendar_events;
-          return ce && typeof ce === "object" && Object.keys(ce).length > 0;
-        });
-
-        // coaches list
-        const list: Coach[] = rows
-          .map((r: any, idx: number) => {
-            const rawId = Number(r?.case_owner_id ?? r?.id);
-            const id = Number.isFinite(rawId) && rawId > 0 ? rawId : idx + 1;
-            const name = s(r?.case_owner).trim() || `Coach ${id}`;
-            return { id, case_owner: name };
-          })
-          .filter((c) => Boolean(c.case_owner))
-          .filter((c) => !shouldHideCoach(c.case_owner)) // add this line
-          .sort((a, b) => a.case_owner.localeCompare(b.case_owner, "en", { sensitivity: "base" }));
-
-        // Filter coaches based on role and username
-        const role = localStorage.getItem("role");
-        const username = localStorage.getItem("username");
-
-        let filteredList = list;
-
-        // If user is a coach, only show their own data
-        if (role === "coach" && username) {
-          filteredList = list.filter((c) => c.case_owner === username);
+      // 1. Show cache immediately — no loading delay
+      const cached = getCachedCoachesAnalytics();
+      if (cached) {
+        const { filteredList, meetings } = processRows(cached);
+        if (mounted) {
+          setCoaches(filteredList);
+          setAllMeetings(meetings);
+          setSelectedCoachIds(new Set(filteredList.length ? [filteredList[0]!.id] : []));
+          setLoading(false);
         }
-        // If role is "qa", show all coaches (no filtering)
+        if (isCacheFresh()) return; // fresh enough — skip network call
+      } else {
+        setLoading(true);
+      }
 
-        // meetings
-        const meetings: Meeting[] = [];
-
-        if (hasCalendarEvents) {
-          for (const r of rows) {
-            const coachIdRaw = Number(r?.case_owner_id ?? r?.id);
-            const coachId = Number.isFinite(coachIdRaw) ? coachIdRaw : undefined;
-
-            const coachName = s(r?.case_owner).trim() || (coachId ? `Coach ${coachId}` : "Coach");
-
-            const ce = (r?.calendar_events ?? {}) as Record<string, RawDbCalendarEvent[]>;
-
-            for (const [dayKey, events] of Object.entries(ce)) {
-              if (!Array.isArray(events)) continue;
-
-              for (const ev of events) {
-                const date = toDateKey(ev?.date ?? dayKey);
-                if (!date) continue;
-
-                meetings.push({
-                  date,
-                  timeFrom: toHHMM(ev?.start),
-                  timeTo: toHHMM(ev?.end),
-                  serviceName: s(ev?.subject),
-                  customerName: "",
-                  meetingId: s(ev?.id),
-                  joinWebUrl: (ev?.joinWebUrl ?? null) as any,
-                  coachId,
-                  coachName,
-                });
-              }
-            }
-          }
-        } else {
-          const isAnalytics = rows.some((x) => Array.isArray(x?.upcomming_sessions?.meetings));
-
-          if (isAnalytics) {
-            for (const r of rows) {
-              const coachIdRaw = Number(r?.id);
-              const coachId = Number.isFinite(coachIdRaw) ? coachIdRaw : undefined;
-
-              const coachName = s(r?.case_owner).trim() || (coachId ? `Coach ${coachId}` : "Coach");
-
-              const arr = (r as any)?.upcomming_sessions?.meetings as RawUpcomingMeeting[] | undefined;
-              if (!Array.isArray(arr)) continue;
-
-              for (const m of arr) {
-                const date = toDateKey(m?.date);
-                if (!date) continue;
-
-                meetings.push({
-                  date,
-                  timeFrom: s(m?.timeFrom),
-                  timeTo: s(m?.timeTo),
-                  serviceName: s(m?.serviceName),
-                  customerName: s(m?.customerName),
-                  meetingId: s(m?.meetingId),
-                  joinWebUrl: (m?.joinWebUrl ?? null) as any,
-                  coachId,
-                  coachName,
-                });
-              }
-            }
-          }
+      // 2. Fetch fresh (2 fast retries, 1s apart)
+      for (let attempt = 0; attempt < 2; attempt++) {
+        try {
+          const data = await fetchAllCoachesAnalytics();
+          const { filteredList, meetings } = processRows(data);
+          if (!mounted) return;
+          setCoaches(filteredList);
+          setAllMeetings(meetings);
+          setSelectedCoachIds(new Set(filteredList.length ? [filteredList[0]!.id] : []));
+          setLoading(false);
+          setError(null);
+          return;
+        } catch {
+          if (attempt < 1) await new Promise((r) => setTimeout(r, 1000));
         }
+      }
 
-        if (!mounted) return;
-
-        setCoaches(filteredList);
-        setAllMeetings(meetings);
-        setSelectedCoachIds(new Set(filteredList.length ? [filteredList[0]!.id] : []));
-      } catch (e) {
-        console.error(e);
-        if (!mounted) return;
+      // 3. All failed — keep cached data silently; else show error
+      if (!mounted) return;
+      if (!cached) {
         setError("Failed to load calendar data");
-      } finally {
-        if (!mounted) return;
         setLoading(false);
       }
     };
 
     load();
-    return () => {
-      mounted = false;
-    };
-  }, []);
+    return () => { mounted = false; };
+  }, [retryKey]);
 
   const filteredCoaches = useMemo(() => {
     const q = coachQuery.trim().toLowerCase();
@@ -261,18 +264,31 @@ export default function BookingsCalendarPage() {
     <div className="bg-white rounded-2xl shadow-sm overflow-hidden">
       {/* Top bar */}
       <div className="px-4 py-3 border-b flex items-center gap-3">
-        {/* ☰ يظهر تحت lg */}
+        {/* Main sidebar toggle — matches the xl:hidden pattern of other pages */}
+        {onOpenSidebar && (
+          <button
+            type="button"
+            onClick={onOpenSidebar}
+            className="xl:hidden w-10 h-10 rounded-xl border border-gray-200 hover:bg-gray-50 transition flex items-center justify-center text-[#442F73] bg-[#E4E4E4]"
+            aria-label="Open sidebar"
+            title="Open sidebar"
+          >
+            ☰
+          </button>
+        )}
+
+        <div className="font-semibold text-[#241453]">calendar</div>
+
+        {/* Coaches list toggle — visible below lg */}
         <button
           type="button"
           onClick={() => setCalOpen(true)}
-          className="lg:hidden w-9 h-9 rounded-lg border border-gray-200 hover:bg-gray-50 transition flex items-center justify-center text-[#442F73] bg-[#E4E4E4]"
-          aria-label="Open calendars"
-          title="Open calendars"
+          className="lg:hidden w-9 h-9 rounded-lg border border-[#644D93]/30 hover:bg-[#F9F5FF] transition flex items-center justify-center text-[#644D93] bg-[#F4F0FC]"
+          aria-label="Show coaches"
+          title="Show coaches"
         >
-          ☰
+          <Users className="w-4 h-4" />
         </button>
-
-        <div className="font-semibold text-[#241453]">calendar</div>
 
 
         <div className="flex-1">
@@ -285,8 +301,18 @@ export default function BookingsCalendarPage() {
           />
         </div>
 
-        <div className="text-xs text-gray-500">
-          {loading ? "Loading…" : error ? <span className="text-rose-600">{error}</span> : "Ready"}
+        <div className="text-xs text-gray-500 flex items-center gap-2">
+          {loading ? "Loading…" : error ? (
+            <>
+              <span className="text-rose-600">{error}</span>
+              <button
+                onClick={() => setRetryKey((k) => k + 1)}
+                className="px-2 py-0.5 text-xs font-medium text-white bg-[#644D93] rounded hover:bg-[#4f3a75] transition"
+              >
+                Retry
+              </button>
+            </>
+          ) : "Ready"}
         </div>
       </div>
 
@@ -383,7 +409,7 @@ export default function BookingsCalendarPage() {
         </aside>
 
         {/* Main */}
-        <main className="p-3 bg-[#F7F8FB]">
+        <main className="p-3 bg-[#F7F8FB] min-w-0">
           {/* Toolbar */}
           <div className="bg-white rounded-2xl border shadow-sm px-3 py-2 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between mb-3">
             <div className="flex items-center gap-2 flex-wrap">

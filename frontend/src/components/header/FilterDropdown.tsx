@@ -98,7 +98,7 @@ export default function FilterDropdown({
   /* ================= options ================= */
 
   const coachOptions: Option[] = useMemo(() => {
-  const blockedNames = new Set(["api do not delete"]);
+  const blockedNames = new Set(["api do not delete", "phone1", "phone2"]);
 
   return [
     { value: "all", label: "All Coaches" },

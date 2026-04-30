@@ -15,7 +15,7 @@ import EvidenceBarChart from "./EvidenceBarChart";
 import { useReport } from "../../context/ReportContext";
 
 
-import { fetchAllCoachesAnalytics, CoachAnalytics } from "../../api";
+import { fetchAllCoachesAnalytics, getCachedCoachesAnalytics, isCacheFresh, CoachAnalytics } from "../../api";
 
 /* ================= helpers ================= */
 
@@ -322,64 +322,75 @@ export default function AnalyticsMeetings({ onOpenSidebar }: { onOpenSidebar?: (
 
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [retryKey, setRetryKey] = useState(0);
 
   const { setRows } = useReport();
 
   /* ---- effects ---- */
   useEffect(() => {
+    const applyData = (data: CoachAnalytics[]) => {
+      const arr = Array.isArray(data) ? data : [];
+      const role = localStorage.getItem("role");
+      const username = localStorage.getItem("username");
+
+      const isHiddenCoach = (name: string) =>
+        /^phone[12]$/i.test((name ?? "").trim());
+
+      const normalized = arr
+        .map((c: any) => {
+          const rawId =
+            c.id ?? c.case_owner_id ?? c.caseOwnerId ?? c.coach_id ?? c.coachId;
+          return { ...c, id: Number(rawId) };
+        })
+        .filter((c: any) => Number.isFinite(c.id))
+        .filter((c: any) => !isHiddenCoach(c.case_owner ?? c.caseOwner ?? ""));
+
+      let filteredCoaches =
+        role === "coach" && username
+          ? normalized.filter(
+              (c: any) => c.case_owner === username || c.caseOwner === username
+            )
+          : normalized;
+
+      setCoaches(filteredCoaches);
+      setCoachFilterId("all");
+    };
+
     const loadAnalytics = async () => {
-      try {
-        const data = await fetchAllCoachesAnalytics();
-        const arr = Array.isArray(data) ? data : [];
+      setError(null);
 
-        const normalized = arr
-          .map((c: any) => {
-            const rawId =
-              c.id ??
-              c.case_owner_id ??
-              c.caseOwnerId ??
-              c.coach_id ??
-              c.coachId;
+      // 1. Show cached data immediately (no spinner delay)
+      const cached = getCachedCoachesAnalytics();
+      if (cached) {
+        applyData(cached);
+        setLoading(false);
+        if (isCacheFresh()) return; // fresh enough — skip network call
+      } else {
+        setLoading(true);
+      }
 
-            const id = Number(rawId);
-
-            return { ...c, id };
-          })
-          .filter((c: any) => Number.isFinite(c.id));
-
-        // Filter coaches based on role and username
-        const role = localStorage.getItem("role");
-        const username = localStorage.getItem("username");
-
-        let filteredCoaches = normalized;
-
-        // If user is a coach, only show their own data
-        if (role === "coach" && username) {
-          filteredCoaches = normalized.filter((c: any) =>
-            c.case_owner === username || c.caseOwner === username
-          );
+      // 2. Fetch fresh data in background (2 fast retries)
+      for (let attempt = 0; attempt < 2; attempt++) {
+        try {
+          const data = await fetchAllCoachesAnalytics();
+          applyData(data);
+          setLoading(false);
+          setError(null);
+          return;
+        } catch {
+          if (attempt < 1) await new Promise((r) => setTimeout(r, 1000));
         }
-        // If role is "qa", show all coaches (no filtering)
+      }
 
-        setCoaches(filteredCoaches);
-
-        const firstId = filteredCoaches[0]?.id ?? null;
-        if (role === "coach" && firstId != null) {
-          setCoachFilterId(firstId);
-        } else {
-          setCoachFilterId("all");
-        }
-        setCoachFilterId("all");
-      } catch (err) {
-        console.error(err);
+      // 3. All retries failed — keep cached data silently; else show error
+      if (!cached) {
         setError("Failed to load analytics");
-      } finally {
         setLoading(false);
       }
     };
 
     loadAnalytics();
-  }, []);
+  }, [retryKey]);
 
   // ---- Selected Coach ----
   const selectCoach = useCallback((coach: CoachAnalytics) => {
@@ -452,14 +463,15 @@ export default function AnalyticsMeetings({ onOpenSidebar }: { onOpenSidebar?: (
 
     const meeting = m as any;
 
+    const svcName =
+      typeof meeting.serviceName === "string" ? meeting.serviceName : "Session";
+    if (/^phone[12]$/i.test(svcName.trim())) return null;
+
     return {
       date: typeof meeting.date === "string" ? meeting.date : "",
       timeFrom: typeof meeting.timeFrom === "string" ? meeting.timeFrom : "",
       timeTo: typeof meeting.timeTo === "string" ? meeting.timeTo : "",
-      serviceName:
-        typeof meeting.serviceName === "string"
-          ? meeting.serviceName
-          : "Session",
+      serviceName: svcName,
       customerName:
         typeof meeting.customerName === "string"
           ? meeting.customerName
@@ -1238,7 +1250,17 @@ export default function AnalyticsMeetings({ onOpenSidebar }: { onOpenSidebar?: (
     <div id="report-area" className="space-y-6">
       {loading && <div>Loading analytics...</div>}
 
-      {error && <div className="text-red-500">{error}</div>}
+      {error && (
+        <div className="flex flex-col items-center justify-center gap-3 py-16 text-center">
+          <p className="text-red-500 text-sm font-medium">{error}</p>
+          <button
+            onClick={() => setRetryKey((k) => k + 1)}
+            className="px-4 py-2 text-sm font-medium text-white bg-[#644D93] rounded-lg hover:bg-[#4f3a75] transition"
+          >
+            Try again
+          </button>
+        </div>
+      )}
 
       {!loading && !error && coaches.length === 0 && (
         <div>No analytics data available</div>

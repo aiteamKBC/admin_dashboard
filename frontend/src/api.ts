@@ -57,6 +57,39 @@ const API_BASE_URL = "/api";
 const API_KEY =
   "1d1296c572361241a2935363bac9aee3e6054252a24b9de076485d2c58829b21";
 
+const CACHE_KEY = "kbc_coaches_analytics";
+const CACHE_TTL = 2 * 60 * 60 * 1000; // 2 hours
+
+export function getCachedCoachesAnalytics(): CoachAnalytics[] | null {
+  try {
+    const raw = localStorage.getItem(CACHE_KEY);
+    if (!raw) return null;
+    const { rows, ts } = JSON.parse(raw) as { rows: CoachAnalytics[]; ts: number };
+    if (Date.now() - ts > CACHE_TTL) return null;
+    return Array.isArray(rows) ? rows : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Returns true if cache exists and is younger than `maxAgeMs` (default 5 min) */
+export function isCacheFresh(maxAgeMs = 5 * 60 * 1000): boolean {
+  try {
+    const raw = localStorage.getItem(CACHE_KEY);
+    if (!raw) return false;
+    const { ts } = JSON.parse(raw) as { ts: number };
+    return Date.now() - ts < maxAgeMs;
+  } catch {
+    return false;
+  }
+}
+
+function saveAnalyticsCache(rows: CoachAnalytics[]) {
+  try {
+    localStorage.setItem(CACHE_KEY, JSON.stringify({ rows, ts: Date.now() }));
+  } catch { /* quota exceeded — silently ignore */ }
+}
+
 export async function fetchAllCoachesAnalytics(): Promise<CoachAnalytics[]> {
   const response = await fetch(`${API_BASE_URL}/coaches/all`, {
     headers: {
@@ -69,5 +102,6 @@ export async function fetchAllCoachesAnalytics(): Promise<CoachAnalytics[]> {
   }
 
   const data: CoachesAnalyticsResponse = await response.json();
+  saveAnalyticsCache(data.rows);
   return data.rows;
 }

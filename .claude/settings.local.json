@@ -1,0 +1,15 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python -m py_compile tasks/views.py)",
+      "Bash(python -m py_compile tasks/urls.py tasks/models.py server/urls.py)",
+      "Bash(python manage.py check)",
+      "Bash(.venv/Scripts/python.exe manage.py check)",
+      "Bash(.venv/Scripts/python.exe manage.py runserver 8000)",
+      "Bash(cat frontend/.env)",
+      "Bash(cat frontend/.env.local)",
+      "Bash(.venv/Scripts/python.exe -c ' *)",
+      "Bash(.venv/Scripts/python.exe -m py_compile tasks/views.py tasks/models.py)"
+    ]
+  }
+}

@@ -32,12 +32,14 @@ export default function App() {
   const auth = useContext(AuthContext);
   const handleLogout = () => {
     auth?.setUser?.(null);
+    localStorage.removeItem("access");
     localStorage.removeItem("token");
+    localStorage.removeItem("refresh");
+    localStorage.removeItem("refresh_token");
     localStorage.removeItem("role");
     localStorage.removeItem("coach_id");
-
+    localStorage.removeItem("username");
     sessionStorage.clear();
-
     window.location.replace("/login");
   };
 
@@ -71,7 +73,7 @@ export default function App() {
       )}
 
       <main className={`transition-all duration-300 ${token ? contentPad : ""}`}>
-        <div className="p-3 sm:p-4 lg:p-6 overflow-y-auto min-h-screen">
+        <div className="p-3 sm:p-4 lg:p-6 min-h-screen overflow-x-hidden">
           <Routes>
             <Route path="/login" element={<Login />} />
 
@@ -96,7 +98,7 @@ export default function App() {
               path="/bookings-calendar"
               element={
                 <RequireRole allow={["qa", "coach"]}>
-                  <BookingsCalendarPage />
+                  <BookingsCalendarPage onOpenSidebar={() => setMobileOpen(true)} />
                 </RequireRole>
               }
             />

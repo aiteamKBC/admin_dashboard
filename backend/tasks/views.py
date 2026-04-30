@@ -226,9 +226,19 @@ class EvidenceUploadView(APIView):
             if not content_type.startswith("image/"):
                 return Response({"detail": "only image files allowed"}, status=status.HTTP_400_BAD_REQUEST)
 
-            # Ensure evidence dir exists
-            evidence_dir = os.path.join(settings.MEDIA_ROOT, "evidence")
-            os.makedirs(evidence_dir, exist_ok=True)
+            # Ensure media root and evidence subdir exist
+            evidence_dir = os.path.join(str(settings.MEDIA_ROOT), "evidence")
+            try:
+                os.makedirs(evidence_dir, exist_ok=True)
+            except PermissionError as perm_err:
+                return Response(
+                    {
+                        "detail": "Server storage not writable. Please contact the administrator.",
+                        "hint": f"Run: sudo mkdir -p {evidence_dir} && sudo chown -R <web-user>:<web-user> {settings.MEDIA_ROOT}",
+                        "error": str(perm_err),
+                    },
+                    status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                )
 
             # Safe filename
             original = get_valid_filename(os.path.basename(getattr(f, "name", "upload")))
@@ -451,6 +461,70 @@ def extract_learner_id(*sources):
 
     return None
 
+def safe_dt_iso(value):
+    if not value:
+        return None
+    try:
+        return value.isoformat()
+    except Exception:
+        return str(value)
+
+
+def map_db_risk_level(db_value):
+    """Maps DB risk_level (High/Medium/Low) to frontend RiskLevel (red/amber/green)."""
+    v = (db_value or "").strip().lower()
+    if v == "high":
+        return "red"
+    if v == "medium":
+        return "amber"
+    if v == "low":
+        return "green"
+    return None
+
+
+def compute_trend(history_json):
+    """Returns dict with trend ('up'/'down'/'stable'), delta, and last 2 overall scores."""
+    if not history_json:
+        return {"trend": None, "delta": None}
+
+    entries = history_json if isinstance(history_json, list) else []
+
+    parsed = []
+    for e in entries:
+        if isinstance(e, str):
+            try:
+                e = json.loads(e)
+            except Exception:
+                continue
+        if isinstance(e, dict):
+            parsed.append(e)
+
+    parsed.sort(key=lambda e: e.get("submitted_at") or e.get("date") or e.get("timestamp") or "")
+
+    scores = []
+    for e in parsed:
+        s = e.get("scores") or {}
+        overall = s.get("overall")
+        if overall is not None:
+            try:
+                scores.append(round(float(overall), 2))
+            except Exception:
+                pass
+
+    if len(scores) < 2:
+        # First survey — no previous data to compare against
+        return {"trend": None, "delta": None}
+
+    delta = round(scores[-1] - scores[-2], 2)
+    if delta > 0.3:
+        trend = "up"
+    elif delta < -0.3:
+        trend = "down"
+    else:
+        trend = "stable"
+
+    return {"trend": trend, "delta": delta}
+
 @api_view(["POST"])
 @permission_classes([IsAuthenticated])
 def create_support_ticket(request):
@@ -504,7 +578,27 @@ def create_support_ticket(request):
     if preferred_contact not in ["email", "phone"]:
         preferred_contact = "email"
 
+    # Custom incident date/time (optional — defaults to now)
+    incident_date_str = (request.data.get("incident_date") or "").strip()
+    incident_time_str = (request.data.get("incident_time") or "").strip()
     now = timezone.now()
+    if incident_date_str:
+        try:
+            from datetime import date as _date, time as _time
+            d = _date.fromisoformat(incident_date_str)
+            t = _time.fromisoformat(incident_time_str) if incident_time_str else _time(0, 0)
+            import datetime as _dt
+            naive = _dt.datetime.combine(d, t)
+            created_at = timezone.make_aware(naive) if timezone.is_naive(naive) else naive
+        except (ValueError, TypeError):
+            created_at = now
+    else:
+        created_at = now
+
+    # Who created the ticket (frontend can send it; fallback to logged-in user email)
+    created_by = (request.data.get("created_by") or "").strip()
+    if not created_by:
+        created_by = (getattr(request.user, "email", "") or getattr(request.user, "username", "") or "").strip()
 
     ticket = SupportTicket.objects.using("wellbeing").create(
         wellbeing_record_id=learner.id,
@@ -516,8 +610,9 @@ def create_support_ticket(request):
         urgency=urgency,
         preferred_contact=preferred_contact,
         status="open",
-        created_at=now,
+        created_at=created_at,
         updated_at=now,
+        created_by=created_by,
     )
 
     return Response(
@@ -641,6 +736,7 @@ def coach_wellbeing_dashboard(request):
         matched = latest_automation_by_learner_id.get(student_unique_key)
 
         if not matched:
+            db_risk = map_db_risk_level(getattr(student_meta, "risk_level", None))
             learners.append({
                 "studentId": int(student_meta.id),
                 "studentName": row_student_name,
@@ -652,7 +748,11 @@ def coach_wellbeing_dashboard(request):
                 "wellbeingScore": None,
                 "engagementScore": None,
                 "providerSupportScore": None,
-                "riskLevel": "green",
+                "totalScore": getattr(student_meta, "total_score", None),
+                "safeguardingScore": getattr(student_meta, "safeguarding_vulnerability_score", None),
+                "riskLevel": db_risk or "green",
+                "trend": None,
+                "trendDelta": None,
                 "recommendedAction": "No wellbeing data yet",
                 "hasOpenTicket": row_open_tickets > 0,
                 "openTicketCount": row_open_tickets,
@@ -690,16 +790,19 @@ def coach_wellbeing_dashboard(request):
         urgency = follow.get("urgency") or ""
         safeguarding_flag = bool(indicators.get("safeguardingFlag"))
         risk_score = safe_int(follow.get("riskScore"), 0)
-        # open_tickets = safe_int(indicators.get("openTickets"), 0)
 
-        risk_level = map_urgency_to_risk(urgency, safeguarding_flag=safeguarding_flag)
+        # Prefer DB risk_level; fall back to computed value from urgency
+        db_risk = map_db_risk_level(getattr(student_meta, "risk_level", None))
+        risk_level = db_risk or map_urgency_to_risk(urgency, safeguarding_flag=safeguarding_flag)
 
         wellbeing_score = getattr(student_meta, "emotional_stress_resilience_score", None)
         engagement_score = getattr(student_meta, "personal_wellbeing_protective_factors_score", None)
         provider_support_score = getattr(student_meta, "provider_culture_support_score", None)
+        safeguarding_score = getattr(student_meta, "safeguarding_vulnerability_score", None)
+
+        trend_data = compute_trend(getattr(student_meta, "history_json", None))
 
         caseload += 1
-        # open_tickets_total += open_tickets
 
         if risk_level == "red":
             at_risk += 1
@@ -718,6 +821,10 @@ def coach_wellbeing_dashboard(request):
             "wellbeingScore": wellbeing_score,
             "engagementScore": engagement_score,
             "providerSupportScore": provider_support_score,
+            "totalScore": getattr(student_meta, "total_score", None),
+            "safeguardingScore": safeguarding_score,
+            "trend": trend_data["trend"],
+            "trendDelta": trend_data["delta"],
             "riskLevel": risk_level,
             "recommendedAction": summary.get("cardTitle") or "Follow up required",
             "hasOpenTicket": row_open_tickets > 0,
@@ -776,8 +883,10 @@ def coach_wellbeing_dashboard(request):
             if month_key not in trend_buckets:
                 trend_buckets[month_key] = {
                     "count": 0,
-                    "risk_total": 0,
                     "red_count": 0,
+                    "amber_count": 0,
+                    "green_count": 0,
+                    "risk_total": 0,
                     "tickets": 0,
                 }
 
@@ -787,6 +896,10 @@ def coach_wellbeing_dashboard(request):
 
             if risk_level == "red":
                 trend_buckets[month_key]["red_count"] += 1
+            elif risk_level == "amber":
+                trend_buckets[month_key]["amber_count"] += 1
+            else:
+                trend_buckets[month_key]["green_count"] += 1
 
     learners.sort(
         key=lambda item: (
@@ -798,13 +911,12 @@ def coach_wellbeing_dashboard(request):
     trends = []
     for month_key in sorted(trend_buckets.keys()):
         item = trend_buckets[month_key]
-        count = item["count"] or 1
-
         trends.append({
             "month": month_key,
-            "wellbeing": round(max(0, 10 - (item["risk_total"] / count / 10)), 1),
-            "engagement": round(max(0, 10 - (item["red_count"] / count * 5)), 1),
-            "providerSupport": round(max(0, 10 - (item["tickets"] / count * 2)), 1),
+            "total": item["count"],
+            "red": item["red_count"],
+            "amber": item["amber_count"],
+            "green": item["green_count"],
         })
 
     return Response({
@@ -819,3 +931,239 @@ def coach_wellbeing_dashboard(request):
         "followUps": follow_ups[:20],
         "suggestedActions": suggested_actions[:20],
     })
+
+@api_view(["PATCH"])
+@permission_classes([IsAuthenticated])
+def update_support_ticket(request, ticket_id):
+    user = request.user
+    profile = getattr(user, "profile", None)
+    role = (getattr(profile, "role", "") or "").strip().lower()
+
+    if role not in ["coach", "qa"]:
+        return Response({"detail": "Forbidden"}, status=status.HTTP_403_FORBIDDEN)
+
+    ticket = SupportTicket.objects.using("wellbeing").filter(id=ticket_id).first()
+    if not ticket:
+        return Response({"detail": "Ticket not found"}, status=status.HTTP_404_NOT_FOUND)
+
+    if role == "coach":
+        coach_email = (getattr(user, "email", "") or "").strip().lower()
+        learner_ids = list(
+            WellbeingSafeguardingMonitoringSystem.objects.using("wellbeing")
+            .filter(coach_email__iexact=coach_email)
+            .values_list("id", flat=True)
+        )
+        if ticket.wellbeing_record_id not in learner_ids:
+            return Response({"detail": "Forbidden"}, status=status.HTTP_403_FORBIDDEN)
+
+    valid_statuses = [
+        "open", "new", "under review", "assigned", "awaiting information",
+        "action in progress", "follow-up scheduled", "support plan active",
+        "escalated", "external referral made", "outcome recorded",
+        "closed", "reopened",
+    ]
+    new_status = (request.data.get("status") or "").strip().lower()
+
+    if not new_status:
+        return Response({"detail": "status is required"}, status=status.HTTP_400_BAD_REQUEST)
+
+    if new_status not in valid_statuses:
+        return Response(
+            {"detail": f"Invalid status. Valid: {', '.join(valid_statuses)}"},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    ticket.status = new_status
+    ticket.updated_at = timezone.now()
+    ticket.save(update_fields=["status", "updated_at"])
+
+    return Response({"id": ticket.id, "status": ticket.status})
+
+
+# get tickets
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+def support_tickets_list(request):
+    user = request.user
+    profile = getattr(user, "profile", None)
+    role = (getattr(profile, "role", "") or "").strip().lower()
+
+    if role not in ["qa", "coach"]:
+        return Response({"detail": "Forbidden"}, status=status.HTTP_403_FORBIDDEN)
+
+    selected_coach_email = ""
+
+    if role == "coach":
+        selected_coach_email = (getattr(user, "email", "") or "").strip().lower()
+    else:
+        selected_coach_email = (request.query_params.get("coach_email") or "").strip().lower()
+
+    qs = SupportTicket.objects.using("wellbeing").all().order_by("-created_at", "-id")
+
+    if selected_coach_email:
+        learner_ids = list(
+            WellbeingSafeguardingMonitoringSystem.objects.using("wellbeing")
+            .filter(coach_email__iexact=selected_coach_email)
+            .values_list("id", flat=True)
+        )
+
+        qs = qs.filter(wellbeing_record_id__in=learner_ids)
+
+    rows = list(qs)
+
+    tickets = []
+    total = 0
+    open_count = 0
+    red_risk = 0
+    escalated = 0
+    closed = 0
+
+    for row in rows:
+        urgency = (getattr(row, "urgency", "") or "").strip().lower()
+        status_value = (getattr(row, "status", "") or "").strip().lower()
+        ticket_type = (getattr(row, "ticket_type", "") or "").strip()
+
+        risk = "green"
+        if urgency in ["urgent", "high"]:
+            risk = "red"
+        elif urgency in ["medium", "moderate"]:
+            risk = "amber"
+
+        if status_value == "open":
+            open_count += 1
+        if status_value == "escalated":
+            escalated += 1
+        if status_value == "closed":
+            closed += 1
+        if risk == "red":
+            red_risk += 1
+
+        total += 1
+
+        tickets.append({
+            "id": row.id,
+            "ticketCode": f"TKT-{row.id:03d}",
+            "learnerName": (getattr(row, "full_name", "") or "").strip(),
+            "learnerEmail": (getattr(row, "email", "") or "").strip(),
+            "type": ticket_type or "Support",
+            "risk": risk,
+            "source": "Coach",
+            "createdAt": safe_dt_iso(getattr(row, "created_at", None)),
+            "createdBy": (getattr(row, "created_by", "") or "").strip(),
+            "status": status_value or "open",
+            "daysOpen": 0,
+            "subject": (getattr(row, "subject", "") or "").strip(),
+            "details": (getattr(row, "details", "") or "").strip(),
+            "urgency": urgency or "medium",
+            "preferredContact": (getattr(row, "preferred_contact", "") or "").strip(),
+            "notes": _ensure_list(getattr(row, "notes", None)),
+            "evidence": _ensure_list(getattr(row, "evidence", None)),
+        })
+
+    now = timezone.now().date()
+    for item in tickets:
+        created_at = item.get("createdAt")
+        try:
+            created_date = datetime.fromisoformat(created_at.replace("Z", "+00:00")).date() if created_at else now
+        except Exception:
+            created_date = now
+
+        item["daysOpen"] = max((now - created_date).days, 0)
+
+    return Response({
+        "summary": {
+            "total": total,
+            "open": open_count,
+            "redRisk": red_risk,
+            "escalated": escalated,
+            "closed": closed,
+        },
+        "tickets": tickets,
+    })
+
+
+def _check_ticket_access(request, ticket_id):
+    user = request.user
+    profile = getattr(user, "profile", None)
+    role = (getattr(profile, "role", "") or "").strip().lower()
+
+    if role not in ["coach", "qa"]:
+        return None, Response({"detail": "Forbidden"}, status=status.HTTP_403_FORBIDDEN)
+
+    ticket = SupportTicket.objects.using("wellbeing").filter(id=ticket_id).first()
+    if not ticket:
+        return None, Response({"detail": "Ticket not found"}, status=status.HTTP_404_NOT_FOUND)
+
+    if role == "coach":
+        coach_email = (getattr(user, "email", "") or "").strip().lower()
+        learner_ids = list(
+            WellbeingSafeguardingMonitoringSystem.objects.using("wellbeing")
+            .filter(coach_email__iexact=coach_email)
+            .values_list("id", flat=True)
+        )
+        if ticket.wellbeing_record_id not in learner_ids:
+            return None, Response({"detail": "Forbidden"}, status=status.HTTP_403_FORBIDDEN)
+
+    return ticket, None
+
+
+@api_view(["GET", "POST"])
+@permission_classes([IsAuthenticated])
+def ticket_notes(request, ticket_id):
+    ticket, err = _check_ticket_access(request, ticket_id)
+    if err:
+        return err
+
+    notes = _ensure_list(ticket.notes)
+
+    if request.method == "GET":
+        return Response(notes)
+
+    note_text = (request.data.get("note") or "").strip()
+    if not note_text:
+        return Response({"detail": "note is required"}, status=status.HTTP_400_BAD_REQUEST)
+
+    new_note = {
+        "id": uuid.uuid4().hex,
+        "note": note_text,
+        "created_by": (getattr(request.user, "email", "") or "").strip(),
+        "created_at": timezone.now().isoformat(),
+    }
+    notes.append(new_note)
+    ticket.notes = notes
+    ticket.updated_at = timezone.now()
+    ticket.save(update_fields=["notes", "updated_at"])
+
+    return Response(new_note, status=status.HTTP_201_CREATED)
+
+
+@api_view(["GET", "POST"])
+@permission_classes([IsAuthenticated])
+def ticket_evidence(request, ticket_id):
+    ticket, err = _check_ticket_access(request, ticket_id)
+    if err:
+        return err
+
+    evidence = _ensure_list(ticket.evidence)
+
+    if request.method == "GET":
+        return Response(evidence)
+
+    description = (request.data.get("description") or "").strip()
+    file_url = (request.data.get("file_url") or "").strip()
+    file_name = (request.data.get("file_name") or "").strip()
+
+    new_ev = {
+        "id": uuid.uuid4().hex,
+        "description": description,
+        "file_url": file_url,
+        "file_name": file_name,
+        "created_by": (getattr(request.user, "email", "") or "").strip(),
+        "created_at": timezone.now().isoformat(),
+    }
+    evidence.append(new_ev)
+    ticket.evidence = evidence
+    ticket.updated_at = timezone.now()
+    ticket.save(update_fields=["evidence", "updated_at"])
+
+    return Response(new_ev, status=status.HTTP_201_CREATED)

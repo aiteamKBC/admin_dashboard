@@ -23,10 +23,13 @@ export default function CoachesList({
   }, [activeCoachId]);
 
   return (
-  <div>
-    <ul className="space-y-1">
+  <div className="w-full min-w-0 overflow-hidden">
+    <ul className="space-y-1 w-full">
       {coaches
-        .filter((c) => String((c as any)?.case_owner ?? "").trim().length > 0)
+        .filter((c) => {
+          const name = String((c as any)?.case_owner ?? "").trim();
+          return name.length > 0 && !/^phone[12]$/i.test(name);
+        })
         .map((coach) => {
           const isActive =
             activeCoachId != null && String(activeCoachId) === String(coach.id);
