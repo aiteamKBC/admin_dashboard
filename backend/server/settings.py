@@ -90,6 +90,7 @@ DATABASES = {
     "wellbeing": dj_database_url.parse(
         os.getenv("DATABASE_URL_WELLBEING"),
         conn_max_age=600,
+        conn_health_checks=True,
         ssl_require=True,
     ),
 }

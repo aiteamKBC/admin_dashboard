@@ -9,7 +9,9 @@
       "Bash(cat frontend/.env)",
       "Bash(cat frontend/.env.local)",
       "Bash(.venv/Scripts/python.exe -c ' *)",
-      "Bash(.venv/Scripts/python.exe -m py_compile tasks/views.py tasks/models.py)"
+      "Bash(.venv/Scripts/python.exe -m py_compile tasks/views.py tasks/models.py)",
+      "Bash(npx tsc *)",
+      "Bash(node_modules\\\\.bin\\\\tsc --noEmit)"
     ]
   }
 }

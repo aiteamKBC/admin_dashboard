@@ -32,6 +32,7 @@ import {
   ClipboardCheck,
   XCircle,
   RotateCcw,
+  Pencil,
 } from "lucide-react";
 
 import {
@@ -46,6 +47,7 @@ import {
 } from "recharts";
 
 import { getCoachWellbeing, getCoachOptions, createSupportTicket, getSupportTickets, updateSupportTicket, createTicketNote, uploadEvidenceFile, createTicketEvidence, getTicketNotes, getTicketEvidence } from "@/services/coachWellbeing";
+import type { UpdateSupportTicketPayload } from "@/services/coachWellbeing";
 import type {
   CoachLearnerRow,
   CoachWellbeingResponse,
@@ -74,6 +76,8 @@ type SupportTicketFormState = {
   incident_date: string;
   incident_time: string;
   created_by: string;
+  days_to_close: number | "";
+  creator_role: string;
 };
 
 type TicketStatus =
@@ -112,6 +116,7 @@ type SupportTicketRow = {
   createdAt: string | null;
   status: TicketStatus | string;
   daysOpen: number;
+  daysToClose?: number | null;
   subject: string;
   details: string;
   urgency: string;
@@ -159,6 +164,8 @@ function makeInitialTicketForm(): SupportTicketFormState {
     incident_date: now.toISOString().slice(0, 10),
     incident_time: now.toTimeString().slice(0, 5),
     created_by: localStorage.getItem("username") || localStorage.getItem("email") || "",
+    days_to_close: "",
+    creator_role: "",
   };
 }
 
@@ -529,6 +536,10 @@ function CoachSelect({
 function ticketRiskBadgeClass(risk?: string) {
   const value = String(risk || "").toLowerCase();
 
+  if (value === "critical") {
+    return "bg-[#4C1D95] text-white ring-2 ring-[#7C3AED]/40";
+  }
+
   if (value === "red") {
     return "bg-[#EF4444] text-white";
   }
@@ -677,28 +688,61 @@ function TicketActionsDropdown({
   ticket,
   onChange,
   updating,
+  onTicketUpdated,
+  onNotesChanged,
 }: {
   ticket: SupportTicketRow;
   onChange: (ticketId: number, newStatus: string) => void;
   updating: boolean;
+  onTicketUpdated?: (ticketId: number, changes: { risk?: string }) => void;
+  onNotesChanged?: (ticketId: number) => void;
 }) {
   const [open, setOpen] = React.useState(false);
-  const [pos, setPos] = React.useState({ top: 0, right: 0, maxH: 440 });
+  const [pos, setPos] = React.useState({ top: 0, left: 0, maxH: 320 });
   const [activeModal, setActiveModal] = React.useState<ActionModalType>(null);
   const btnRef = React.useRef<HTMLButtonElement>(null);
   const currentStatus = String(ticket.status || "").toLowerCase();
 
-  function handleToggle() {
-    if (!open && btnRef.current) {
-      const rect = btnRef.current.getBoundingClientRect();
-      const spaceBelow = window.innerHeight - rect.bottom - 8;
-      const spaceAbove = rect.top - 8;
-      const maxH = Math.min(440, Math.max(120, spaceBelow > spaceAbove ? spaceBelow - 48 : spaceAbove - 48));
-      const top = spaceBelow >= 200 || spaceBelow >= spaceAbove
-        ? rect.bottom + 4
-        : Math.max(8, rect.top - 48 - maxH - 4);
-      setPos({ top, right: window.innerWidth - rect.right, maxH });
+  const MENU_W = 288; // w-72
+
+  const calcPos = React.useCallback(() => {
+    if (!btnRef.current) return;
+    const rect = btnRef.current.getBoundingClientRect();
+    const spaceBelow = window.innerHeight - rect.bottom - 8;
+    const spaceAbove = rect.top - 8;
+    const HEADER_H = 44;
+
+    let top: number;
+    let maxH: number;
+    if (spaceBelow >= spaceAbove || spaceBelow >= 180) {
+      maxH = Math.min(420, Math.max(120, spaceBelow - 8));
+      top = rect.bottom + 4;
+    } else {
+      maxH = Math.min(420, Math.max(120, spaceAbove - HEADER_H - 8));
+      top = Math.max(8, rect.top - HEADER_H - maxH - 4);
     }
+
+    // align right edge with button, clamp inside viewport
+    let left = rect.right - MENU_W;
+    if (left < 8) left = 8;
+    if (left + MENU_W > window.innerWidth - 8) left = window.innerWidth - MENU_W - 8;
+
+    setPos({ top, left, maxH });
+  }, []);
+
+  React.useEffect(() => {
+    if (!open) return;
+    // recalculate on any scroll or resize so the menu follows the button
+    window.addEventListener("scroll", calcPos, true);
+    window.addEventListener("resize", calcPos);
+    return () => {
+      window.removeEventListener("scroll", calcPos, true);
+      window.removeEventListener("resize", calcPos);
+    };
+  }, [open, calcPos]);
+
+  function handleToggle() {
+    if (!open) calcPos();
     setOpen((prev) => !prev);
   }
 
@@ -741,8 +785,8 @@ function TicketActionsDropdown({
             onClick={() => setOpen(false)}
           />
           <div
-            style={{ position: "fixed", top: pos.top, right: pos.right }}
-            className="z-[110] w-72 overflow-hidden rounded-2xl border border-[#E6DDF8] bg-white shadow-[0_12px_32px_rgba(36,20,83,0.18)]"
+            style={{ position: "fixed", top: pos.top, left: pos.left, width: MENU_W }}
+            className="z-[110] overflow-hidden rounded-2xl border border-[#E6DDF8] bg-white shadow-[0_12px_32px_rgba(36,20,83,0.18)]"
           >
             {/* Header */}
             <div className="flex items-center gap-2 border-b border-[#F0EAFB] bg-[#FAF8FF] px-4 py-3">
@@ -812,8 +856,10 @@ function TicketActionsDropdown({
           type={activeModal}
           ticket={ticket}
           onClose={() => setActiveModal(null)}
-          onConfirm={(newStatus) => {
+          onConfirm={(newStatus, extra) => {
             if (newStatus) onChange(ticket.id, newStatus);
+            if (extra?.risk) onTicketUpdated?.(ticket.id, { risk: extra.risk });
+            if (extra?.notesChanged) onNotesChanged?.(ticket.id);
             setActiveModal(null);
           }}
         />
@@ -831,7 +877,7 @@ function ActionModal({
   type: ActionModalType;
   ticket: SupportTicketRow;
   onClose: () => void;
-  onConfirm: (newStatus?: string) => void;
+  onConfirm: (newStatus?: string, extra?: { risk?: string; notesChanged?: boolean }) => void;
 }) {
   const [note, setNote] = React.useState("");
   const [contactMethod, setContactMethod] = React.useState("email");
@@ -894,7 +940,7 @@ function ActionModal({
 
       if (type === "case_note") {
         if (note.trim()) await createTicketNote(ticket.id, note.trim());
-        onConfirm(undefined);
+        onConfirm(undefined, { notesChanged: true });
         return;
       }
 
@@ -911,11 +957,72 @@ function ActionModal({
           file_url: fileUrl,
           file_name: fileName,
         });
-        onConfirm(undefined);
+        onConfirm(undefined, { notesChanged: true });
         return;
       }
 
-      onConfirm(statusChanges[type as Exclude<ActionModalType, null>]);
+      if (type === "schedule_followup") {
+        const noteText = `📅 Follow-up scheduled for ${followupDate}${followupReason.trim() ? ` — ${followupReason.trim()}` : ""}`;
+        await createTicketNote(ticket.id, noteText);
+        onConfirm("follow-up scheduled", { notesChanged: true });
+        return;
+      }
+
+      if (type === "change_risk") {
+        const urgencyMap: Record<string, string> = {
+          red: "high", amber: "medium", green: "low", critical: "urgent",
+        };
+        const newUrgency = urgencyMap[riskLevel] || "medium";
+        await updateSupportTicket(ticket.id, { urgency: newUrgency });
+        const noteText = `🔴 Risk level changed to ${riskLevel.charAt(0).toUpperCase() + riskLevel.slice(1)}${note.trim() ? ` — ${note.trim()}` : ""}`;
+        await createTicketNote(ticket.id, noteText);
+        onConfirm(undefined, { risk: riskLevel, notesChanged: true });
+        return;
+      }
+
+      if (type === "contact_learner" || type === "contact_coach") {
+        const label = type === "contact_learner" ? "Learner" : "Coach";
+        const noteText = `📞 Contacted ${label} via ${contactMethod}${note.trim() ? ` — ${note.trim()}` : ""}`;
+        await createTicketNote(ticket.id, noteText);
+        onConfirm(statusChanges[type], { notesChanged: true });
+        return;
+      }
+
+      if (type === "support_plan") {
+        const noteText = `📋 Support Plan: ${planDetails.trim()}${note.trim() ? `\nKey Actions: ${note.trim()}` : ""}`;
+        await createTicketNote(ticket.id, noteText);
+        onConfirm("support plan active", { notesChanged: true });
+        return;
+      }
+
+      if (type === "escalate") {
+        const noteText = `⚠️ Escalated to ${escalateTo} — ${escalateReason.trim()}`;
+        await createTicketNote(ticket.id, noteText);
+        onConfirm("escalated", { notesChanged: true });
+        return;
+      }
+
+      if (type === "external_referral") {
+        const noteText = `🔗 External Referral: ${referralOrg.trim()} (${referralType})${note.trim() ? ` — ${note.trim()}` : ""}`;
+        await createTicketNote(ticket.id, noteText);
+        onConfirm("external referral made", { notesChanged: true });
+        return;
+      }
+
+      if (type === "record_outcome") {
+        const noteText = `✅ Outcome: ${resolutionType} — ${outcomeDesc.trim()}`;
+        await createTicketNote(ticket.id, noteText);
+        onConfirm("outcome recorded", { notesChanged: true });
+        return;
+      }
+
+      if (type === "close_case") {
+        await createTicketNote(ticket.id, "🔒 Case closed. All checklist items confirmed.");
+        onConfirm("closed", { notesChanged: true });
+        return;
+      }
+
+      onConfirm(statusChanges[type as unknown as Exclude<ActionModalType, null>]);
     } catch (err: any) {
       setSaveError(err?.message || "Failed to save. Please try again.");
     } finally {
@@ -1611,12 +1718,14 @@ function CreateTicketModal({
   const [selectedId, setSelectedId] = React.useState("");
   const [learnerSearch, setLearnerSearch] = React.useState("");
   const [form, setForm] = React.useState<SupportTicketFormState>(makeInitialTicketForm());
+  const [subjectTouched, setSubjectTouched] = React.useState(false);
 
   React.useEffect(() => {
     if (!open) {
       setSelectedId("");
       setLearnerSearch("");
       setForm(makeInitialTicketForm());
+      setSubjectTouched(false);
     }
   }, [open]);
 
@@ -1687,6 +1796,13 @@ function CreateTicketModal({
         <form
           onSubmit={(e) => {
             e.preventDefault();
+            if (!form.subject.trim()) {
+              setSubjectTouched(true);
+              const el = document.getElementById("ctm-subject");
+              el?.focus();
+              el?.scrollIntoView({ behavior: "smooth", block: "center" });
+              return;
+            }
             if (selectedId) onSubmit(selectedId, form);
           }}
           className="space-y-4"
@@ -1719,13 +1835,24 @@ function CreateTicketModal({
           </div>
 
           <div>
-            <label className="mb-2 block text-sm font-medium text-[#241453]">Subject</label>
+            <label className="mb-2 block text-sm font-medium text-[#241453]">
+              Subject <span className="text-red-500">*</span>
+            </label>
             <input
+              id="ctm-subject"
               value={form.subject}
-              onChange={(e) => handleField("subject", e.target.value)}
+              onChange={(e) => {
+                handleField("subject", e.target.value);
+                if (subjectTouched) setSubjectTouched(false);
+              }}
               placeholder="Enter ticket subject"
-              className="h-11 w-full rounded-xl border border-[#DED5F3] px-3 text-sm outline-none"
+              className={`h-11 w-full rounded-xl border px-3 text-sm outline-none focus:border-[#644D93] ${
+                subjectTouched && !form.subject.trim() ? "border-red-400 bg-red-50" : "border-[#DED5F3]"
+              }`}
             />
+            {subjectTouched && !form.subject.trim() && (
+              <p className="mt-1 text-xs text-red-500">Subject is required</p>
+            )}
           </div>
 
           <div>
@@ -1734,7 +1861,7 @@ function CreateTicketModal({
               value={form.details}
               onChange={(e) => handleField("details", e.target.value)}
               rows={4}
-              className="w-full rounded-xl border border-[#DED5F3] px-3 py-3 text-sm outline-none"
+              className="w-full rounded-xl border border-[#DED5F3] px-3 py-3 text-sm outline-none focus:border-[#644D93]"
             />
           </div>
 
@@ -1777,6 +1904,58 @@ function CreateTicketModal({
               value={form.created_by}
               onChange={(e) => handleField("created_by", e.target.value)}
               placeholder="Name or email of the person creating this ticket"
+              className="h-11 w-full rounded-xl border border-[#DED5F3] px-3 text-sm outline-none"
+            />
+          </div>
+
+          <div>
+            <label className="mb-2 block text-sm font-medium text-[#241453]">Role</label>
+            {(() => {
+              const presets = ["Safeguarding Lead", "Wellbeing Manager"];
+              const isOther = form.creator_role !== "" && !presets.includes(form.creator_role);
+              const selectVal = presets.includes(form.creator_role) ? form.creator_role : isOther ? "__other__" : "";
+              return (
+                <>
+                  <select
+                    value={selectVal}
+                    onChange={(e) => {
+                      if (e.target.value === "__other__") {
+                        handleField("creator_role", "​");
+                      } else {
+                        handleField("creator_role", e.target.value);
+                      }
+                    }}
+                    className="h-11 w-full rounded-xl border border-[#DED5F3] px-3 text-sm outline-none"
+                  >
+                    <option value="">Select role...</option>
+                    <option value="Safeguarding Lead">Safeguarding Lead</option>
+                    <option value="Wellbeing Manager">Wellbeing Manager</option>
+                    <option value="__other__">Other</option>
+                  </select>
+                  {isOther && (
+                    <input
+                      value={form.creator_role.replace(/​/g, "")}
+                      onChange={(e) => handleField("creator_role", e.target.value || "​")}
+                      placeholder="Enter your role..."
+                      className="mt-2 h-11 w-full rounded-xl border border-[#DED5F3] px-3 text-sm outline-none focus:border-[#644D93]"
+                      autoFocus
+                    />
+                  )}
+                </>
+              );
+            })()}
+          </div>
+
+          <div>
+            <label className="mb-2 block text-sm font-medium text-[#241453]">
+              Time taken to close the case (days)
+            </label>
+            <input
+              type="number"
+              min={0}
+              value={form.days_to_close}
+              onChange={(e) => handleField("days_to_close", e.target.value === "" ? "" : Number(e.target.value))}
+              placeholder="e.g. 5"
               className="h-11 w-full rounded-xl border border-[#DED5F3] px-3 text-sm outline-none"
             />
           </div>
@@ -1843,11 +2022,13 @@ function TicketDetailPanel({
   onClose,
   onStatusChange,
   statusUpdating,
+  refreshKey,
 }: {
   ticket: SupportTicketRow | null;
   onClose: () => void;
   onStatusChange: (ticketId: number, newStatus: string) => void;
   statusUpdating: number | null;
+  refreshKey?: number;
 }) {
   const [notes, setNotes] = React.useState<TicketNoteRow[]>([]);
   const [evidence, setEvidence] = React.useState<TicketEvidenceRow[]>([]);
@@ -1860,8 +2041,6 @@ function TicketDetailPanel({
 
     async function load() {
       setNotesLoading(true);
-      setNotes([]);
-      setEvidence([]);
       try {
         const [n, e] = await Promise.all([
           getTicketNotes(ticketId),
@@ -1879,7 +2058,7 @@ function TicketDetailPanel({
 
     load();
     return () => { mounted = false; };
-  }, [ticket?.id]);
+  }, [ticket?.id, refreshKey]);
 
   if (!ticket) return null;
 
@@ -2013,9 +2192,9 @@ function TicketDetailPanel({
                   </div>
                 </div>
                 <div className="rounded-xl border border-[#ECE7F7] p-3">
-                  <div className="text-[10px] font-medium text-[#7B6D9B]">Days Open</div>
+                  <div className="text-[10px] font-medium text-[#7B6D9B]">Days</div>
                   <div className="mt-1 text-sm font-medium text-[#241453]">
-                    {ticket.daysOpen ?? 0}
+                    {ticket.daysToClose ?? ticket.daysOpen ?? 0}
                   </div>
                 </div>
               </div>
@@ -2155,6 +2334,131 @@ function TicketDetailPanel({
   );
 }
 
+function EditTicketModal({
+  ticket,
+  onClose,
+  onSaved,
+}: {
+  ticket: SupportTicketRow | null;
+  onClose: () => void;
+  onSaved: (ticketId: number, changes: UpdateSupportTicketPayload) => void;
+}) {
+  const [form, setForm] = React.useState<UpdateSupportTicketPayload>({});
+  const [saving, setSaving] = React.useState(false);
+  const [error, setError] = React.useState("");
+
+  React.useEffect(() => {
+    if (ticket) {
+      setForm({
+        subject: ticket.subject || "",
+        details: ticket.details || "",
+        urgency: ticket.urgency || "medium",
+        ticket_type: (ticket.type || "wellbeing").toLowerCase(),
+        preferred_contact: ticket.preferredContact || "email",
+      });
+      setError("");
+    }
+  }, [ticket?.id]);
+
+  if (!ticket) return null;
+
+  async function handleSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    if (!form.subject?.trim()) { setError("Subject is required"); return; }
+    try {
+      setSaving(true);
+      setError("");
+      await updateSupportTicket(ticket!.id, form);
+      onSaved(ticket!.id, form);
+    } catch (err: any) {
+      setError(err?.message || "Failed to save changes");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <div className="fixed inset-0 z-[80] flex items-center justify-center bg-black/40 p-4">
+      <div className="custom-scroll w-full max-w-lg overflow-y-auto rounded-3xl bg-white p-6 shadow-2xl" style={{ maxHeight: "90vh" }}>
+        <div className="mb-5 flex items-start justify-between gap-4">
+          <div>
+            <h3 className="text-xl font-semibold text-[#241453]">Edit Ticket</h3>
+            <p className="mt-1 text-sm text-[#7B6D9B]">{ticket.ticketCode} · {ticket.learnerName}</p>
+          </div>
+          <button type="button" onClick={onClose} disabled={saving}
+            className="rounded-xl border border-[#E7E2F3] p-2 text-[#241453] hover:bg-[#F8F5FF]">
+            <X className="h-4 w-4" />
+          </button>
+        </div>
+
+        <form onSubmit={handleSubmit} className="space-y-4">
+          <div className="grid grid-cols-2 gap-4">
+            <div>
+              <label className="mb-2 block text-sm font-medium text-[#241453]">Ticket type</label>
+              <select value={form.ticket_type || "wellbeing"}
+                onChange={(e) => setForm((p) => ({ ...p, ticket_type: e.target.value }))}
+                className="h-11 w-full rounded-xl border border-[#DED5F3] px-3 text-sm outline-none">
+                <option value="wellbeing">Wellbeing</option>
+                <option value="safeguarding">Safeguarding</option>
+              </select>
+            </div>
+            <div>
+              <label className="mb-2 block text-sm font-medium text-[#241453]">Urgency</label>
+              <select value={form.urgency || "medium"}
+                onChange={(e) => setForm((p) => ({ ...p, urgency: e.target.value }))}
+                className="h-11 w-full rounded-xl border border-[#DED5F3] px-3 text-sm outline-none">
+                <option value="low">Low</option>
+                <option value="medium">Medium</option>
+                <option value="high">High</option>
+                <option value="urgent">Urgent</option>
+              </select>
+            </div>
+          </div>
+
+          <div>
+            <label className="mb-2 block text-sm font-medium text-[#241453]">Subject <span className="text-red-500">*</span></label>
+            <input value={form.subject || ""}
+              onChange={(e) => setForm((p) => ({ ...p, subject: e.target.value }))}
+              placeholder="Ticket subject"
+              className="h-11 w-full rounded-xl border border-[#DED5F3] px-3 text-sm outline-none focus:border-[#644D93]" />
+          </div>
+
+          <div>
+            <label className="mb-2 block text-sm font-medium text-[#241453]">Details</label>
+            <textarea value={form.details || ""}
+              onChange={(e) => setForm((p) => ({ ...p, details: e.target.value }))}
+              rows={4}
+              className="w-full rounded-xl border border-[#DED5F3] px-3 py-3 text-sm outline-none focus:border-[#644D93]" />
+          </div>
+
+          <div>
+            <label className="mb-2 block text-sm font-medium text-[#241453]">Preferred contact</label>
+            <select value={form.preferred_contact || "email"}
+              onChange={(e) => setForm((p) => ({ ...p, preferred_contact: e.target.value }))}
+              className="h-11 w-full rounded-xl border border-[#DED5F3] px-3 text-sm outline-none">
+              <option value="email">Email</option>
+              <option value="phone">Phone</option>
+            </select>
+          </div>
+
+          {error && (
+            <div className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-600">{error}</div>
+          )}
+
+          <div className="flex justify-end gap-3 pt-2">
+            <button type="button" onClick={onClose} disabled={saving}
+              className="rounded-xl border border-[#DED5F3] px-5 py-2.5 text-sm font-medium text-[#241453]">Cancel</button>
+            <button type="submit" disabled={saving}
+              className="rounded-xl bg-[#241453] px-5 py-2.5 text-sm font-medium text-white hover:bg-[#362063] disabled:opacity-60">
+              {saving ? "Saving..." : "Save Changes"}
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+  );
+}
+
 function OpenTicketModal({
   open,
   learner,
@@ -2239,12 +2543,16 @@ function OpenTicketModal({
           </div>
 
           <div>
-            <label className="mb-2 block text-sm font-medium text-[#241453]">Subject</label>
+            <label className="mb-2 block text-sm font-medium text-[#241453]">
+              Subject <span className="text-red-500">*</span>
+            </label>
             <input
               value={form.subject}
               onChange={(e) => onChange("subject", e.target.value)}
               placeholder="Enter ticket subject"
-              className="h-11 w-full rounded-xl border border-[#DED5F3] px-3 text-sm outline-none"
+              className={`h-11 w-full rounded-xl border px-3 text-sm outline-none focus:border-[#644D93] ${
+                error && !form.subject.trim() ? "border-red-400 bg-red-50" : "border-[#DED5F3]"
+              }`}
             />
           </div>
 
@@ -2304,6 +2612,58 @@ function OpenTicketModal({
             />
           </div>
 
+          <div>
+            <label className="mb-2 block text-sm font-medium text-[#241453]">Role</label>
+            {(() => {
+              const presets = ["Safeguarding Lead", "Wellbeing Manager"];
+              const isOther = form.creator_role !== "" && !presets.includes(form.creator_role);
+              const selectVal = presets.includes(form.creator_role) ? form.creator_role : isOther ? "__other__" : "";
+              return (
+                <>
+                  <select
+                    value={selectVal}
+                    onChange={(e) => {
+                      if (e.target.value === "__other__") {
+                        onChange("creator_role", "​");
+                      } else {
+                        onChange("creator_role", e.target.value);
+                      }
+                    }}
+                    className="h-11 w-full rounded-xl border border-[#DED5F3] px-3 text-sm outline-none"
+                  >
+                    <option value="">Select role...</option>
+                    <option value="Safeguarding Lead">Safeguarding Lead</option>
+                    <option value="Wellbeing Manager">Wellbeing Manager</option>
+                    <option value="__other__">Other</option>
+                  </select>
+                  {isOther && (
+                    <input
+                      value={form.creator_role.replace(/​/g, "")}
+                      onChange={(e) => onChange("creator_role", e.target.value || "​")}
+                      placeholder="Enter your role..."
+                      className="mt-2 h-11 w-full rounded-xl border border-[#DED5F3] px-3 text-sm outline-none focus:border-[#644D93]"
+                      autoFocus
+                    />
+                  )}
+                </>
+              );
+            })()}
+          </div>
+
+          <div>
+            <label className="mb-2 block text-sm font-medium text-[#241453]">
+              Time taken to close the case (days)
+            </label>
+            <input
+              type="number"
+              min={0}
+              value={form.days_to_close}
+              onChange={(e) => onChange("days_to_close", e.target.value === "" ? "" : Number(e.target.value))}
+              placeholder="e.g. 5"
+              className="h-11 w-full rounded-xl border border-[#DED5F3] px-3 text-sm outline-none"
+            />
+          </div>
+
           {error ? (
             <div className="rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-600">
               {error}
@@ -2347,6 +2707,9 @@ function TicketsManagementView({
   filters,
   onFiltersChange,
   onExport,
+  onEdit,
+  onTicketUpdated,
+  onNotesChanged,
 }: {
   loading: boolean;
   search: string;
@@ -2359,6 +2722,9 @@ function TicketsManagementView({
   filters: TicketFilters;
   onFiltersChange: (f: TicketFilters) => void;
   onExport: () => void;
+  onEdit: (ticket: SupportTicketRow) => void;
+  onTicketUpdated: (ticketId: number, changes: { risk?: string }) => void;
+  onNotesChanged: (ticketId: number) => void;
 }) {
   const [filtersOpen, setFiltersOpen] = React.useState(false);
   const tickets = ticketsData?.tickets || [];
@@ -2470,6 +2836,7 @@ function TicketsManagementView({
                   <th className="px-5 py-4 font-medium">Notes</th>
                   <th className="px-5 py-4 font-medium">Evidence</th>
                   <th className="px-5 py-4 font-medium">Actions</th>
+                  <th className="px-5 py-4 font-medium">Edit</th>
                   <th className="px-5 py-4 font-medium">View</th>
                 </tr>
               </thead>
@@ -2477,13 +2844,13 @@ function TicketsManagementView({
               <tbody>
                 {loading ? (
                   <tr>
-                    <td colSpan={13} className="px-5 py-8 text-center text-slate-500">
+                    <td colSpan={14} className="px-5 py-8 text-center text-slate-500">
                       Loading tickets...
                     </td>
                   </tr>
                 ) : tickets.length === 0 ? (
                   <tr>
-                    <td colSpan={13} className="px-5 py-8 text-center text-slate-500">
+                    <td colSpan={14} className="px-5 py-8 text-center text-slate-500">
                       No tickets found
                     </td>
                   </tr>
@@ -2515,7 +2882,7 @@ function TicketsManagementView({
                         </span>
                       </td>
 
-                      <td className="px-5 py-4 text-[#241453]">{item.daysOpen ?? 0}</td>
+                      <td className="px-5 py-4 text-[#241453]">{item.daysToClose ?? item.daysOpen ?? 0}</td>
 
                       <td className="px-5 py-4">
                         {(item.notes?.length ?? 0) > 0 ? (
@@ -2538,7 +2905,20 @@ function TicketsManagementView({
                           ticket={item}
                           onChange={onStatusChange}
                           updating={statusUpdating === item.id}
+                          onTicketUpdated={onTicketUpdated}
+                          onNotesChanged={onNotesChanged}
                         />
+                      </td>
+
+                      <td className="px-5 py-4">
+                        <button
+                          type="button"
+                          onClick={() => onEdit(item)}
+                          className="inline-flex items-center gap-2 text-sm font-medium text-[#7B6D9B] hover:text-[#241453]"
+                        >
+                          <Pencil className="h-4 w-4" />
+                          Edit
+                        </button>
                       </td>
 
                       <td className="px-5 py-4">
@@ -2596,6 +2976,8 @@ export default function CoachWellbeingPage({ setMobileOpen, isDesktop }: CoachWe
   const [createTicketSaving, setCreateTicketSaving] = useState(false);
   const [createTicketError, setCreateTicketError] = useState("");
   const [ticketFilters, setTicketFilters] = useState<TicketFilters>(emptyFilters);
+  const [viewRefreshKey, setViewRefreshKey] = useState(0);
+  const [editTicket, setEditTicket] = useState<SupportTicketRow | null>(null);
 
   useEffect(() => {
     const token = localStorage.getItem("access") || localStorage.getItem("token");
@@ -2705,6 +3087,8 @@ export default function CoachWellbeingPage({ setMobileOpen, isDesktop }: CoachWe
         incident_date: form.incident_date,
         incident_time: form.incident_time,
         created_by: form.created_by.trim(),
+        days_to_close: form.days_to_close !== "" ? Number(form.days_to_close) : undefined,
+        creator_role: form.creator_role.replace(/​/g, "").trim() || undefined,
       });
 
       const refreshed =
@@ -2762,6 +3146,62 @@ export default function CoachWellbeingPage({ setMobileOpen, isDesktop }: CoachWe
     }
   }
 
+  function handleTicketUpdated(ticketId: number, changes: { risk?: string }) {
+    setTicketsData((prev) => {
+      if (!prev) return prev;
+      const updated = prev.tickets.map((t) => {
+        if (t.id !== ticketId) return t;
+        return { ...t, ...(changes.risk ? { risk: changes.risk as SupportTicketRow["risk"] } : {}) };
+      });
+      return { ...prev, tickets: updated, summary: recalculateSummary(updated) };
+    });
+    setViewTicket((prev) => {
+      if (!prev || prev.id !== ticketId) return prev;
+      return { ...prev, ...(changes.risk ? { risk: changes.risk as SupportTicketRow["risk"] } : {}) };
+    });
+  }
+
+  function handleNotesChanged(ticketId: number) {
+    if (viewTicket?.id === ticketId) {
+      setViewRefreshKey((k) => k + 1);
+    }
+  }
+
+  function handleEditSaved(ticketId: number, changes: UpdateSupportTicketPayload) {
+    const riskFromUrgency = (urgency: string): SupportTicketRow["risk"] => {
+      if (urgency === "high" || urgency === "urgent") return "red";
+      if (urgency === "medium") return "amber";
+      return "green";
+    };
+    setTicketsData((prev) => {
+      if (!prev) return prev;
+      const updated = prev.tickets.map((t) => {
+        if (t.id !== ticketId) return t;
+        return {
+          ...t,
+          ...(changes.subject ? { subject: changes.subject } : {}),
+          ...(changes.details !== undefined ? { details: changes.details } : {}),
+          ...(changes.urgency ? { urgency: changes.urgency, risk: riskFromUrgency(changes.urgency) } : {}),
+          ...(changes.ticket_type ? { type: changes.ticket_type } : {}),
+          ...(changes.preferred_contact ? { preferredContact: changes.preferred_contact } : {}),
+        };
+      });
+      return { ...prev, tickets: updated, summary: recalculateSummary(updated) };
+    });
+    setViewTicket((prev) => {
+      if (!prev || prev.id !== ticketId) return prev;
+      return {
+        ...prev,
+        ...(changes.subject ? { subject: changes.subject } : {}),
+        ...(changes.details !== undefined ? { details: changes.details } : {}),
+        ...(changes.urgency ? { urgency: changes.urgency, risk: riskFromUrgency(changes.urgency) } : {}),
+        ...(changes.ticket_type ? { type: changes.ticket_type } : {}),
+        ...(changes.preferred_contact ? { preferredContact: changes.preferred_contact } : {}),
+      };
+    });
+    setEditTicket(null);
+  }
+
   function resetTicketModal() {
     setTicketModalOpen(false);
     setSelectedLearner(null);
@@ -2783,6 +3223,8 @@ export default function CoachWellbeingPage({ setMobileOpen, isDesktop }: CoachWe
       incident_date: now.toISOString().slice(0, 10),
       incident_time: now.toTimeString().slice(0, 5),
       created_by: localStorage.getItem("username") || localStorage.getItem("email") || "",
+      days_to_close: "",
+      creator_role: "",
     });
 
     setTicketModalOpen(true);
@@ -2825,6 +3267,8 @@ export default function CoachWellbeingPage({ setMobileOpen, isDesktop }: CoachWe
         incident_date: ticketForm.incident_date,
         incident_time: ticketForm.incident_time,
         created_by: ticketForm.created_by.trim(),
+        days_to_close: ticketForm.days_to_close !== "" ? Number(ticketForm.days_to_close) : undefined,
+        creator_role: ticketForm.creator_role.replace(/​/g, "").trim() || undefined,
       });
 
       const refreshed =
@@ -3150,7 +3594,7 @@ export default function CoachWellbeingPage({ setMobileOpen, isDesktop }: CoachWe
 
           <div className="mb-6 rounded-3xl bg-white p-4 shadow-sm sm:p-6">
             <div className="mb-5 flex items-center justify-between">
-              <h2 className="text-md font-semibold text-[#241453]">Caseload Risk Overview <span className="text-sm font-normal text-"> ( High score = safe )</span></h2>
+              <h2 className="text-md font-semibold text-[#241453]">Caseload Risk Overview <span className="text-sm font-normal text-[#7B6D9B]"> ( High score = safe )</span></h2>
               <span className="text-xs text-[#8E82AA]">{filteredLearners.length} learner{filteredLearners.length !== 1 ? "s" : ""}</span>
             </div>
             <LearnerTable rows={filteredLearners} onOpenTicket={handleOpenTicket} />
@@ -3372,6 +3816,9 @@ export default function CoachWellbeingPage({ setMobileOpen, isDesktop }: CoachWe
           filters={ticketFilters}
           onFiltersChange={setTicketFilters}
           onExport={handleExport}
+          onEdit={setEditTicket}
+          onTicketUpdated={handleTicketUpdated}
+          onNotesChanged={handleNotesChanged}
         />
       )}
 
@@ -3386,6 +3833,13 @@ export default function CoachWellbeingPage({ setMobileOpen, isDesktop }: CoachWe
         onClose={() => setViewTicket(null)}
         onStatusChange={handleStatusChange}
         statusUpdating={statusUpdating}
+        refreshKey={viewRefreshKey}
+      />
+
+      <EditTicketModal
+        ticket={editTicket}
+        onClose={() => setEditTicket(null)}
+        onSaved={handleEditSaved}
       />
 
       <CreateTicketModal

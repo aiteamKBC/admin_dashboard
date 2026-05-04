@@ -16,17 +16,12 @@ import uuid
 # wellbeing
 from datetime import datetime
 from rest_framework.decorators import api_view, permission_classes
-from rest_framework.permissions import IsAuthenticated
-from rest_framework.response import Response
 
 # to read the json 
 import json
 from collections import Counter
 
 from .models import SafeguardingWellbeingAutomation, WellbeingSafeguardingMonitoringSystem, CoachData, SupportTicket
-
-
-from .models import CoachData
 from .serializers import CoachTaskCreateSerializer, CoachTaskUpdateSerializer
 
 import os
@@ -318,8 +313,6 @@ def parse_json_field(value, default=None):
 
     return default if default is not None else {}
 
-from collections import Counter
-
 def _title_from_email_part(value: str) -> str:
     return " ".join(part.capitalize() for part in value.replace("-", " ").replace("_", " ").split())
 
@@ -600,6 +593,22 @@ def create_support_ticket(request):
     if not created_by:
         created_by = (getattr(request.user, "email", "") or getattr(request.user, "username", "") or "").strip()
 
+    # Encode source/role into created_by using "||" separator: "Name||Role"
+    # Source column in frontend splits on "||" to display role; Created By shows the name part
+    creator_role = (request.data.get("creator_role") or "").strip()
+    if role == "coach" and not creator_role:
+        creator_role = "Coach"
+    elif not creator_role:
+        creator_role = "QA"
+
+    created_by_encoded = f"{created_by}||{creator_role}" if created_by else f"||{creator_role}"
+
+    days_to_close_raw = request.data.get("days_to_close")
+    try:
+        days_to_close = int(days_to_close_raw) if days_to_close_raw is not None and str(days_to_close_raw).strip() != "" else None
+    except (ValueError, TypeError):
+        days_to_close = None
+
     ticket = SupportTicket.objects.using("wellbeing").create(
         wellbeing_record_id=learner.id,
         ticket_type=ticket_type,
@@ -612,7 +621,8 @@ def create_support_ticket(request):
         status="open",
         created_at=created_at,
         updated_at=now,
-        created_by=created_by,
+        created_by=created_by_encoded,
+        days_to_close=days_to_close,
     )
 
     return Response(
@@ -962,22 +972,68 @@ def update_support_ticket(request, ticket_id):
         "escalated", "external referral made", "outcome recorded",
         "closed", "reopened",
     ]
+    valid_urgencies = ["low", "medium", "high", "urgent"]
+    valid_ticket_types = ["wellbeing", "safeguarding"]
+    valid_contacts = ["email", "phone"]
+
+    update_fields = []
+    response_data = {"id": ticket.id}
+
     new_status = (request.data.get("status") or "").strip().lower()
+    if new_status:
+        if new_status not in valid_statuses:
+            return Response(
+                {"detail": f"Invalid status. Valid: {', '.join(valid_statuses)}"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        ticket.status = new_status
+        update_fields.append("status")
+        response_data["status"] = new_status
 
-    if not new_status:
-        return Response({"detail": "status is required"}, status=status.HTTP_400_BAD_REQUEST)
+    new_urgency = (request.data.get("urgency") or "").strip().lower()
+    if new_urgency:
+        if new_urgency not in valid_urgencies:
+            return Response({"detail": f"Invalid urgency."}, status=status.HTTP_400_BAD_REQUEST)
+        ticket.urgency = new_urgency
+        update_fields.append("urgency")
+        response_data["urgency"] = new_urgency
 
-    if new_status not in valid_statuses:
-        return Response(
-            {"detail": f"Invalid status. Valid: {', '.join(valid_statuses)}"},
-            status=status.HTTP_400_BAD_REQUEST,
-        )
+    new_subject = (request.data.get("subject") or "").strip()
+    if new_subject:
+        ticket.subject = new_subject
+        update_fields.append("subject")
+        response_data["subject"] = new_subject
 
-    ticket.status = new_status
+    new_details = request.data.get("details")
+    if new_details is not None:
+        ticket.details = new_details.strip()
+        update_fields.append("details")
+        response_data["details"] = ticket.details
+
+    new_ticket_type = (request.data.get("ticket_type") or "").strip().lower()
+    if new_ticket_type:
+        if new_ticket_type not in valid_ticket_types:
+            return Response({"detail": "Invalid ticket_type."}, status=status.HTTP_400_BAD_REQUEST)
+        ticket.ticket_type = new_ticket_type
+        update_fields.append("ticket_type")
+        response_data["ticket_type"] = new_ticket_type
+
+    new_preferred_contact = (request.data.get("preferred_contact") or "").strip().lower()
+    if new_preferred_contact:
+        if new_preferred_contact not in valid_contacts:
+            return Response({"detail": "Invalid preferred_contact."}, status=status.HTTP_400_BAD_REQUEST)
+        ticket.preferred_contact = new_preferred_contact
+        update_fields.append("preferred_contact")
+        response_data["preferred_contact"] = new_preferred_contact
+
+    if not update_fields:
+        return Response({"detail": "No valid fields to update."}, status=status.HTTP_400_BAD_REQUEST)
+
     ticket.updated_at = timezone.now()
-    ticket.save(update_fields=["status", "updated_at"])
+    update_fields.append("updated_at")
+    ticket.save(update_fields=update_fields)
 
-    return Response({"id": ticket.id, "status": ticket.status})
+    return Response(response_data)
 
 
 # get tickets
@@ -991,23 +1047,28 @@ def support_tickets_list(request):
     if role not in ["qa", "coach"]:
         return Response({"detail": "Forbidden"}, status=status.HTTP_403_FORBIDDEN)
 
-    selected_coach_email = ""
-
-    if role == "coach":
-        selected_coach_email = (getattr(user, "email", "") or "").strip().lower()
-    else:
-        selected_coach_email = (request.query_params.get("coach_email") or "").strip().lower()
-
     qs = SupportTicket.objects.using("wellbeing").all().order_by("-created_at", "-id")
 
-    if selected_coach_email:
-        learner_ids = list(
-            WellbeingSafeguardingMonitoringSystem.objects.using("wellbeing")
-            .filter(coach_email__iexact=selected_coach_email)
-            .values_list("id", flat=True)
-        )
-
-        qs = qs.filter(wellbeing_record_id__in=learner_ids)
+    if role == "coach":
+        # Coaches only see tickets for their own learners
+        coach_email = (getattr(user, "email", "") or "").strip().lower()
+        if coach_email:
+            learner_ids = list(
+                WellbeingSafeguardingMonitoringSystem.objects.using("wellbeing")
+                .filter(coach_email__iexact=coach_email)
+                .values_list("id", flat=True)
+            )
+            qs = qs.filter(wellbeing_record_id__in=learner_ids)
+    else:
+        # QA sees all tickets (admin-level). Optional filter by coach_email from query params.
+        coach_email_filter = (request.query_params.get("coach_email") or "").strip().lower()
+        if coach_email_filter:
+            learner_ids = list(
+                WellbeingSafeguardingMonitoringSystem.objects.using("wellbeing")
+                .filter(coach_email__iexact=coach_email_filter)
+                .values_list("id", flat=True)
+            )
+            qs = qs.filter(wellbeing_record_id__in=learner_ids)
 
     rows = list(qs)
 
@@ -1040,6 +1101,16 @@ def support_tickets_list(request):
 
         total += 1
 
+        # Decode "Name||Role" from created_by field
+        raw_created_by = (getattr(row, "created_by", "") or "").strip()
+        if "||" in raw_created_by:
+            cb_parts = raw_created_by.split("||", 1)
+            display_created_by = cb_parts[0].strip()
+            display_source = cb_parts[1].strip() if len(cb_parts) > 1 else "Coach"
+        else:
+            display_created_by = raw_created_by
+            display_source = "Coach"
+
         tickets.append({
             "id": row.id,
             "ticketCode": f"TKT-{row.id:03d}",
@@ -1047,11 +1118,12 @@ def support_tickets_list(request):
             "learnerEmail": (getattr(row, "email", "") or "").strip(),
             "type": ticket_type or "Support",
             "risk": risk,
-            "source": "Coach",
+            "source": display_source,
             "createdAt": safe_dt_iso(getattr(row, "created_at", None)),
-            "createdBy": (getattr(row, "created_by", "") or "").strip(),
+            "createdBy": display_created_by,
             "status": status_value or "open",
             "daysOpen": 0,
+            "daysToClose": getattr(row, "days_to_close", None),
             "subject": (getattr(row, "subject", "") or "").strip(),
             "details": (getattr(row, "details", "") or "").strip(),
             "urgency": urgency or "medium",

@@ -76,6 +76,7 @@ class SupportTicket(models.Model):
     created_at = models.DateTimeField(null=True, blank=True)
     updated_at = models.DateTimeField(null=True, blank=True)
     created_by = models.TextField(null=True, blank=True)
+    days_to_close = models.IntegerField(null=True, blank=True)
 
     class Meta:
         managed = False

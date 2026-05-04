@@ -19,6 +19,8 @@ export type CreateSupportTicketPayload = {
   incident_date?: string;
   incident_time?: string;
   created_by?: string;
+  days_to_close?: number;
+  creator_role?: string;
 };
 
 export async function createSupportTicket(payload: CreateSupportTicketPayload) {
@@ -33,7 +35,16 @@ export async function getSupportTickets(coachEmail?: string) {
   return await fetchWithAuth(`/support-tickets/list/${query}`);
 }
 
-export async function updateSupportTicket(ticketId: number, payload: { status: string }) {
+export type UpdateSupportTicketPayload = {
+  status?: string;
+  urgency?: string;
+  subject?: string;
+  details?: string;
+  ticket_type?: string;
+  preferred_contact?: string;
+};
+
+export async function updateSupportTicket(ticketId: number, payload: UpdateSupportTicketPayload) {
   return await fetchWithAuth(`/support-tickets/${ticketId}/`, {
     method: "PATCH",
     body: JSON.stringify(payload),
