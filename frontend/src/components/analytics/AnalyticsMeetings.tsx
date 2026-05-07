@@ -1326,7 +1326,7 @@ export default function AnalyticsMeetings({ onOpenSidebar }: { onOpenSidebar?: (
                   <CoachesOverview
                     metrics={{
                       sessions: completedStats.totalSessions,
-                      students: selectedCoachSafe.with_student?.length ?? 0,
+                      students: (selectedCoachSafe as any).students?.length ?? 0,
                       rating: 4.7,
                       elapsedDays: selectedCoachSafe.elapsed_days ?? 0,
                       status:

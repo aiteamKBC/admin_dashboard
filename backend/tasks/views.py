@@ -196,11 +196,23 @@ class CoachTaskDetailView(APIView):
         return Response(status=status.HTTP_204_NO_CONTENT)
 
 
+ALLOWED_EVIDENCE_TYPES = {
+    "image/jpeg", "image/png", "image/gif", "image/webp",
+    "application/pdf",
+    "application/msword",
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    "application/vnd.ms-excel",
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    "application/vnd.ms-powerpoint",
+    "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+    "text/plain", "text/csv",
+}
+
 class EvidenceUploadView(APIView):
     """
     POST /tasks-api/evidence/upload
     FormData:
-      - file: image/*
+      - file: image or document
     Returns:
       {
         "url": "/media/evidence/....png",
@@ -218,8 +230,11 @@ class EvidenceUploadView(APIView):
                 return Response({"detail": "file is required"}, status=status.HTTP_400_BAD_REQUEST)
 
             content_type = str(getattr(f, "content_type", "") or "")
-            if not content_type.startswith("image/"):
-                return Response({"detail": "only image files allowed"}, status=status.HTTP_400_BAD_REQUEST)
+            if content_type not in ALLOWED_EVIDENCE_TYPES:
+                return Response(
+                    {"detail": "File type not allowed. Supported: images, PDF, Word, Excel, PowerPoint, CSV, TXT."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
 
             # Ensure media root and evidence subdir exist
             evidence_dir = os.path.join(str(settings.MEDIA_ROOT), "evidence")
@@ -518,6 +533,55 @@ def compute_trend(history_json):
 
     return {"trend": trend, "delta": delta}
 
+
+def extract_triggered_questions(triggered_questions_json):
+    """
+    Parse triggered_questions column (dict keyed by risk level, e.g. {"high": [...], "medium": [...]}).
+    Returns list of {text, score, level} dicts sorted high → medium → low.
+    """
+    if not triggered_questions_json:
+        return []
+
+    data = triggered_questions_json
+    if isinstance(data, str):
+        try:
+            data = json.loads(data)
+        except Exception:
+            return []
+
+    if not isinstance(data, dict):
+        return []
+
+    level_order = {"high": 0, "medium": 1, "low": 2}
+    result = []
+
+    for level, questions in data.items():
+        if not isinstance(questions, list):
+            continue
+        for q in questions:
+            if not isinstance(q, dict):
+                continue
+            text = (
+                q.get("question_text")
+                or q.get("question")
+                or q.get("text")
+                or q.get("label")
+                or ""
+            ).strip()
+            if not text:
+                continue
+            score = q.get("normalized_score")
+            result.append({
+                "text": text,
+                "score": score,
+                "level": level.lower(),
+                "note": (q.get("trigger_note") or "").strip(),
+            })
+
+    result.sort(key=lambda x: (level_order.get(x["level"], 9), -(x["score"] or 0)))
+    return result
+
+
 @api_view(["POST"])
 @permission_classes([IsAuthenticated])
 def create_support_ticket(request):
@@ -588,10 +652,17 @@ def create_support_ticket(request):
     else:
         created_at = now
 
-    # Who created the ticket (frontend can send it; fallback to logged-in user email)
+    # Who created the ticket (frontend can send it; fallback to logged-in user name)
     created_by = (request.data.get("created_by") or "").strip()
     if not created_by:
-        created_by = (getattr(request.user, "email", "") or getattr(request.user, "username", "") or "").strip()
+        first = (getattr(request.user, "first_name", "") or "").strip()
+        last  = (getattr(request.user, "last_name",  "") or "").strip()
+        full_name = f"{first} {last}".strip()
+        created_by = (
+            full_name
+            or (getattr(request.user, "username", "") or "").strip()
+            or (getattr(request.user, "email", "") or "").strip()
+        )
 
     # Encode source/role into created_by using "||" separator: "Name||Role"
     # Source column in frontend splits on "||" to display role; Created By shows the name part
@@ -772,6 +843,9 @@ def coach_wellbeing_dashboard(request):
                 "flaggedDomains": [],
                 "hasWellbeingData": False,
                 "countedInSummary": False,
+                "triggerCount": getattr(student_meta, "trigger_count", None) or 0,
+                "triggeredQuestions": extract_triggered_questions(getattr(student_meta, "triggered_questions", None)),
+                "apprenticeDashboard": {},
             })
             continue
 
@@ -845,6 +919,9 @@ def coach_wellbeing_dashboard(request):
             "flaggedDomains": issues.get("flaggedDomains") or [],
             "hasWellbeingData": True,
             "countedInSummary": True,
+            "triggerCount": getattr(student_meta, "trigger_count", None) or 0,
+            "triggeredQuestions": extract_triggered_questions(getattr(student_meta, "triggered_questions", None)),
+            "apprenticeDashboard": apprentice or {},
         })
 
         followup_key = f"{student_unique_key}|{summary.get('cardTitle') or ''}|{summary.get('followUpReason') or ''}"
@@ -942,7 +1019,7 @@ def coach_wellbeing_dashboard(request):
         "suggestedActions": suggested_actions[:20],
     })
 
-@api_view(["PATCH"])
+@api_view(["PATCH", "DELETE"])
 @permission_classes([IsAuthenticated])
 def update_support_ticket(request, ticket_id):
     user = request.user
@@ -955,6 +1032,12 @@ def update_support_ticket(request, ticket_id):
     ticket = SupportTicket.objects.using("wellbeing").filter(id=ticket_id).first()
     if not ticket:
         return Response({"detail": "Ticket not found"}, status=status.HTTP_404_NOT_FOUND)
+
+    if request.method == "DELETE":
+        if role != "qa":
+            return Response({"detail": "Forbidden"}, status=status.HTTP_403_FORBIDDEN)
+        ticket.delete(using="wellbeing")
+        return Response({"detail": "Ticket deleted"}, status=status.HTTP_204_NO_CONTENT)
 
     if role == "coach":
         coach_email = (getattr(user, "email", "") or "").strip().lower()
@@ -979,6 +1062,8 @@ def update_support_ticket(request, ticket_id):
     update_fields = []
     response_data = {"id": ticket.id}
 
+    CLOSED_STATUSES = {"closed", "outcome recorded"}
+
     new_status = (request.data.get("status") or "").strip().lower()
     if new_status:
         if new_status not in valid_statuses:
@@ -989,6 +1074,15 @@ def update_support_ticket(request, ticket_id):
         ticket.status = new_status
         update_fields.append("status")
         response_data["status"] = new_status
+
+        # Auto-compute days_to_close when ticket is closed for the first time
+        if new_status in CLOSED_STATUSES and ticket.days_to_close is None:
+            created = ticket.created_at
+            if created:
+                delta = (timezone.now() - created).days
+                ticket.days_to_close = max(delta, 0)
+                update_fields.append("days_to_close")
+                response_data["daysToClose"] = ticket.days_to_close
 
     new_urgency = (request.data.get("urgency") or "").strip().lower()
     if new_urgency:
@@ -1103,13 +1197,31 @@ def support_tickets_list(request):
 
         # Decode "Name||Role" from created_by field
         raw_created_by = (getattr(row, "created_by", "") or "").strip()
-        if "||" in raw_created_by:
+        submitted_by = (getattr(row, "submitted_by", "") or "").strip()
+        learner_full_name = (getattr(row, "full_name", "") or "").strip()
+
+        if not raw_created_by and submitted_by:
+            # Ticket submitted by the learner themselves — created_by is empty
+            display_source = submitted_by.capitalize()
+            display_created_by = learner_full_name or submitted_by.capitalize()
+        elif raw_created_by.lower() in ("system", "automatic"):
+            display_created_by = raw_created_by.capitalize()
+            display_source = "System"
+        elif "||" in raw_created_by:
             cb_parts = raw_created_by.split("||", 1)
-            display_created_by = cb_parts[0].strip()
-            display_source = cb_parts[1].strip() if len(cb_parts) > 1 else "Coach"
+            name_part = cb_parts[0].strip()
+            role_part = cb_parts[1].strip() if len(cb_parts) > 1 else "Coach"
+            # If stored name is an email, show just the local part formatted as a name
+            if "@" in name_part:
+                name_part = name_part.split("@")[0].replace(".", " ").replace("_", " ").title()
+            display_created_by = name_part or "-"
+            display_source = role_part or "Coach"
         else:
-            display_created_by = raw_created_by
-            display_source = "Coach"
+            name_part = raw_created_by
+            if "@" in name_part:
+                name_part = name_part.split("@")[0].replace(".", " ").replace("_", " ").title()
+            display_created_by = name_part or "-"
+            display_source = "Coach" if name_part else "-"
 
         tickets.append({
             "id": row.id,
@@ -1118,12 +1230,13 @@ def support_tickets_list(request):
             "learnerEmail": (getattr(row, "email", "") or "").strip(),
             "type": ticket_type or "Support",
             "risk": risk,
-            "source": display_source,
             "createdAt": safe_dt_iso(getattr(row, "created_at", None)),
             "createdBy": display_created_by,
+            "source": display_source,
             "status": status_value or "open",
             "daysOpen": 0,
             "daysToClose": getattr(row, "days_to_close", None),
+            "closedAt": safe_dt_iso(getattr(row, "updated_at", None)) if status_value in {"closed", "outcome recorded"} else None,
             "subject": (getattr(row, "subject", "") or "").strip(),
             "details": (getattr(row, "details", "") or "").strip(),
             "urgency": urgency or "medium",
@@ -1132,23 +1245,100 @@ def support_tickets_list(request):
             "evidence": _ensure_list(getattr(row, "evidence", None)),
         })
 
-    now = timezone.now().date()
+    now_dt = timezone.now()
+    now = now_dt.date()
+
+    cur_month = now_dt.month
+    cur_year  = now_dt.year
+    last_month      = cur_month - 1 if cur_month > 1 else 12
+    last_month_year = cur_year if cur_month > 1 else cur_year - 1
+
+    # AVG CLOSE TIME: days from created_at to close, per month bucket
+    # all_close_vals  — every closed ticket (for overall avg shown on card)
+    # close_buckets   — grouped by month (for delta: this month vs last month)
+    all_close_vals = []
+    close_buckets  = {}   # {YYYY-MM: [days, ...]}
+
+    CLOSED_STATUSES = {"closed", "outcome recorded"}
+
     for item in tickets:
-        created_at = item.get("createdAt")
+        created_at_str = item.get("createdAt")
         try:
-            created_date = datetime.fromisoformat(created_at.replace("Z", "+00:00")).date() if created_at else now
+            created_date = datetime.fromisoformat(created_at_str.replace("Z", "+00:00")).date() if created_at_str else now
         except Exception:
             created_date = now
 
-        item["daysOpen"] = max((now - created_date).days, 0)
+        status_val = (item.get("status") or "").strip().lower()
+        if status_val in CLOSED_STATUSES:
+            # Freeze days counter: prefer days_to_close, then updated_at-created_at, never today
+            frozen = item.get("daysToClose")
+            if frozen is None:
+                closed_at_str = item.get("closedAt")
+                if closed_at_str:
+                    try:
+                        closed_date = datetime.fromisoformat(closed_at_str.replace("Z", "+00:00")).date()
+                        frozen = max((closed_date - created_date).days, 0)
+                    except Exception:
+                        frozen = 0
+                else:
+                    frozen = 0
+            item["daysOpen"] = frozen
+        else:
+            item["daysOpen"] = max((now - created_date).days, 0)
+
+        if status_val not in CLOSED_STATUSES:
+            continue
+
+        # Prefer explicit days_to_close field; fall back to updated_at - created_at
+        dtc = item.get("daysToClose")
+        if dtc is not None and dtc >= 0:
+            close_val = dtc
+        else:
+            raw_row = rows[tickets.index(item)] if item in tickets else None
+            updated_at_raw = getattr(raw_row, "updated_at", None) if raw_row else None
+            if updated_at_raw:
+                try:
+                    updated_date = updated_at_raw.date() if hasattr(updated_at_raw, "date") else \
+                        datetime.fromisoformat(str(updated_at_raw).replace("Z", "+00:00")).date()
+                    close_val = max((updated_date - created_date).days, 0)
+                except Exception:
+                    close_val = None
+            else:
+                close_val = None
+
+        if close_val is None:
+            continue
+
+        all_close_vals.append(close_val)
+        mk = f"{created_date.year}-{created_date.month:02d}"
+        close_buckets.setdefault(mk, []).append(close_val)
+
+    def _avg_list(vals):
+        return round(sum(vals) / len(vals), 1) if vals else None
+
+    def _avg_bucket(bucket, year, month):
+        key = f"{year}-{month:02d}"
+        vals = bucket.get(key, [])
+        return round(sum(vals) / len(vals), 1) if vals else None
+
+    def _delta(cur, last):
+        if cur is None or last is None:
+            return None
+        return round(cur - last, 1)
+
+    avg_close_all  = _avg_list(all_close_vals)
+    avg_close_cur  = _avg_bucket(close_buckets, cur_year,        cur_month)
+    avg_close_last = _avg_bucket(close_buckets, last_month_year, last_month)
 
     return Response({
         "summary": {
-            "total": total,
-            "open": open_count,
-            "redRisk": red_risk,
-            "escalated": escalated,
-            "closed": closed,
+            "total":         total,
+            "open":          open_count,
+            "redRisk":       red_risk,
+            "escalated":     escalated,
+            "closed":        closed,
+            "avgCloseDays":  avg_close_all,
+            "avgCloseDelta": _delta(avg_close_cur, avg_close_last),
         },
         "tickets": tickets,
     })
@@ -1239,3 +1429,4 @@ def ticket_evidence(request, ticket_id):
     ticket.save(update_fields=["evidence", "updated_at"])
 
     return Response(new_ev, status=status.HTTP_201_CREATED)
+

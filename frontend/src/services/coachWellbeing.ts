@@ -51,6 +51,10 @@ export async function updateSupportTicket(ticketId: number, payload: UpdateSuppo
   });
 }
 
+export async function deleteTicket(ticketId: number) {
+  return await fetchWithAuth(`/support-tickets/${ticketId}/`, { method: "DELETE" });
+}
+
 export async function getTicketNotes(ticketId: number) {
   return await fetchWithAuth(`/support-tickets/${ticketId}/notes/`);
 }

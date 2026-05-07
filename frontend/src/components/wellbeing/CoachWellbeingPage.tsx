@@ -1,4 +1,5 @@
-import React, { useEffect, useMemo, useState } from "react";
+﻿import React, { useEffect, useMemo, useState } from "react";
+import { createPortal } from "react-dom";
 import {
   Menu,
   AlertTriangle,
@@ -33,7 +34,16 @@ import {
   XCircle,
   RotateCcw,
   Pencil,
+  Trash2,
+  FileDown,
+  FileSpreadsheet,
+  FileText as FilePdf,
+  Heart,
 } from "lucide-react";
+import { jsPDF } from "jspdf";
+import autoTable from "jspdf-autotable";
+import * as XLSX from "xlsx";
+import kbcLogoSrc from "@/assets/logo.webp";
 
 import {
   Bar,
@@ -46,7 +56,7 @@ import {
   YAxis,
 } from "recharts";
 
-import { getCoachWellbeing, getCoachOptions, createSupportTicket, getSupportTickets, updateSupportTicket, createTicketNote, uploadEvidenceFile, createTicketEvidence, getTicketNotes, getTicketEvidence } from "@/services/coachWellbeing";
+import { getCoachWellbeing, getCoachOptions, createSupportTicket, getSupportTickets, updateSupportTicket, deleteTicket, createTicketNote, uploadEvidenceFile, createTicketEvidence, getTicketNotes, getTicketEvidence } from "@/services/coachWellbeing";
 import type { UpdateSupportTicketPayload } from "@/services/coachWellbeing";
 import type {
   CoachLearnerRow,
@@ -117,6 +127,7 @@ type SupportTicketRow = {
   status: TicketStatus | string;
   daysOpen: number;
   daysToClose?: number | null;
+  closedAt?: string | null;
   subject: string;
   details: string;
   urgency: string;
@@ -133,6 +144,8 @@ type SupportTicketsResponse = {
     redRisk: number;
     escalated: number;
     closed: number;
+    avgCloseDays: number | null;
+    avgCloseDelta: number | null;
   };
   tickets: SupportTicketRow[];
 };
@@ -231,22 +244,52 @@ function StatCard({
   title,
   value,
   icon,
+  delta,
+  unit,
+  valueColor,
+  iconBg,
+  iconColor,
+  trendLabel,
+  trendPositiveIsGood = true,
 }: {
   title: string;
-  value: number;
+  value: number | string;
   icon: React.ReactNode;
+  delta?: number | null;
+  unit?: string;
+  valueColor?: string;
+  iconBg?: string;
+  iconColor?: string;
+  trendLabel?: string;
+  trendPositiveIsGood?: boolean;
 }) {
+  const trendColor = delta == null
+    ? "text-slate-400"
+    : trendPositiveIsGood
+      ? delta > 0 ? "text-emerald-600" : delta < 0 ? "text-red-500" : "text-slate-400"
+      : delta > 0 ? "text-red-500" : delta < 0 ? "text-emerald-600" : "text-slate-400";
+
   return (
     <div className="rounded-2xl border border-[#E7E2F3] bg-white p-5 shadow-sm">
       <div className="flex items-start justify-between gap-4">
         <div className="min-w-0">
-          <div className="text-xs font-medium uppercase tracking-[0.08em] text-[#7B6D9B] sm:text-sm">
+          <div className="text-xs font-medium uppercase tracking-[0.08em] text-[#7B6D9B]">
             {title}
           </div>
-          <div className="mt-2 text-3xl font-semibold text-[#241453]">{value}</div>
+          <div className={`mt-2 text-3xl font-semibold ${valueColor ?? "text-[#241453]"}`}>
+            {value}{unit ? <span className="ml-1 text-base font-normal text-[#7B6D9B]">{unit}</span> : null}
+          </div>
+          {delta != null && (
+            <div className={`mt-1 flex items-center gap-1 text-xs font-medium ${trendColor}`}>
+              {delta > 0 ? "↑" : delta < 0 ? "↓" : "→"}
+              <span>{delta > 0 ? "+" : ""}{delta} {trendLabel ?? "vs last month"}</span>
+            </div>
+          )}
         </div>
 
-        <div className="rounded-xl bg-[#F5F1FC] p-3 text-[#644D93]">{icon}</div>
+        <div className={`rounded-xl p-3 ${iconBg ?? "bg-[#F5F1FC]"} ${iconColor ?? "text-[#644D93]"}`}>
+          {icon}
+        </div>
       </div>
     </div>
   );
@@ -330,6 +373,286 @@ function SafeguardingCell({ score }: { score: number | null | undefined }) {
   );
 }
 
+type TriggeredQuestion = { text: string; score?: number | null; level?: string; note?: string };
+
+function scoreBadgeClass(score?: number | null) {
+  if (score == null) return "bg-slate-100 text-slate-500";
+  if (score >= 7) return "bg-red-100 text-red-700";
+  if (score >= 4) return "bg-amber-100 text-amber-700";
+  return "bg-green-100 text-green-700";
+}
+
+function TriggeredQuestionsPopover({ questions, count }: { questions: TriggeredQuestion[]; count: number }) {
+  const [open, setOpen] = React.useState(false);
+  const btnRef = React.useRef<HTMLButtonElement>(null);
+  const panelRef = React.useRef<HTMLDivElement>(null);
+
+  // useLayoutEffect fires before paint — panel is measured and positioned
+  // in the same frame it's inserted, so it never flickers at (0,0).
+  // createPortal renders into document.body, bypassing any CSS transform on
+  // ancestor table elements that would break position:fixed.
+  React.useLayoutEffect(() => {
+    if (!open || !btnRef.current || !panelRef.current) return;
+    const btn = btnRef.current.getBoundingClientRect();
+    const panel = panelRef.current;
+    const pw = panel.offsetWidth;
+    const ph = panel.offsetHeight;
+    const vw = window.innerWidth;
+    const vh = window.innerHeight;
+
+    let left = btn.left;
+    if (left + pw > vw - 8) left = vw - pw - 8;
+    if (left < 8) left = 8;
+
+    let top = btn.bottom + 6;
+    if (top + ph > vh - 8) top = btn.top - ph - 6;
+    if (top < 8) top = 8;
+
+    panel.style.left = `${left}px`;
+    panel.style.top = `${top}px`;
+    panel.style.visibility = "visible";
+  }, [open]);
+
+  if (questions.length === 0) return <span className="text-slate-300">—</span>;
+
+  return (
+    <>
+      <button
+        ref={btnRef}
+        type="button"
+        onClick={() => setOpen(true)}
+        className="inline-flex items-center gap-1.5 rounded-lg bg-[#FDE7E7] px-2.5 py-1 text-xs font-semibold text-[#D92D20] hover:bg-[#F9C9C9]"
+      >
+        <AlertTriangle className="h-3 w-3" />
+        {count} {count === 1 ? "trigger" : "triggers"}
+      </button>
+
+      {open &&
+        createPortal(
+          <>
+            {/* backdrop — closes popover on outside click */}
+            <div className="fixed inset-0 z-[90]" onClick={() => setOpen(false)} />
+
+            {/* panel — invisible until useLayoutEffect positions it */}
+            <div
+              ref={panelRef}
+              className="fixed z-[91] w-96 max-w-[calc(100vw-16px)] overflow-hidden rounded-2xl border border-[#E9E3F5] bg-white shadow-xl"
+              style={{ top: 0, left: 0, visibility: "hidden" }}
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div className="flex items-center justify-between border-b border-[#F1EDF8] px-4 py-3">
+                <div>
+                  <span className="text-sm font-semibold text-[#241453]">Triggered Questions</span>
+                  <span className="ml-2 rounded-full bg-[#FDE7E7] px-2 py-0.5 text-[10px] font-bold text-[#D92D20]">
+                    {questions.length}
+                  </span>
+                </div>
+                <button type="button" onClick={() => setOpen(false)} className="text-slate-400 hover:text-slate-600">
+                  <X className="h-4 w-4" />
+                </button>
+              </div>
+
+              {/* scrollable list — fixed 380px max, scrollbar appears when content overflows */}
+              <div className="custom-scroll overflow-y-auto p-3" style={{ maxHeight: "380px" }}>
+                <ol className="space-y-2">
+                  {questions.map((q, i) => (
+                    <li key={i} className="rounded-xl border border-[#F1EDF8] bg-[#FFF8F8] px-3 py-2.5">
+                      <div className="flex items-start gap-2.5">
+                        <span className="mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-[#FDE7E7] text-[10px] font-bold text-[#D92D20]">
+                          {i + 1}
+                        </span>
+                        <span className="text-sm leading-snug text-[#241453]">{q.text}</span>
+                      </div>
+                      <div className="mt-2 flex flex-wrap items-center gap-2 pl-7">
+                        {q.score != null && (
+                          <span className={`inline-flex items-center rounded-md px-2 py-0.5 text-[11px] font-semibold ${scoreBadgeClass(q.score)}`}>
+                            Score: {q.score}
+                          </span>
+                        )}
+                        {q.level && (
+                          <span className={`inline-flex items-center rounded-md px-2 py-0.5 text-[11px] font-semibold capitalize ${
+                            q.level === "high"   ? "bg-red-50 text-red-600" :
+                            q.level === "medium" ? "bg-amber-50 text-amber-600" :
+                                                   "bg-green-50 text-green-600"
+                          }`}>
+                            {q.level} Risk
+                          </span>
+                        )}
+                        {q.note && <span className="text-[11px] italic text-slate-400">{q.note}</span>}
+                      </div>
+                    </li>
+                  ))}
+                </ol>
+              </div>
+            </div>
+          </>,
+          document.body
+        )}
+    </>
+  );
+}
+
+// ── Apprentice Report Modal ───────────────────────────────────────────────────
+function isUrl(s: string) {
+  return /^https?:\/\//i.test(s.trim());
+}
+
+// Keys whose values should be rendered as a prominent bold title line
+const TITLE_KEYS = new Set(["title", "name", "heading", "label"]);
+
+function renderReportValue(value: unknown, depth = 0, parentKey = ""): React.ReactNode {
+  if (value === null || value === undefined) return <span className="text-slate-300">—</span>;
+  if (typeof value === "boolean") return <span className={value ? "text-emerald-600 font-medium" : "text-slate-500"}>{value ? "Yes" : "No"}</span>;
+  if (typeof value === "number") return <span className="font-semibold text-[#241453]">{value}</span>;
+  if (typeof value === "string") {
+    if (!value.trim()) return <span className="text-slate-300">—</span>;
+    // URL → clickable link with underline + colour change on hover/visited
+    if (isUrl(value)) {
+      return (
+        <a
+          href={value}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="break-all text-[#5B3FD9] underline decoration-[#C4B5F4] underline-offset-2 hover:text-[#3B22A8] hover:decoration-[#8B6BC8] visited:text-[#7B5EA7]"
+        >
+          {value}
+        </a>
+      );
+    }
+    // Value for a "title"-like key → bold, slightly larger, dark purple
+    if (TITLE_KEYS.has(parentKey.toLowerCase())) {
+      return <span className="font-semibold text-[#241453]">{value}</span>;
+    }
+    return <span className="text-slate-700">{value}</span>;
+  }
+  if (Array.isArray(value)) {
+    if (value.length === 0) return <span className="text-slate-300">—</span>;
+    return (
+      <ul className="mt-1 space-y-1">
+        {value.map((item, i) => (
+          <li key={i} className="flex gap-2 text-slate-700">
+            <span className="mt-1 h-1.5 w-1.5 shrink-0 rounded-full bg-[#8B6BC8]" />
+            <span>{renderReportValue(item, depth + 1)}</span>
+          </li>
+        ))}
+      </ul>
+    );
+  }
+  if (typeof value === "object") {
+    const HIDE_KEYS = new Set(["code", "cta_text", "cta", "call_to_action"]);
+    const entries = Object.entries(value as Record<string, unknown>).filter(
+      ([k, v]) => !HIDE_KEYS.has(k) && v !== null && v !== undefined && v !== ""
+    );
+    if (entries.length === 0) return <span className="text-slate-300">—</span>;
+    return (
+      <div className={depth > 0 ? "mt-1 pl-3 border-l-2 border-[#E7E2F3] space-y-1.5" : "space-y-2"}>
+        {entries.map(([k, v]) => {
+          const isTitleKey = TITLE_KEYS.has(k.toLowerCase());
+          const label = k.replace(/([A-Z])/g, " $1").replace(/_/g, " ").trim();
+          return (
+            <div key={k}>
+              <span className={
+                isTitleKey
+                  ? "text-[11px] font-bold uppercase tracking-wide text-[#4B2EA8]"
+                  : "text-[10px] font-semibold uppercase tracking-wide text-[#7B6D9B]"
+              }>
+                {label}
+              </span>
+              <div className="mt-0.5">{renderReportValue(v, depth + 1, k)}</div>
+            </div>
+          );
+        })}
+      </div>
+    );
+  }
+  return <span className="text-slate-700">{String(value)}</span>;
+}
+
+function ApprenticeReportModal({
+  learner,
+  onClose,
+}: {
+  learner: TicketableLearnerRow | null;
+  onClose: () => void;
+}) {
+  if (!learner) return null;
+  const data = (learner as any).apprenticeDashboard as Record<string, unknown> | undefined;
+  const hasData = data && Object.keys(data).length > 0;
+
+  // Group top-level keys into sections
+  const entries = hasData ? Object.entries(data!) : [];
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-start justify-end">
+      <button type="button" className="absolute inset-0 bg-black/30" onClick={onClose} />
+      <div className="relative z-10 flex h-full w-full max-w-xl flex-col bg-white shadow-2xl">
+        {/* Header */}
+        <div className="flex items-start justify-between border-b border-[#EEE8F8] bg-[#FAFAFF] px-6 py-4">
+          <div>
+            <div className="text-xs font-semibold uppercase tracking-wider text-[#7B6D9B]">Learner Safeguarding Report</div>
+            <div className="mt-0.5 text-base font-bold text-[#241453]">{learner.studentName}</div>
+            <div className="text-xs text-slate-500">{learner.studentEmail}</div>
+          </div>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => exportApprenticeToPDF(learner)}
+              className="inline-flex items-center gap-1.5 rounded-lg border border-[#D6CCF0] bg-white px-3 py-1.5 text-xs font-semibold text-[#644D93] shadow-sm hover:bg-[#F5F1FC]"
+            >
+              <FilePdf className="h-3.5 w-3.5" />
+              Export PDF
+            </button>
+            <button type="button" onClick={onClose} className="rounded-lg p-1.5 text-slate-400 hover:bg-[#F5F1FC] hover:text-[#241453]">
+              <X className="h-5 w-5" />
+            </button>
+          </div>
+        </div>
+
+        {/* Quick stats bar */}
+        <div className="grid grid-cols-3 gap-px border-b border-[#EEE8F8] bg-[#EEE8F8]">
+          {[
+            { label: "Risk", value: learner.riskLevel, badge: true },
+            { label: "Total Score", value: learner.totalScore != null ? String(learner.totalScore) : "—" },
+            { label: "Triggers", value: learner.triggerCount != null ? String(learner.triggerCount) : "0" },
+          ].map((s) => (
+            <div key={s.label} className="bg-white px-4 py-3 text-center">
+              <div className="text-[10px] font-semibold uppercase tracking-wider text-[#7B6D9B]">{s.label}</div>
+              {s.badge ? (
+                <span className={`mt-1 inline-flex rounded-full px-2.5 py-0.5 text-xs font-semibold capitalize ${riskBadgeClass(learner.riskLevel)}`}>
+                  {learner.riskLevel}
+                </span>
+              ) : (
+                <div className="mt-1 text-lg font-bold text-[#241453]">{s.value}</div>
+              )}
+            </div>
+          ))}
+        </div>
+
+        {/* Body — scrollable */}
+        <div className="flex-1 overflow-y-auto px-6 py-5">
+          {!hasData ? (
+            <div className="flex flex-col items-center justify-center py-16 text-slate-400">
+              <FileText className="mb-3 h-10 w-10 opacity-30" />
+              <p className="text-sm">No report data available for this learner yet.</p>
+            </div>
+          ) : (
+            <div className="space-y-5">
+              {entries.map(([key, value]) => (
+                <div key={key} className="rounded-xl border border-[#EEE8F8] bg-[#FAFAFF] p-4">
+                  <div className="mb-2 text-xs font-bold uppercase tracking-wider text-[#644D93]">
+                    {key.replace(/([A-Z])/g, " $1").replace(/_/g, " ").trim()}
+                  </div>
+                  <div className="text-sm">{renderReportValue(value)}</div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function LearnerTable({
   rows,
   onOpenTicket,
@@ -337,6 +660,7 @@ function LearnerTable({
   rows: TicketableLearnerRow[];
   onOpenTicket: (row: TicketableLearnerRow) => void;
 }) {
+  const [reportLearner, setReportLearner] = React.useState<TicketableLearnerRow | null>(null);
   return (
     <div className="overflow-hidden rounded-2xl border border-[#EEE8F8]">
       <div className="custom-scroll overflow-auto" style={{ maxHeight: "520px" }}>
@@ -352,7 +676,9 @@ function LearnerTable({
               <th className="px-4 py-3">Provider</th>
               <th className="px-4 py-3">Risk</th>
               <th className="px-4 py-3">Trend</th>
+              <th className="px-4 py-3 whitespace-nowrap">Triggered</th>
               <th className="px-4 py-3">Action</th>
+              <th className="px-4 py-3 whitespace-nowrap">Reports</th>
               <th className="px-4 py-3 last:pr-5">Follow up</th>
             </tr>
           </thead>
@@ -360,7 +686,7 @@ function LearnerTable({
           <tbody className="divide-y divide-[#F3EFF9]">
             {rows.length === 0 ? (
               <tr>
-                <td colSpan={11} className="px-5 py-10 text-center text-sm text-slate-400">
+                <td colSpan={12} className="px-5 py-10 text-center text-sm text-slate-400">
                   No learners found
                 </td>
               </tr>
@@ -414,8 +740,26 @@ function LearnerTable({
                       <TrendBadge trend={row.trend} delta={row.trendDelta} />
                     </td>
 
+                    <td className="px-4 py-3">
+                      <TriggeredQuestionsPopover
+                        questions={row.triggeredQuestions || []}
+                        count={row.triggerCount ?? (row.triggeredQuestions?.length ?? 0)}
+                      />
+                    </td>
+
                     <td className="px-4 py-3 max-w-[200px]">
                       <span className="line-clamp-2 text-slate-600">{row.recommendedAction || "—"}</span>
+                    </td>
+
+                    <td className="px-4 py-3">
+                      <button
+                        type="button"
+                        onClick={() => setReportLearner(row)}
+                        className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-[#D9CFF3] bg-[#F5F1FC] px-3 text-xs font-semibold text-[#6248BE] hover:bg-[#EEE7FB]"
+                      >
+                        <FileText className="h-3.5 w-3.5" />
+                        View
+                      </button>
                     </td>
 
                     <td className="px-4 py-3 last:pr-5">
@@ -438,6 +782,13 @@ function LearnerTable({
           </tbody>
         </table>
       </div>
+
+      {reportLearner && (
+        <ApprenticeReportModal
+          learner={reportLearner}
+          onClose={() => setReportLearner(null)}
+        />
+      )}
     </div>
   );
 }
@@ -690,12 +1041,14 @@ function TicketActionsDropdown({
   updating,
   onTicketUpdated,
   onNotesChanged,
+  onEvidenceChanged,
 }: {
   ticket: SupportTicketRow;
   onChange: (ticketId: number, newStatus: string) => void;
   updating: boolean;
   onTicketUpdated?: (ticketId: number, changes: { risk?: string }) => void;
   onNotesChanged?: (ticketId: number) => void;
+  onEvidenceChanged?: (ticketId: number) => void;
 }) {
   const [open, setOpen] = React.useState(false);
   const [pos, setPos] = React.useState({ top: 0, left: 0, maxH: 320 });
@@ -860,6 +1213,7 @@ function TicketActionsDropdown({
             if (newStatus) onChange(ticket.id, newStatus);
             if (extra?.risk) onTicketUpdated?.(ticket.id, { risk: extra.risk });
             if (extra?.notesChanged) onNotesChanged?.(ticket.id);
+            if (extra?.evidenceChanged) onEvidenceChanged?.(ticket.id);
             setActiveModal(null);
           }}
         />
@@ -877,7 +1231,7 @@ function ActionModal({
   type: ActionModalType;
   ticket: SupportTicketRow;
   onClose: () => void;
-  onConfirm: (newStatus?: string, extra?: { risk?: string; notesChanged?: boolean }) => void;
+  onConfirm: (newStatus?: string, extra?: { risk?: string; notesChanged?: boolean; evidenceChanged?: boolean }) => void;
 }) {
   const [note, setNote] = React.useState("");
   const [contactMethod, setContactMethod] = React.useState("email");
@@ -957,7 +1311,7 @@ function ActionModal({
           file_url: fileUrl,
           file_name: fileName,
         });
-        onConfirm(undefined, { notesChanged: true });
+        onConfirm(undefined, { evidenceChanged: true });
         return;
       }
 
@@ -1114,16 +1468,16 @@ function ActionModal({
               />
             </div>
             <div>
-              <label className="mb-2 block text-sm font-medium text-[#241453]">Image (optional)</label>
+              <label className="mb-2 block text-sm font-medium text-[#241453]">Attachment (optional)</label>
               <label className="flex cursor-pointer flex-col items-center justify-center gap-2 rounded-xl border-2 border-dashed border-[#DED5F3] p-5 transition hover:bg-[#FAFAFF]">
                 <input
                   type="file"
-                  accept="image/*"
+                  accept="image/*,.pdf,.doc,.docx,.xls,.xlsx,.csv,.txt,.ppt,.pptx"
                   className="sr-only"
                   onChange={(e) => {
                     const file = e.target.files?.[0] ?? null;
                     setEvidenceFile(file);
-                    if (file) {
+                    if (file && file.type.startsWith("image/")) {
                       const reader = new FileReader();
                       reader.onload = (ev) =>
                         setEvidencePreview((ev.target?.result as string) || null);
@@ -1142,15 +1496,19 @@ function ActionModal({
                 ) : (
                   <>
                     <Upload className="h-7 w-7 text-[#8E82AA]" />
-                    <span className="text-sm text-[#7B6D9B]">Click to upload an image</span>
-                    <span className="text-xs text-[#B8AACC]">PNG, JPG, GIF</span>
+                    <span className="text-sm text-[#7B6D9B]">Click to upload a file</span>
+                    <span className="text-xs text-[#B8AACC]">Image, PDF, Word, Excel, PowerPoint</span>
                   </>
                 )}
               </label>
               {evidenceFile && (
                 <div className="mt-2 flex items-center justify-between rounded-xl border border-[#DED5F3] px-3 py-2">
                   <div className="flex min-w-0 items-center gap-2">
-                    <ImageIcon className="h-4 w-4 shrink-0 text-[#8E82AA]" />
+                    {evidenceFile.type.startsWith("image/") ? (
+                      <ImageIcon className="h-4 w-4 shrink-0 text-[#8E82AA]" />
+                    ) : (
+                      <FileText className="h-4 w-4 shrink-0 text-[#8E82AA]" />
+                    )}
                     <span className="truncate text-sm text-[#241453]">{evidenceFile.name}</span>
                   </div>
                   <button
@@ -1420,76 +1778,86 @@ function ActionModal({
 
 function TicketNotesPopover({ notes }: { notes: TicketNoteRow[] }) {
   const [open, setOpen] = React.useState(false);
-  const [pos, setPos] = React.useState({ top: 0, right: 0, maxH: 288 });
-  const btnRef = React.useRef<HTMLButtonElement>(null);
+  const btnRef   = React.useRef<HTMLButtonElement>(null);
+  const panelRef = React.useRef<HTMLDivElement>(null);
+  const listRef  = React.useRef<HTMLDivElement>(null);
 
-  function handleToggle() {
-    if (!open && btnRef.current) {
-      const rect = btnRef.current.getBoundingClientRect();
-      const spaceBelow = window.innerHeight - rect.bottom - 8;
-      const spaceAbove = rect.top - 8;
-      const maxH = Math.min(288, Math.max(100, spaceBelow > spaceAbove ? spaceBelow - 44 : spaceAbove - 44));
-      const top = spaceBelow >= 180 || spaceBelow >= spaceAbove
-        ? rect.bottom + 6
-        : Math.max(8, rect.top - 44 - maxH - 6);
-      setPos({ top, right: window.innerWidth - rect.right, maxH });
+  React.useLayoutEffect(() => {
+    if (!open || !btnRef.current || !panelRef.current) return;
+    const btn  = btnRef.current.getBoundingClientRect();
+    const panel = panelRef.current;
+    const pw = panel.offsetWidth;
+    const vw = window.innerWidth;
+    const vh = window.innerHeight;
+
+    // Horizontal: align with button, clamp to viewport
+    let left = btn.left;
+    if (left + pw > vw - 8) left = vw - pw - 8;
+    if (left < 8) left = 8;
+
+    const HEADER_H = 46;
+    const spaceBelow = vh - btn.bottom - 12;
+    const spaceAbove = btn.top - 12;
+
+    let top: number;
+    let listMaxH: number;
+
+    if (spaceBelow >= spaceAbove || spaceBelow >= 160) {
+      // Show below — list fills available space downward
+      top = btn.bottom + 6;
+      listMaxH = Math.max(80, spaceBelow - HEADER_H);
+    } else {
+      // Show above — constrain list to available space upward
+      listMaxH = Math.max(80, spaceAbove - HEADER_H - 6);
+      top = btn.top - HEADER_H - listMaxH - 6;
+      if (top < 8) { top = 8; listMaxH = btn.top - HEADER_H - 14; }
     }
-    setOpen((prev) => !prev);
-  }
+
+    panel.style.left = `${left}px`;
+    panel.style.top  = `${top}px`;
+    if (listRef.current) listRef.current.style.maxHeight = `${Math.min(listMaxH, 360)}px`;
+    panel.style.visibility = "visible";
+  }, [open]);
 
   return (
     <>
       <button
         ref={btnRef}
         type="button"
-        onClick={handleToggle}
+        onClick={() => setOpen(true)}
         className="inline-flex items-center gap-1 rounded-lg bg-[#F4F0FC] px-2.5 py-1 text-xs font-semibold text-[#6248BE] transition hover:bg-[#EDE7FB]"
       >
         <FileText className="h-3 w-3" />
         {notes.length}
       </button>
 
-      {open && (
+      {open && createPortal(
         <>
-          <button
-            type="button"
-            className="fixed inset-0 z-[100] cursor-default"
-            onClick={() => setOpen(false)}
-          />
+          <div className="fixed inset-0 z-[100]" onClick={() => setOpen(false)} />
           <div
-            style={{ position: "fixed", top: pos.top, right: pos.right }}
-            className="z-[110] w-80 overflow-hidden rounded-2xl border border-[#E6DDF8] bg-white shadow-[0_8px_24px_rgba(36,20,83,0.14)]"
+            ref={panelRef}
+            className="fixed z-[110] w-80 max-w-[calc(100vw-16px)] overflow-hidden rounded-2xl border border-[#E6DDF8] bg-white shadow-[0_8px_24px_rgba(36,20,83,0.14)]"
+            style={{ top: 0, left: 0, visibility: "hidden" }}
+            onClick={(e) => e.stopPropagation()}
           >
             <div className="flex items-center justify-between border-b border-[#F0EAFB] px-4 py-2.5">
-              <p className="text-[10px] font-semibold uppercase tracking-wide text-[#7B6D9B]">
-                Case Notes
-              </p>
-              <span className="text-[10px] text-[#B8AACC]">
-                {notes.length} note{notes.length !== 1 ? "s" : ""}
-              </span>
+              <p className="text-[10px] font-semibold uppercase tracking-wide text-[#7B6D9B]">Case Notes</p>
+              <span className="text-[10px] text-[#B8AACC]">{notes.length} note{notes.length !== 1 ? "s" : ""}</span>
             </div>
-            <div className="custom-scroll space-y-2 overflow-y-auto p-3" style={{ maxHeight: pos.maxH }}>
+            <div ref={listRef} className="custom-scroll space-y-2 overflow-y-auto p-3">
               {notes.map((n, i) => (
-                <div
-                  key={n.id ?? i}
-                  className="rounded-xl border border-[#EEE8F8] p-3"
-                >
+                <div key={n.id ?? i} className="rounded-xl border border-[#EEE8F8] p-3">
                   <div className="mb-1.5 flex items-center justify-between gap-2">
-                    <span className="truncate text-[10px] font-medium text-[#8E82AA]">
-                      {n.created_by || "Coach"}
-                    </span>
-                    <span className="shrink-0 text-[10px] text-[#B8AACC]">
-                      {n.created_at ? formatTicketDate(n.created_at) : ""}
-                    </span>
+                    <span className="truncate text-[10px] font-medium text-[#8E82AA]">{n.created_by || "Coach"}</span>
+                    <span className="shrink-0 text-[10px] text-[#B8AACC]">{n.created_at ? formatTicketDate(n.created_at) : ""}</span>
                   </div>
-                  <p className="whitespace-pre-wrap text-sm leading-relaxed text-[#241453]">
-                    {n.note}
-                  </p>
+                  <p className="whitespace-pre-wrap text-sm leading-relaxed text-[#241453]">{n.note}</p>
                 </div>
               ))}
             </div>
           </div>
-        </>
+        </>,
+        document.body
       )}
     </>
   );
@@ -1497,89 +1865,88 @@ function TicketNotesPopover({ notes }: { notes: TicketNoteRow[] }) {
 
 function TicketEvidencePopover({ evidence }: { evidence: TicketEvidenceRow[] }) {
   const [open, setOpen] = React.useState(false);
-  const [pos, setPos] = React.useState({ top: 0, right: 0, maxH: 288 });
-  const btnRef = React.useRef<HTMLButtonElement>(null);
+  const btnRef   = React.useRef<HTMLButtonElement>(null);
+  const panelRef = React.useRef<HTMLDivElement>(null);
+  const listRef  = React.useRef<HTMLDivElement>(null);
 
-  function handleToggle() {
-    if (!open && btnRef.current) {
-      const rect = btnRef.current.getBoundingClientRect();
-      const spaceBelow = window.innerHeight - rect.bottom - 8;
-      const spaceAbove = rect.top - 8;
-      const maxH = Math.min(288, Math.max(100, spaceBelow > spaceAbove ? spaceBelow - 44 : spaceAbove - 44));
-      const top = spaceBelow >= 180 || spaceBelow >= spaceAbove
-        ? rect.bottom + 6
-        : Math.max(8, rect.top - 44 - maxH - 6);
-      setPos({ top, right: window.innerWidth - rect.right, maxH });
+  React.useLayoutEffect(() => {
+    if (!open || !btnRef.current || !panelRef.current) return;
+    const btn  = btnRef.current.getBoundingClientRect();
+    const panel = panelRef.current;
+    const pw = panel.offsetWidth;
+    const vw = window.innerWidth;
+    const vh = window.innerHeight;
+
+    let left = btn.left;
+    if (left + pw > vw - 8) left = vw - pw - 8;
+    if (left < 8) left = 8;
+
+    const HEADER_H = 46;
+    const spaceBelow = vh - btn.bottom - 12;
+    const spaceAbove = btn.top - 12;
+
+    let top: number;
+    let listMaxH: number;
+
+    if (spaceBelow >= spaceAbove || spaceBelow >= 160) {
+      top = btn.bottom + 6;
+      listMaxH = Math.max(80, spaceBelow - HEADER_H);
+    } else {
+      listMaxH = Math.max(80, spaceAbove - HEADER_H - 6);
+      top = btn.top - HEADER_H - listMaxH - 6;
+      if (top < 8) { top = 8; listMaxH = btn.top - HEADER_H - 14; }
     }
-    setOpen((prev) => !prev);
-  }
+
+    panel.style.left = `${left}px`;
+    panel.style.top  = `${top}px`;
+    if (listRef.current) listRef.current.style.maxHeight = `${Math.min(listMaxH, 360)}px`;
+    panel.style.visibility = "visible";
+  }, [open]);
 
   return (
     <>
       <button
         ref={btnRef}
         type="button"
-        onClick={handleToggle}
+        onClick={() => setOpen(true)}
         className="inline-flex items-center gap-1 rounded-lg bg-[#F0FDF4] px-2.5 py-1 text-xs font-semibold text-[#047857] transition hover:bg-[#DCFCE7]"
       >
         <ImageIcon className="h-3 w-3" />
         {evidence.length}
       </button>
 
-      {open && (
+      {open && createPortal(
         <>
-          <button
-            type="button"
-            className="fixed inset-0 z-[100] cursor-default"
-            onClick={() => setOpen(false)}
-          />
+          <div className="fixed inset-0 z-[100]" onClick={() => setOpen(false)} />
           <div
-            style={{ position: "fixed", top: pos.top, right: pos.right }}
-            className="z-[110] w-80 overflow-hidden rounded-2xl border border-[#E6DDF8] bg-white shadow-[0_8px_24px_rgba(36,20,83,0.14)]"
+            ref={panelRef}
+            className="fixed z-[110] w-80 max-w-[calc(100vw-16px)] overflow-hidden rounded-2xl border border-[#E6DDF8] bg-white shadow-[0_8px_24px_rgba(36,20,83,0.14)]"
+            style={{ top: 0, left: 0, visibility: "hidden" }}
+            onClick={(e) => e.stopPropagation()}
           >
             <div className="flex items-center justify-between border-b border-[#F0EAFB] px-4 py-2.5">
-              <p className="text-[10px] font-semibold uppercase tracking-wide text-[#7B6D9B]">
-                Evidence
-              </p>
-              <span className="text-[10px] text-[#B8AACC]">
-                {evidence.length} item{evidence.length !== 1 ? "s" : ""}
-              </span>
+              <p className="text-[10px] font-semibold uppercase tracking-wide text-[#7B6D9B]">Evidence</p>
+              <span className="text-[10px] text-[#B8AACC]">{evidence.length} item{evidence.length !== 1 ? "s" : ""}</span>
             </div>
-            <div className="custom-scroll space-y-3 overflow-y-auto p-3" style={{ maxHeight: pos.maxH }}>
+            <div ref={listRef} className="custom-scroll space-y-3 overflow-y-auto p-3">
               {evidence.map((ev, i) => (
-                <div
-                  key={ev.id ?? i}
-                  className="overflow-hidden rounded-xl border border-[#EEE8F8]"
-                >
+                <div key={ev.id ?? i} className="overflow-hidden rounded-xl border border-[#EEE8F8]">
                   {ev.file_url && (
-                    <a
-                      href={resolveMediaUrl(ev.file_url)}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      onClick={(e) => e.stopPropagation()}
-                    >
+                    <a href={resolveMediaUrl(ev.file_url)} target="_blank" rel="noopener noreferrer" onClick={(e) => e.stopPropagation()}>
                       <img
                         src={resolveMediaUrl(ev.file_url)}
                         alt={ev.description || ev.file_name || "Evidence"}
                         className="max-h-44 w-full object-cover transition hover:opacity-90"
-                        onError={(e) => {
-                          (e.target as HTMLImageElement).style.display = "none";
-                        }}
+                        onError={(e) => { (e.target as HTMLImageElement).style.display = "none"; }}
                       />
                     </a>
                   )}
                   <div className="p-3">
                     <div className="mb-1 flex items-center justify-between gap-2">
-                      <span className="truncate text-[10px] font-medium text-[#8E82AA]">
-                        {ev.created_by || "Coach"}
-                      </span>
-                      <span className="shrink-0 text-[10px] text-[#B8AACC]">
-                        {ev.created_at ? formatTicketDate(ev.created_at) : ""}
-                      </span>
+                      <span className="truncate text-[10px] font-medium text-[#8E82AA]">{ev.created_by || "Coach"}</span>
+                      <span className="shrink-0 text-[10px] text-[#B8AACC]">{ev.created_at ? formatTicketDate(ev.created_at) : ""}</span>
                     </div>
-                    {ev.description && (
-                      <p className="text-sm text-[#241453]">{ev.description}</p>
-                    )}
+                    {ev.description && <p className="text-sm text-[#241453]">{ev.description}</p>}
                     {ev.file_url && (
                       <a
                         href={resolveMediaUrl(ev.file_url)}
@@ -1597,7 +1964,8 @@ function TicketEvidencePopover({ evidence }: { evidence: TicketEvidenceRow[] }) 
               ))}
             </div>
           </div>
-        </>
+        </>,
+        document.body
       )}
     </>
   );
@@ -1911,31 +2279,37 @@ function CreateTicketModal({
           <div>
             <label className="mb-2 block text-sm font-medium text-[#241453]">Role</label>
             {(() => {
-              const presets = ["Safeguarding Lead", "Wellbeing Manager"];
+              const presets = ["Learner", "Safeguarding Lead", "Wellbeing Manager"];
               const isOther = form.creator_role !== "" && !presets.includes(form.creator_role);
               const selectVal = presets.includes(form.creator_role) ? form.creator_role : isOther ? "__other__" : "";
+              const selectedLearnerObj = learners.find((l) => String(l.studentId) === selectedId);
               return (
                 <>
                   <select
                     value={selectVal}
                     onChange={(e) => {
-                      if (e.target.value === "__other__") {
-                        handleField("creator_role", "​");
+                      const val = e.target.value;
+                      if (val === "__other__") {
+                        handleField("creator_role", "\u200B");
                       } else {
-                        handleField("creator_role", e.target.value);
+                        handleField("creator_role", val);
+                        if (val === "Learner" && selectedLearnerObj) {
+                          handleField("created_by", selectedLearnerObj.studentName || selectedLearnerObj.studentEmail || "");
+                        }
                       }
                     }}
                     className="h-11 w-full rounded-xl border border-[#DED5F3] px-3 text-sm outline-none"
                   >
                     <option value="">Select role...</option>
+                    <option value="Learner">Learner</option>
                     <option value="Safeguarding Lead">Safeguarding Lead</option>
                     <option value="Wellbeing Manager">Wellbeing Manager</option>
                     <option value="__other__">Other</option>
                   </select>
                   {isOther && (
                     <input
-                      value={form.creator_role.replace(/​/g, "")}
-                      onChange={(e) => handleField("creator_role", e.target.value || "​")}
+                      value={form.creator_role.replace(/\u200B/g, "")}
+                      onChange={(e) => handleField("creator_role", e.target.value || "\u200B")}
                       placeholder="Enter your role..."
                       className="mt-2 h-11 w-full rounded-xl border border-[#DED5F3] px-3 text-sm outline-none focus:border-[#644D93]"
                       autoFocus
@@ -1989,32 +2363,906 @@ function CreateTicketModal({
   );
 }
 
-function exportTicketsToCSV(tickets: SupportTicketRow[]) {
-  const headers = ["Ticket", "Learner", "Email", "Type", "Risk", "Urgency", "Source", "Created", "Created By", "Status", "Days Open", "Subject", "Details"];
-  const rows = tickets.map((t) => [
-    t.ticketCode,
-    t.learnerName,
-    t.learnerEmail,
-    t.type,
-    t.risk,
-    t.urgency,
-    t.source,
-    formatTicketDate(t.createdAt),
-    t.createdBy || "",
-    t.status,
-    t.daysOpen,
-    `"${(t.subject || "").replace(/"/g, '""')}"`,
-    `"${(t.details || "").replace(/"/g, '""')}"`,
-  ]);
+function exportTicketsToExcel(tickets: SupportTicketRow[], coachLabel?: string) {
+  const rows = tickets.map((t) => ({
+    "Ticket":      t.ticketCode,
+    "Learner":     t.learnerName,
+    "Email":       t.learnerEmail,
+    "Type":        t.type,
+    "Risk":        t.risk,
+    "Urgency":     t.urgency,
 
-  const csv = [headers.join(","), ...rows.map((r) => r.join(","))].join("\n");
-  const blob = new Blob(["﻿" + csv], { type: "text/csv;charset=utf-8;" });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement("a");
-  a.href = url;
-  a.download = `tickets-${new Date().toISOString().split("T")[0]}.csv`;
-  a.click();
-  URL.revokeObjectURL(url);
+    "Created":     formatTicketDate(t.createdAt),
+    "Closed":      t.closedAt ? formatTicketDate(t.closedAt) : "-",
+    "Created By":  t.createdBy || "-",
+    "Source":      t.source || "-",
+    "Status":      t.status,
+    "Days Open":   t.daysToClose ?? t.daysOpen ?? 0,
+    "Subject":     t.subject || "",
+    "Details":     t.details || "",
+  }));
+
+  const ws = XLSX.utils.json_to_sheet(rows);
+
+  // Column widths
+  ws["!cols"] = [
+    { wch: 10 }, { wch: 22 }, { wch: 32 }, { wch: 14 }, { wch: 10 },
+    { wch: 10 }, { wch: 14 }, { wch: 12 }, { wch: 12 }, { wch: 20 },
+    { wch: 18 }, { wch: 10 }, { wch: 30 }, { wch: 50 },
+  ];
+
+  const wb = XLSX.utils.book_new();
+  const sheetName = coachLabel ? coachLabel.substring(0, 31) : "Tickets";
+  XLSX.utils.book_append_sheet(wb, ws, sheetName);
+  const prefix = coachLabel ? `tickets-${coachLabel.toLowerCase().replace(/\s+/g, "-")}` : "tickets-all";
+  XLSX.writeFile(wb, `${prefix}-${new Date().toISOString().split("T")[0]}.xlsx`);
+}
+
+// jsPDF only supports Latin characters — strip emoji/surrogate pairs before rendering
+function pdfText(text: string | null | undefined, fallback = "-"): string {
+  if (!text) return fallback;
+  return text
+    .replace(/[\uD800-\uDFFF]/g, "")   // surrogate pairs (emoji, symbols)
+    .replace(/[^\x20-\x7E\xA0-\xFF]/g, "") // keep printable ASCII + extended Latin only
+    .replace(/\s+/g, " ")
+    .trim() || fallback;
+}
+
+function flattenValueForPdf(value: unknown): string {
+  if (value === null || value === undefined) return "-";
+  if (typeof value === "boolean") return value ? "Yes" : "No";
+  if (typeof value === "number") return String(value);
+  if (typeof value === "string") return pdfText(value) || "-";
+
+  if (Array.isArray(value)) {
+    if (value.length === 0) return "-";
+
+    const isObj = (x: unknown): x is Record<string, unknown> =>
+      typeof x === "object" && x !== null && !Array.isArray(x);
+
+    // Array of {text, type?} items (e.g. "What Matters Now") → group by type
+    if (value.every((i) => isObj(i) && "text" in i && !("title" in i))) {
+      const byType: Record<string, string[]> = {};
+      const noType: string[] = [];
+      for (const item of value as Record<string, unknown>[]) {
+        const text = pdfText(String(item.text ?? ""));
+        if (!text || text === "-") continue;
+        const type = item.type ? String(item.type).toLowerCase() : "";
+        if (type) (byType[type] = byType[type] || []).push(text);
+        else noType.push(text);
+      }
+      const parts: string[] = [];
+      for (const [type, texts] of Object.entries(byType)) {
+        const label = type.charAt(0).toUpperCase() + type.slice(1) + "s";
+        parts.push(`${label}:\n${texts.map((t) => `   \xB7  ${t}`).join("\n")}`);
+      }
+      if (noType.length > 0) parts.push(noType.map((t) => `\xB7  ${t}`).join("\n"));
+      return parts.join("\n\n") || "-";
+    }
+
+    // Array of recommendation/resource objects with "title" field
+    // → group by "tag" if present, show title + reason + url
+    if (value.every((i) => isObj(i) && ("title" in i || "reason" in i))) {
+      const byTag: Record<string, string[]> = {};
+      const noTag: string[] = [];
+      for (const item of value as Record<string, unknown>[]) {
+        const title = item.title ? pdfText(String(item.title)) : null;
+        const reason = item.reason ? pdfText(String(item.reason)) : null;
+        const urlRaw = item.source_url ?? item.sourceUrl ?? item.url;
+        const url = urlRaw && /^https?:\/\//i.test(String(urlRaw)) ? pdfText(String(urlRaw)) : null;
+        if (!title && !reason) continue;
+        const lines: string[] = [];
+        if (title) lines.push(title);
+        if (reason) lines.push(`   ${reason}`);
+        if (url) lines.push(`   ${url}`);
+        const block = lines.join("\n");
+        const tag = item.tag ? String(item.tag).toUpperCase() : "";
+        if (tag) (byTag[tag] = byTag[tag] || []).push(block);
+        else noTag.push(block);
+      }
+      const parts: string[] = [];
+      for (const [tag, items] of Object.entries(byTag)) {
+        parts.push(`[${tag}]\n${items.join("\n\n")}`);
+      }
+      if (noTag.length > 0) parts.push(noTag.join("\n\n"));
+      return parts.join("\n\n") || "-";
+    }
+
+    // Plain array
+    return value.map((item) => `\xB7  ${flattenValueForPdf(item)}`).join("\n");
+  }
+
+  if (typeof value === "object") {
+    const entries = Object.entries(value as Record<string, unknown>).filter(
+      ([k, v]) => k !== "code" && v !== null && v !== undefined && v !== ""
+    );
+    if (entries.length === 0) return "-";
+
+    // Object with a "text" key → use text as main content regardless of other fields
+    if ("text" in (value as object)) {
+      const obj = value as Record<string, unknown>;
+      const text = pdfText(String(obj.text ?? ""));
+      const qualifier = obj.label
+        ? pdfText(String(obj.label))
+        : obj.type
+        ? pdfText(String(obj.type))
+        : null;
+      if (text && text !== "-") return qualifier ? `${text}  (${qualifier})` : text;
+    }
+
+    return entries
+      .map(([k, v]) => {
+        const label = k
+          .replace(/([A-Z])/g, " $1")
+          .replace(/_/g, " ")
+          .trim()
+          .split(" ")
+          .map((w) => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase())
+          .join(" ");
+        const content = flattenValueForPdf(v);
+        return content.includes("\n") ? `${label}:\n${content}` : `${label}: ${content}`;
+      })
+      .join("\n\n");
+  }
+
+  return pdfText(String(value));
+}
+
+// Builds styled single-column rows for recommendation / resource arrays:
+// [{tag, title, reason?, source_url?}]
+// Tag → bold purple, Title → bold dark, Reason → grey, URL → blue italic + underline
+function buildRecommendationRows(
+  arr: Record<string, unknown>[]
+): Array<Array<{ content: string; styles: object }>> {
+  const rows: Array<Array<{ content: string; styles: object }>> = [];
+  let lastTag = "";
+  let isFirst = true;
+
+  for (const item of arr) {
+    const tag         = item.tag ? String(item.tag).toUpperCase() : "";
+    const title       = item.title ? pdfText(String(item.title)) : null;
+    const sourceTitle = (item.source_title ?? item.sourceTitle) ? pdfText(String(item.source_title ?? item.sourceTitle)) : null;
+
+    // Accept any common field name for the description/reason text
+    const rawDesc = item.reason ?? item.description ?? item.details ?? item.body ?? item.content ?? item.notes ?? item.summary;
+    const reason  = rawDesc ? pdfText(String(rawDesc)) : null;
+
+    // bullet_points can be an array of strings or a string
+    const rawBullets = item.bullet_points ?? item.bulletPoints ?? item.bullets ?? item.points;
+    const bulletArr: string[] = Array.isArray(rawBullets)
+      ? rawBullets.map((b) => pdfText(String(b))).filter((b) => b && b !== "-")
+      : rawBullets
+      ? pdfText(String(rawBullets)).split("\n").map((l) => l.trim()).filter(Boolean)
+      : [];
+
+    const urlRaw = item.source_url ?? item.sourceUrl ?? item.url ?? item.link ?? item.href;
+    const url    = urlRaw && /^https?:\/\//i.test(String(urlRaw)) ? String(urlRaw) : null;
+    if (!title && !reason && bulletArr.length === 0) continue;
+
+    const indent = tag ? 16 : 10;
+
+    // Emit tag header only when it changes
+    if (tag && tag !== lastTag) {
+      rows.push([{
+        content: `[ ${tag} ]`,
+        styles: {
+          fontStyle: "bold",
+          textColor: [76, 51, 204],
+          fontSize: 8.5,
+          fillColor: [255, 255, 255],
+          cellPadding: { top: isFirst ? 6 : 10, bottom: 2, left: 10, right: 8 },
+        },
+      }]);
+      lastTag = tag;
+      isFirst = false;
+    }
+
+    // Title
+    if (title) {
+      rows.push([{
+        content: title,
+        styles: {
+          fontStyle: "bold",
+          textColor: [36, 20, 83],
+          fontSize: 9,
+          fillColor: [255, 255, 255],
+          cellPadding: { top: isFirst ? 6 : 8, bottom: 1, left: indent, right: 8 },
+        },
+      }]);
+      isFirst = false;
+    }
+
+    // Source URL
+    if (url) {
+      rows.push([{
+        content: url,
+        styles: {
+          fontStyle: "italic",
+          textColor: [50, 80, 200],
+          fontSize: 7.5,
+          fillColor: [255, 255, 255],
+          cellPadding: { top: 1, bottom: 1, left: indent + 2, right: 8 },
+        },
+      }]);
+    }
+
+    // Source title (subtitle)
+    if (sourceTitle) {
+      rows.push([{
+        content: sourceTitle,
+        styles: {
+          fontStyle: "normal",
+          textColor: [110, 95, 150],
+          fontSize: 7.5,
+          fillColor: [255, 255, 255],
+          cellPadding: { top: 1, bottom: 2, left: indent + 2, right: 8 },
+        },
+      }]);
+    }
+
+    // Plain reason/description text
+    if (reason) {
+      const bulletLines = reason
+        .split("\n")
+        .map((l) => l.trim())
+        .filter(Boolean)
+        .map((l) => (l.startsWith("\xB7") ? l : `\xB7  ${l}`))
+        .join("\n");
+      rows.push([{
+        content: bulletLines,
+        styles: {
+          fontStyle: "normal",
+          textColor: [60, 50, 90],
+          fontSize: 8,
+          fillColor: [250, 248, 255],
+          cellPadding: { top: 2, bottom: 2, left: indent + 4, right: 8 },
+        },
+      }]);
+    }
+
+    // bullet_points array — one row per item
+    if (bulletArr.length > 0) {
+      const bulletContent = bulletArr.map((b) => `\xB7  ${b}`).join("\n");
+      rows.push([{
+        content: bulletContent,
+        styles: {
+          fontStyle: "normal",
+          textColor: [60, 50, 90],
+          fontSize: 8,
+          fillColor: [250, 248, 255],
+          cellPadding: { top: 2, bottom: 6, left: indent + 4, right: 8 },
+        },
+      }]);
+    }
+  }
+
+  return rows;
+}
+
+// Returns [label, value] rows for a section value.
+// Object sections produce one row per key; everything else produces one unlabelled row.
+function buildSectionRows(value: unknown): Array<[string, string]> {
+  if (typeof value === "object" && value !== null && !Array.isArray(value)) {
+    const SKIP = new Set(["code", "cta_text", "cta", "call_to_action"]);
+    const entries = Object.entries(value as Record<string, unknown>).filter(
+      ([k, v]) => !SKIP.has(k) && v !== null && v !== undefined && v !== ""
+    );
+    // If object is just {text, type} treat as simple text block
+    if (entries.every(([k]) => k === "text" || k === "type")) {
+      const found = entries.find(([k]) => k === "text");
+      return [["", found ? flattenValueForPdf(found[1]) : "-"]];
+    }
+    return entries.map(([k, v]) => {
+      const label = k.replace(/([A-Z])/g, " $1").replace(/_/g, " ").trim().toUpperCase();
+      return [label, flattenValueForPdf(v)] as [string, string];
+    });
+  }
+  return [["", flattenValueForPdf(value)]];
+}
+
+// Converts any image URL (including webp) to a PNG base64 data URL for jsPDF
+async function loadLogoDataUrl(): Promise<string | null> {
+  return new Promise((resolve) => {
+    const img = new Image();
+    img.crossOrigin = "anonymous";
+    img.onload = () => {
+      try {
+        const canvas = document.createElement("canvas");
+        canvas.width = img.naturalWidth;
+        canvas.height = img.naturalHeight;
+        canvas.getContext("2d")!.drawImage(img, 0, 0);
+        resolve(canvas.toDataURL("image/png"));
+      } catch {
+        resolve(null);
+      }
+    };
+    img.onerror = () => resolve(null);
+    img.src = kbcLogoSrc;
+  });
+}
+
+async function exportApprenticeToPDF(learner: TicketableLearnerRow) {
+  const logoDataUrl = await loadLogoDataUrl();
+
+  const doc = new jsPDF({ orientation: "portrait", unit: "mm", format: "a4" });
+  const pageW = doc.internal.pageSize.getWidth();
+  const mx = 14;
+  const contentW = pageW - mx * 2;
+  const today = new Date().toLocaleDateString("en-GB", { day: "2-digit", month: "long", year: "numeric" });
+
+  const C = {
+    purple:      [100, 77, 147]  as [number, number, number],
+    purpleDeep:  [50, 32, 100]   as [number, number, number],
+    purpleLight: [168, 140, 217] as [number, number, number],
+    purpleBg:    [240, 234, 253] as [number, number, number],
+    cardBg:      [247, 244, 255] as [number, number, number],
+    border:      [218, 208, 240] as [number, number, number],
+    dark:        [28, 16, 60]    as [number, number, number],
+    grey:        [118, 108, 142] as [number, number, number],
+    white:       [255, 255, 255] as [number, number, number],
+    textBody:    [55, 45, 82]    as [number, number, number],
+  };
+
+  // ── Header: shield indicator + label (left) | logo (right) ────
+  // Small shield-style indicator
+  doc.setFillColor(...C.purple);
+  doc.roundedRect(mx, 7, 5, 5, 1, 1, "F");
+  doc.setFillColor(...C.white);
+  doc.setLineWidth(0.5);
+  doc.setDrawColor(...C.white);
+  doc.line(mx + 1.5, 9.5, mx + 2.3, 10.3);
+  doc.line(mx + 2.3, 10.3, mx + 3.7, 8.7);
+
+  doc.setFontSize(8);
+  doc.setFont("helvetica", "bold");
+  doc.setTextColor(...C.purple);
+  doc.text("LEARNER SAFEGUARDING REPORT", mx + 7.5, 10.5);
+
+  // KBC logo — top right, no white box
+  const lgW = 22;
+  const lgH = lgW / 1.52;   // ≈ 14.5 mm
+  if (logoDataUrl) {
+    doc.addImage(logoDataUrl, "PNG", pageW - mx - lgW, 4, lgW, lgH);
+  }
+
+  // Separator — placed below logo bottom (4 + 14.5 + 1 ≈ 20)
+  doc.setDrawColor(...C.border);
+  doc.setLineWidth(0.3);
+  doc.line(mx, 20, pageW - mx, 20);
+
+  // ── Student name (no avatar) ──────────────────────────────────
+  doc.setFontSize(22);
+  doc.setFont("helvetica", "bold");
+  doc.setTextColor(...C.dark);
+  doc.text(pdfText(learner.studentName, "Unknown Learner"), mx, 31);
+
+  // Email row with small indicator
+  doc.setFillColor(...C.purpleLight);
+  doc.roundedRect(mx, 34.5, 3.5, 2.5, 0.5, 0.5, "F");
+  doc.setFontSize(8);
+  doc.setFont("helvetica", "normal");
+  doc.setTextColor(...C.grey);
+  doc.text(pdfText(learner.studentEmail, ""), mx + 5.5, 36.5);
+
+  // Date row with small indicator
+  doc.setFillColor(...C.purpleLight);
+  doc.roundedRect(mx, 39.5, 3.5, 2.5, 0.5, 0.5, "F");
+  doc.setFontSize(8);
+  doc.setTextColor(...C.grey);
+  doc.text(`Generated: ${today}`, mx + 5.5, 41.5);
+
+  // Separator
+  doc.setDrawColor(...C.border);
+  doc.setLineWidth(0.3);
+  doc.line(mx, 45, pageW - mx, 45);
+
+  // ── Stat cards ────────────────────────────────────────────────
+  const statsY = 48;
+  const cardH  = 30;
+  const cardGap = 5;
+  const cardW   = (contentW - cardGap) / 2;
+
+  const riskTextColors: Record<string, [number, number, number]> = {
+    red:   [185, 28, 28],
+    amber: [161, 98, 7],
+    green: [21, 128, 61],
+  };
+  const riskBgColors: Record<string, [number, number, number]> = {
+    red:   [254, 242, 242],
+    amber: [255, 251, 235],
+    green: [240, 253, 244],
+  };
+  const riskDescriptions: Record<string, string> = {
+    red:   "High risk – immediate action required.",
+    amber: "Moderate risk – monitoring and support recommended.",
+    green: "Low risk – continue current support.",
+  };
+  const riskKey      = (learner.riskLevel || "").toLowerCase();
+  const riskTxtColor = riskTextColors[riskKey] ?? C.purple;
+  const riskBg       = riskBgColors[riskKey]   ?? C.purpleBg;
+  const riskDesc     = riskDescriptions[riskKey] ?? "";
+
+  // Risk card
+  doc.setFillColor(...riskBg);
+  doc.setDrawColor(...C.border);
+  doc.setLineWidth(0.3);
+  doc.roundedRect(mx, statsY, cardW, cardH, 3, 3, "FD");
+  doc.setFontSize(6.5);
+  doc.setFont("helvetica", "bold");
+  doc.setTextColor(...C.grey);
+  doc.text("RISK LEVEL", mx + 7, statsY + 8);
+  doc.setFontSize(15);
+  doc.setFont("helvetica", "bold");
+  doc.setTextColor(...riskTxtColor);
+  doc.text(pdfText(learner.riskLevel, "-").toUpperCase(), mx + 7, statsY + 18);
+  if (riskDesc) {
+    doc.setFontSize(6.5);
+    doc.setFont("helvetica", "normal");
+    doc.setTextColor(...C.grey);
+    const descLines = doc.splitTextToSize(riskDesc, cardW - 10) as string[];
+    doc.text(descLines, mx + 7, statsY + 24);
+  }
+
+  // Score card
+  const scoreX = mx + cardW + cardGap;
+  const scoreVal = learner.totalScore != null ? `${learner.totalScore} / 10` : "-";
+  doc.setFillColor(...C.purpleBg);
+  doc.setDrawColor(...C.border);
+  doc.roundedRect(scoreX, statsY, cardW, cardH, 3, 3, "FD");
+  doc.setFontSize(6.5);
+  doc.setFont("helvetica", "bold");
+  doc.setTextColor(...C.grey);
+  doc.text("TOTAL SCORE", scoreX + 7, statsY + 8);
+  doc.setFontSize(15);
+  doc.setFont("helvetica", "bold");
+  doc.setTextColor(...C.purple);
+  doc.text(scoreVal, scoreX + 7, statsY + 18);
+  doc.setFontSize(6.5);
+  doc.setFont("helvetica", "normal");
+  doc.setTextColor(...C.grey);
+  doc.text("Indicates moderate risk.", scoreX + 7, statsY + 24);
+
+  // ── Sections ──────────────────────────────────────────────────
+  const data = (learner as any).apprenticeDashboard as Record<string, unknown> | undefined;
+  let curY = statsY + cardH + 6;
+
+  // Light card bg + dark purple bold text for section headers
+  const secHdrStyle = {
+    fillColor: C.cardBg   as [number, number, number],
+    textColor: C.purpleDeep as [number, number, number],
+    fontStyle: "bold"     as const,
+    fontSize: 9,
+    cellPadding: { top: 5, bottom: 5, left: 8, right: 6 },
+  };
+
+  const isRecArr = (v: unknown): v is Record<string, unknown>[] =>
+    Array.isArray(v) &&
+    v.length > 0 &&
+    typeof v[0] === "object" &&
+    v[0] !== null &&
+    ("title" in (v[0] as object) || "reason" in (v[0] as object)) &&
+    !("text" in (v[0] as object));
+
+  const isTextTypeArr = (v: unknown): v is Array<{ text: string; type: string }> =>
+    Array.isArray(v) &&
+    v.length > 0 &&
+    typeof v[0] === "object" &&
+    v[0] !== null &&
+    "text" in (v[0] as object) &&
+    "type" in (v[0] as object);
+
+  const isTwoColObj = (v: unknown): boolean => {
+    if (typeof v !== "object" || v === null || Array.isArray(v)) return false;
+    const keys = Object.keys(v as object).map(k => k.toLowerCase());
+    return (
+      keys.some(k => k.includes("insight") || k.includes("ai")) &&
+      keys.some(k => k.includes("action") || k.includes("recommend"))
+    );
+  };
+
+  // 3mm purple accent bar on left of every cell in column 0
+  const drawAccent = (hookData: any) => {
+    if (hookData.column.index !== 0) return;
+    doc.setFillColor(...C.purpleLight);
+    doc.rect(hookData.cell.x, hookData.cell.y, 3, hookData.cell.height, "F");
+  };
+
+  const addLinkDeco = (hookData: any, colIdx: number) => {
+    if (hookData.row.index === 0 || hookData.column.index !== colIdx) return;
+    const raw = String(hookData.cell.raw ?? "");
+    if (!/^https?:\/\//i.test(raw)) return;
+    const lp = Number((hookData.cell.styles?.cellPadding as any)?.left ?? 4);
+    const x  = hookData.cell.x + lp;
+    const y  = hookData.cell.y + Number((hookData.cell.styles?.cellPadding as any)?.top ?? 4) + 2.5;
+    const tw = Math.min(doc.getTextWidth(raw), hookData.cell.width - lp * 2);
+    doc.setDrawColor(60, 80, 200);
+    doc.setLineWidth(0.3);
+    doc.line(x, y + 0.6, x + tw, y + 0.6);
+    doc.link(x, hookData.cell.y + 1, tw, hookData.cell.height - 2, { url: raw });
+  };
+
+  if (data) {
+    for (const [key, sectionValue] of Object.entries(data)) {
+      const title = key
+        .replace(/([A-Z])/g, " $1")
+        .replace(/_/g, " ")
+        .trim()
+        .toUpperCase();
+
+      // ── Recommendation / resource arrays ──────────────────────
+      if (isRecArr(sectionValue)) {
+        const recRows = buildRecommendationRows(sectionValue);
+        if (recRows.length === 0) continue;
+
+        autoTable(doc, {
+          startY: curY,
+          body: [
+            [{ content: title, styles: secHdrStyle }],
+            ...recRows,
+          ],
+          theme: "plain",
+          styles: { overflow: "linebreak", valign: "top", fillColor: C.cardBg as [number, number, number] },
+          columnStyles: { 0: { cellWidth: contentW } },
+          margin: { left: mx, right: mx },
+          tableLineColor: C.border,
+          tableLineWidth: 0.3,
+          didDrawCell: (hookData: any) => {
+            drawAccent(hookData);
+            addLinkDeco(hookData, 0);
+          },
+        });
+
+        curY = (doc as any).lastAutoTable.finalY + 5;
+        continue;
+      }
+
+      // ── {text, type}[] → CONCERNS / POSITIVES ─────────────────
+      if (isTextTypeArr(sectionValue)) {
+        const lefts  = sectionValue.filter(i => (i.type || "").toLowerCase() !== "positive").map(i => pdfText(i.text));
+        const rights = sectionValue.filter(i => (i.type || "").toLowerCase() === "positive").map(i => pdfText(i.text));
+        const maxRows = Math.max(lefts.length, rights.length, 1);
+        const colW = (contentW - 2) / 2;
+
+        const twoColBody: object[][] = [
+          [{ content: title, colSpan: 2, styles: secHdrStyle }],
+          [
+            { content: "CONCERNS",  styles: { fontStyle: "bold" as const, fontSize: 7.5, textColor: [160, 40, 40]  as [number, number, number], fillColor: C.cardBg as [number, number, number], cellPadding: { top: 4, bottom: 3, left: 8, right: 4 } } },
+            { content: "POSITIVES", styles: { fontStyle: "bold" as const, fontSize: 7.5, textColor: [30, 110, 60]   as [number, number, number], fillColor: C.cardBg as [number, number, number], cellPadding: { top: 4, bottom: 3, left: 5, right: 5 } } },
+          ],
+        ];
+        for (let i = 0; i < maxRows; i++) {
+          twoColBody.push([
+            { content: lefts[i]  ? `\xB7  ${lefts[i]}`  : "", styles: { fontSize: 8, textColor: C.textBody as [number, number, number], fillColor: C.cardBg as [number, number, number], cellPadding: { top: 2.5, bottom: 2.5, left: 8, right: 4 } } },
+            { content: rights[i] ? `\xB7  ${rights[i]}` : "", styles: { fontSize: 8, textColor: C.textBody as [number, number, number], fillColor: C.cardBg as [number, number, number], cellPadding: { top: 2.5, bottom: 2.5, left: 5, right: 5 } } },
+          ]);
+        }
+
+        autoTable(doc, {
+          startY: curY,
+          body: twoColBody,
+          theme: "plain",
+          styles: { overflow: "linebreak", valign: "top" },
+          columnStyles: { 0: { cellWidth: colW }, 1: { cellWidth: colW } },
+          margin: { left: mx, right: mx },
+          tableLineColor: C.border,
+          tableLineWidth: 0.3,
+          didDrawCell: (hookData: any) => { drawAccent(hookData); },
+        });
+
+        curY = (doc as any).lastAutoTable.finalY + 5;
+        continue;
+      }
+
+      // ── Two-column object (AI Insights | Recommended Actions) ──
+      if (isTwoColObj(sectionValue)) {
+        const entries = Object.entries(sectionValue as Record<string, unknown>);
+        const leftE   = entries.find(([k]) => k.toLowerCase().includes("insight") || k.toLowerCase().includes("ai")) ?? entries[0]!;
+        const rightE  = entries.find(([k]) => k.toLowerCase().includes("action") || k.toLowerCase().includes("recommend")) ?? entries[entries.length - 1]!;
+        const toArr   = (v: unknown) => (Array.isArray(v) ? v.map(x => pdfText(String(x))) : [pdfText(String(v))]);
+        const leftItems  = toArr(leftE[1]);
+        const rightItems = toArr(rightE[1]);
+        const maxRows = Math.max(leftItems.length, rightItems.length, 1);
+        const colW = (contentW - 2) / 2;
+        const lTitle = leftE[0].replace(/([A-Z])/g, " $1").replace(/_/g, " ").trim().toUpperCase();
+        const rTitle = rightE[0].replace(/([A-Z])/g, " $1").replace(/_/g, " ").trim().toUpperCase();
+
+        const twoColBody: object[][] = [
+          [{ content: title, colSpan: 2, styles: secHdrStyle }],
+          [
+            { content: lTitle, styles: { fontStyle: "bold" as const, fontSize: 7.5, textColor: C.purple as [number, number, number], fillColor: C.cardBg as [number, number, number], cellPadding: { top: 4, bottom: 3, left: 8, right: 4 } } },
+            { content: rTitle, styles: { fontStyle: "bold" as const, fontSize: 7.5, textColor: C.purple as [number, number, number], fillColor: C.cardBg as [number, number, number], cellPadding: { top: 4, bottom: 3, left: 5, right: 5 } } },
+          ],
+        ];
+        for (let i = 0; i < maxRows; i++) {
+          twoColBody.push([
+            { content: leftItems[i]  ? `\xB7  ${leftItems[i]}`  : "", styles: { fontSize: 8, textColor: C.textBody as [number, number, number], fillColor: C.cardBg as [number, number, number], cellPadding: { top: 2.5, bottom: 2.5, left: 8, right: 4 } } },
+            { content: rightItems[i] ? `\xB7  ${rightItems[i]}` : "", styles: { fontSize: 8, textColor: C.textBody as [number, number, number], fillColor: C.cardBg as [number, number, number], cellPadding: { top: 2.5, bottom: 2.5, left: 5, right: 5 } } },
+          ]);
+        }
+
+        autoTable(doc, {
+          startY: curY,
+          body: twoColBody,
+          theme: "plain",
+          styles: { overflow: "linebreak", valign: "top" },
+          columnStyles: { 0: { cellWidth: colW }, 1: { cellWidth: colW } },
+          margin: { left: mx, right: mx },
+          tableLineColor: C.border,
+          tableLineWidth: 0.3,
+          didDrawCell: (hookData: any) => { drawAccent(hookData); },
+        });
+
+        curY = (doc as any).lastAutoTable.finalY + 5;
+        continue;
+      }
+
+      // ── Key-value / plain text sections ───────────────────────
+      const rows = buildSectionRows(sectionValue);
+      const hasLabels = rows.some(([lbl]) => lbl !== "");
+      if (rows.every(([, val]) => !val || val === "-")) continue;
+
+      const labelColW = 42;
+      const valueColW = contentW - labelColW;
+      const isUrl = (v: string) => /^https?:\/\//i.test(v);
+
+      const bodyRows: object[][] = [
+        [{ content: title, colSpan: hasLabels ? 2 : 1, styles: secHdrStyle }],
+        ...rows.map(([lbl, val]) =>
+          hasLabels
+            ? [
+                { content: lbl, styles: { textColor: C.purple as [number, number, number], fontStyle: "bold" as const, fontSize: 7.5, fillColor: C.cardBg as [number, number, number], cellPadding: { top: 4, bottom: 4, left: 8, right: 4 } } },
+                { content: isUrl(val) ? `>> ${val}` : val, styles: { textColor: isUrl(val) ? [40, 70, 185] as [number, number, number] : C.textBody as [number, number, number], fontStyle: isUrl(val) ? "italic" as const : "normal" as const, fontSize: 8, fillColor: C.cardBg as [number, number, number], cellPadding: { top: 4, bottom: 4, left: 4, right: 7 } } },
+              ]
+            : [
+                { content: val, styles: { textColor: C.textBody as [number, number, number], fontSize: 8, fontStyle: "italic" as const, fillColor: C.cardBg as [number, number, number], cellPadding: { top: 5, bottom: 6, left: 8, right: 7 } } },
+              ]
+        ),
+      ];
+
+      autoTable(doc, {
+        startY: curY,
+        body: bodyRows,
+        theme: "plain",
+        styles: { overflow: "linebreak", valign: "top" },
+        columnStyles: hasLabels
+          ? { 0: { cellWidth: labelColW }, 1: { cellWidth: valueColW } }
+          : { 0: { cellWidth: contentW } },
+        margin: { left: mx, right: mx },
+        tableLineColor: C.border,
+        tableLineWidth: 0.3,
+        didDrawCell: (hookData: any) => {
+          drawAccent(hookData);
+          addLinkDeco(hookData, hasLabels ? 1 : 0);
+        },
+      });
+
+      curY = (doc as any).lastAutoTable.finalY + 5;
+    }
+  } else {
+    doc.setFontSize(9);
+    doc.setTextColor(...C.grey);
+    doc.text("No report data available for this learner.", pageW / 2, curY + 12, { align: "center" });
+  }
+
+  // ── Dark-purple footer on every page ──────────────────────────
+  const totalPages = (doc as any).internal.getNumberOfPages();
+  for (let p = 1; p <= totalPages; p++) {
+    doc.setPage(p);
+    const ph   = doc.internal.pageSize.getHeight();
+    const footH = 16;
+    const footY = ph - footH;
+
+    // Dark purple background
+    doc.setFillColor(...C.purpleDeep);
+    doc.rect(0, footY, pageW, footH, "F");
+
+    // Lock-style square indicator
+    doc.setFillColor(...C.purpleLight);
+    doc.roundedRect(mx, footY + 5, 6, 6, 1, 1, "F");
+    doc.setFontSize(7);
+    doc.setFont("helvetica", "bold");
+    doc.setTextColor(...C.purpleDeep);
+    doc.text("P", mx + 1.8, footY + 9.5);
+
+    // CONFIDENTIAL & PRIVATE
+    doc.setFontSize(8);
+    doc.setFont("helvetica", "bold");
+    doc.setTextColor(...C.white);
+    doc.text("CONFIDENTIAL & PRIVATE", mx + 8.5, footY + 8.5);
+
+    // Disclaimer — split to fit left of KBC label
+    doc.setFontSize(6.3);
+    doc.setFont("helvetica", "normal");
+    doc.setTextColor(185, 168, 218);
+    const disclaimer = "This report is only intended for the learner and authorised KBC staff only. Please handle this information with care and in accordance with UK data protection and safeguarding regulations.";
+    const disclaimerLines = doc.splitTextToSize(disclaimer, contentW - 55) as string[];
+    doc.text(disclaimerLines, mx + 8.5, footY + 12.5);
+
+    // KBC name + website (right-aligned)
+    doc.setFontSize(7.5);
+    doc.setFont("helvetica", "bold");
+    doc.setTextColor(...C.white);
+    doc.text("Kent Business College", pageW - mx, footY + 8.5, { align: "right" });
+    doc.setFontSize(6.5);
+    doc.setFont("helvetica", "normal");
+    doc.setTextColor(185, 168, 218);
+    doc.text("www.kentbusinesscollege.com", pageW - mx, footY + 13, { align: "right" });
+  }
+
+  const safeName = pdfText(learner.studentName, "learner").replace(/\s+/g, "-").toLowerCase();
+  doc.save(`learner-safeguarding-report-${safeName}.pdf`);
+}
+
+async function exportTicketsToPDF(tickets: SupportTicketRow[], summary?: SupportTicketsResponse["summary"] | null, coachLabel?: string) {
+  const logoDataUrl = await loadLogoDataUrl();
+
+  const doc = new jsPDF({ orientation: "landscape", unit: "mm", format: "a4" });
+  const pageW  = doc.internal.pageSize.getWidth();   // 297mm
+  const pageH  = doc.internal.pageSize.getHeight();  // 210mm
+  const today  = new Date().toLocaleDateString("en-GB", { day: "2-digit", month: "long", year: "numeric" });
+
+  // ── Header bar ──────────────────────────────────────────────────────────────
+  const headerH = coachLabel ? 24 : 18;
+  doc.setFillColor(100, 77, 147);
+  doc.roundedRect(10, 8, pageW - 20, headerH, 3, 3, "F");
+
+  // KBC Logo — white badge in right side of header
+  const tLogoW = (headerH - 4) * 1.52;
+  const tLogoH = headerH - 4;
+  const tBadgePad = 2;
+  const tBadgeW = tLogoW + tBadgePad * 2;
+  const tBadgeH = tLogoH + tBadgePad * 2;
+  const tBadgeX = pageW - 10 - tBadgeW - 1;
+  const tBadgeY = 8 + (headerH - tBadgeH) / 2;
+  doc.setFillColor(255, 255, 255);
+  doc.roundedRect(tBadgeX, tBadgeY, tBadgeW, tBadgeH, 2, 2, "F");
+  if (logoDataUrl) {
+    doc.addImage(logoDataUrl, "PNG", tBadgeX + tBadgePad, tBadgeY + tBadgePad, tLogoW, tLogoH);
+  }
+
+  // Title
+  doc.setTextColor(255, 255, 255);
+  doc.setFontSize(13);
+  doc.setFont("helvetica", "bold");
+  const titleY = coachLabel ? 16 : 19;
+  doc.text("Safeguarding Tickets Report", 18, titleY);
+
+  // Coach name — subtitle line below the title
+  if (coachLabel) {
+    doc.setFontSize(9);
+    doc.setFont("helvetica", "normal");
+    doc.setTextColor(220, 205, 255);
+    doc.text(`Coach: ${pdfText(coachLabel)}`, 18, 23);
+  }
+
+  // Date — left of logo badge
+  doc.setFontSize(8);
+  doc.setFont("helvetica", "normal");
+  doc.setTextColor(220, 205, 255);
+  doc.text(`Generated: ${today}`, tBadgeX - 4, coachLabel ? 16 : 19, { align: "right" });
+
+  // ── Summary cards ───────────────────────────────────────────────────────────
+  const cardsY  = 8 + headerH + 2;   // 2mm gap after header
+  const cardsH  = 16;
+  if (summary) {
+    const cards = [
+      { label: "Total",     value: String(summary.total) },
+      { label: "Open",      value: String(summary.open) },
+      { label: "Closed",    value: String(summary.closed) },
+      { label: "Red Risk",  value: String(summary.redRisk) },
+      { label: "Escalated", value: String(summary.escalated) },
+      { label: "Avg Close", value: summary.avgCloseDays != null ? `${summary.avgCloseDays} days` : "-" },
+    ];
+    const cardW = (pageW - 20) / cards.length;
+    cards.forEach((card, i) => {
+      const x = 10 + i * cardW;
+      doc.setFillColor(248, 245, 255);
+      doc.roundedRect(x + 1, cardsY, cardW - 2, cardsH, 2, 2, "F");
+      doc.setTextColor(123, 109, 155);
+      doc.setFontSize(7);
+      doc.setFont("helvetica", "normal");
+      doc.text(card.label.toUpperCase(), x + cardW / 2, cardsY + 7, { align: "center" });
+      doc.setTextColor(36, 20, 83);
+      doc.setFontSize(11);
+      doc.setFont("helvetica", "bold");
+      doc.text(card.value, x + cardW / 2, cardsY + 13, { align: "center" });
+    });
+  }
+
+  // ── Table ────────────────────────────────────────────────────────────────────
+  // Landscape A4 usable width = 297 - 20 (margins) = 277mm
+  // Columns: Ticket(16) Learner(44) Type(20) Risk(16) Status(26)
+  //          Created(20) Closed(20) Days(14) Urgency(20) Subject(36) Notes(45) = 277
+  const RISK_COLORS: Record<string, [number, number, number]> = {
+    red:   [255, 235, 235],
+    amber: [255, 248, 230],
+    green: [235, 255, 240],
+  };
+
+  autoTable(doc, {
+    startY: summary ? cardsY + cardsH + 2 : 8 + headerH + 2,
+    margin: { left: 10, right: 10 },
+    tableWidth: pageW - 20,
+    head: [[
+      "Ticket", "Learner", "Type", "Risk", "Status",
+      "Created", "Closed", "Days", "Urgency", "Subject", "Case Notes",
+    ]],
+    body: tickets.map((t) => {
+      // Notes summary: first 2 notes joined, fallback to first 200 chars of details
+      const notesList = (t.notes || []).slice(0, 2);
+      const rawNotes = notesList.length > 0
+        ? notesList.map((n) => n.note).join("  /  ").substring(0, 200)
+        : (t.details || "-").substring(0, 200);
+
+      const cap = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
+      return [
+        pdfText(t.ticketCode),
+        `${pdfText(t.learnerName)}\n${pdfText(t.learnerEmail)}`,
+        pdfText(cap(t.type || "-")),
+        pdfText(cap(t.risk || "-")),
+        pdfText(cap(t.status || "-")),
+        pdfText(formatTicketDate(t.createdAt)),
+        pdfText(t.closedAt ? formatTicketDate(t.closedAt) : "-"),
+        String(t.daysToClose ?? t.daysOpen ?? 0),
+        pdfText(cap(t.urgency || "-")),
+        pdfText(t.subject),
+        pdfText(rawNotes),
+      ];
+    }),
+    styles: {
+      fontSize: 8,
+      cellPadding: { top: 3, right: 3, bottom: 3, left: 3 },
+      overflow: "linebreak",
+      lineColor: [233, 227, 245],
+      lineWidth: 0.2,
+      textColor: [36, 20, 83],
+      valign: "top",
+    },
+    headStyles: {
+      fillColor: [36, 20, 83],
+      textColor: [255, 255, 255],
+      fontStyle: "bold",
+      fontSize: 8,
+      halign: "center",
+      cellPadding: { top: 4, right: 3, bottom: 4, left: 3 },
+    },
+    alternateRowStyles: { fillColor: [252, 251, 254] },
+    columnStyles: {
+      0:  { cellWidth: 16, halign: "center", fontStyle: "bold" },
+      1:  { cellWidth: 44 },
+      2:  { cellWidth: 20, halign: "center" },
+      3:  { cellWidth: 16, halign: "center" },
+      4:  { cellWidth: 26, halign: "center" },
+      5:  { cellWidth: 20, halign: "center" },
+      6:  { cellWidth: 20, halign: "center" },
+      7:  { cellWidth: 14, halign: "center" },
+      8:  { cellWidth: 20, halign: "center" },
+      9:  { cellWidth: 36 },
+      10: { cellWidth: 45 },
+    },
+    didParseCell(data) {
+      if (data.section === "body" && data.column.index === 3) {
+        const risk = (tickets[data.row.index]?.risk || "").toLowerCase();
+        const col = RISK_COLORS[risk];
+        if (col) data.cell.styles.fillColor = col;
+      }
+    },
+    didDrawPage(data) {
+      const pCount = (doc as any).internal.getNumberOfPages();
+      doc.setFontSize(7);
+      doc.setTextColor(150, 150, 150);
+      const footerCoach = coachLabel ? `  •  ${pdfText(coachLabel)}` : "";
+      doc.text(
+        `Page ${data.pageNumber} of ${pCount}  •  Safeguarding Tickets Report${footerCoach}  •  ${today}`,
+        pageW / 2,
+        pageH - 5,
+        { align: "center" }
+      );
+    },
+  });
+
+  const fileCoach = coachLabel ? `-${coachLabel.toLowerCase().replace(/\s+/g, "-")}` : "-all";
+  doc.save(`safeguarding-tickets${fileCoach}-${new Date().toISOString().split("T")[0]}.pdf`);
 }
 
 function TicketDetailPanel({
@@ -2172,13 +3420,8 @@ function TicketDetailPanel({
               <div className="mb-3 text-[10px] font-semibold uppercase tracking-wider text-[#7B6D9B]">
                 Case Info
               </div>
-              <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-                <div className="rounded-xl border border-[#ECE7F7] p-3">
-                  <div className="text-[10px] font-medium text-[#7B6D9B]">Source</div>
-                  <div className="mt-1 text-sm font-medium text-[#241453]">
-                    {ticket.source || "-"}
-                  </div>
-                </div>
+              <div className="grid grid-cols-2 gap-3 sm:grid-cols-5">
+
                 <div className="rounded-xl border border-[#ECE7F7] p-3">
                   <div className="text-[10px] font-medium text-[#7B6D9B]">Created</div>
                   <div className="mt-1 text-sm font-medium text-[#241453]">
@@ -2192,9 +3435,21 @@ function TicketDetailPanel({
                   </div>
                 </div>
                 <div className="rounded-xl border border-[#ECE7F7] p-3">
-                  <div className="text-[10px] font-medium text-[#7B6D9B]">Days</div>
+                  <div className="text-[10px] font-medium text-[#7B6D9B]">Source</div>
+                  <div className="mt-1 text-sm font-medium text-[#241453]">
+                    {ticket.source || "-"}
+                  </div>
+                </div>
+                <div className="rounded-xl border border-[#ECE7F7] p-3">
+                  <div className="text-[10px] font-medium text-[#7B6D9B]">Days Open</div>
                   <div className="mt-1 text-sm font-medium text-[#241453]">
                     {ticket.daysToClose ?? ticket.daysOpen ?? 0}
+                  </div>
+                </div>
+                <div className="rounded-xl border border-[#ECE7F7] p-3">
+                  <div className="text-[10px] font-medium text-[#7B6D9B]">Closed</div>
+                  <div className="mt-1 text-sm font-medium text-[#241453]">
+                    {ticket.closedAt ? formatTicketDate(ticket.closedAt) : "-"}
                   </div>
                 </div>
               </div>
@@ -2615,7 +3870,7 @@ function OpenTicketModal({
           <div>
             <label className="mb-2 block text-sm font-medium text-[#241453]">Role</label>
             {(() => {
-              const presets = ["Safeguarding Lead", "Wellbeing Manager"];
+              const presets = ["Learner", "Safeguarding Lead", "Wellbeing Manager"];
               const isOther = form.creator_role !== "" && !presets.includes(form.creator_role);
               const selectVal = presets.includes(form.creator_role) ? form.creator_role : isOther ? "__other__" : "";
               return (
@@ -2623,23 +3878,28 @@ function OpenTicketModal({
                   <select
                     value={selectVal}
                     onChange={(e) => {
-                      if (e.target.value === "__other__") {
-                        onChange("creator_role", "​");
+                      const val = e.target.value;
+                      if (val === "__other__") {
+                        onChange("creator_role", "\u200B");
                       } else {
-                        onChange("creator_role", e.target.value);
+                        onChange("creator_role", val);
+                        if (val === "Learner" && learner) {
+                          onChange("created_by", learner.studentName || learner.studentEmail || "");
+                        }
                       }
                     }}
                     className="h-11 w-full rounded-xl border border-[#DED5F3] px-3 text-sm outline-none"
                   >
                     <option value="">Select role...</option>
+                    <option value="Learner">Learner</option>
                     <option value="Safeguarding Lead">Safeguarding Lead</option>
                     <option value="Wellbeing Manager">Wellbeing Manager</option>
                     <option value="__other__">Other</option>
                   </select>
                   {isOther && (
                     <input
-                      value={form.creator_role.replace(/​/g, "")}
-                      onChange={(e) => onChange("creator_role", e.target.value || "​")}
+                      value={form.creator_role.replace(/\u200B/g, "")}
+                      onChange={(e) => onChange("creator_role", e.target.value || "\u200B")}
                       placeholder="Enter your role..."
                       className="mt-2 h-11 w-full rounded-xl border border-[#DED5F3] px-3 text-sm outline-none focus:border-[#644D93]"
                       autoFocus
@@ -2706,10 +3966,19 @@ function TicketsManagementView({
   onCreateTicket,
   filters,
   onFiltersChange,
-  onExport,
+  onExportExcel,
+  onExportPDF,
+  onExportAllExcel,
+  onExportAllPDF,
   onEdit,
   onTicketUpdated,
   onNotesChanged,
+  onEvidenceChanged,
+  role,
+  onDelete,
+  deleteConfirmId,
+  deleting,
+  onDeleteConfirm,
 }: {
   loading: boolean;
   search: string;
@@ -2721,12 +3990,24 @@ function TicketsManagementView({
   onCreateTicket: () => void;
   filters: TicketFilters;
   onFiltersChange: (f: TicketFilters) => void;
-  onExport: () => void;
+  onExportExcel: () => void;
+  onExportPDF: () => void;
+  onExportAllExcel: () => void;
+  onExportAllPDF: () => void;
   onEdit: (ticket: SupportTicketRow) => void;
   onTicketUpdated: (ticketId: number, changes: { risk?: string }) => void;
   onNotesChanged: (ticketId: number) => void;
+  onEvidenceChanged: (ticketId: number) => void;
+  role?: string;
+  onDelete: (id: number) => void;
+  deleteConfirmId: number | null;
+  deleting: boolean;
+  onDeleteConfirm: (id: number) => void;
 }) {
   const [filtersOpen, setFiltersOpen] = React.useState(false);
+  const [exportOpen, setExportOpen] = React.useState(false);
+  const canView = (role || "").toLowerCase() === "qa";
+  const isQA = canView;
   const tickets = ticketsData?.tickets || [];
   const activeFilterCount = filters.status.length + filters.type.length + filters.risk.length;
 
@@ -2744,7 +4025,7 @@ function TicketsManagementView({
           <button
             type="button"
             onClick={onCreateTicket}
-            className="inline-flex h-11 items-center gap-2 rounded-2xl bg-[#22A699] px-5 text-sm font-medium text-white transition hover:opacity-90"
+            className="inline-flex h-11 items-center gap-2 rounded-2xl bg-[#B27715] px-5 text-sm font-medium text-white transition hover:opacity-90"
           >
             <Plus className="h-4 w-4" />
             Create Ticket
@@ -2800,29 +4081,90 @@ function TicketsManagementView({
                 )}
               </div>
 
-              <button
-                type="button"
-                onClick={onExport}
-                className="inline-flex h-10 items-center gap-2 rounded-2xl border border-[#E7E2F3] px-4 text-sm text-[#241453] hover:bg-[#F8F5FF]"
-              >
-                Export
-              </button>
+              <div className="relative">
+                <button
+                  type="button"
+                  onClick={() => setExportOpen((v) => !v)}
+                  className="inline-flex h-10 items-center gap-2 rounded-2xl border border-[#E7E2F3] px-4 text-sm text-[#241453] hover:bg-[#F8F5FF]"
+                >
+                  <FileDown className="h-4 w-4" />
+                  Export
+                  <ChevronDown className="h-3 w-3 opacity-60" />
+                </button>
+                {exportOpen && (
+                  <>
+                    <button
+                      type="button"
+                      className="fixed inset-0 z-40 cursor-default"
+                      onClick={() => setExportOpen(false)}
+                    />
+                    <div className="absolute right-0 z-50 mt-2 w-56 rounded-2xl border border-[#E7E2F3] bg-white py-1 shadow-lg">
+                      <div className="px-4 py-1.5 text-[10px] font-semibold uppercase tracking-wider text-[#7B6D9B]">
+                        Selected Coach
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => { setExportOpen(false); onExportExcel(); }}
+                        className="flex w-full items-center gap-3 px-4 py-2.5 text-sm text-[#241453] hover:bg-[#F8F5FF]"
+                      >
+                        <FileSpreadsheet className="h-4 w-4 text-emerald-600" />
+                        Excel (.xlsx)
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => { setExportOpen(false); onExportPDF(); }}
+                        className="flex w-full items-center gap-3 px-4 py-2.5 text-sm text-[#241453] hover:bg-[#F8F5FF]"
+                      >
+                        <FilePdf className="h-4 w-4 text-red-500" />
+                        PDF Report
+                      </button>
+                      <div className="my-1 border-t border-[#EEE8F8]" />
+                      <div className="px-4 py-1.5 text-[10px] font-semibold uppercase tracking-wider text-[#7B6D9B]">
+                        All Coaches
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => { setExportOpen(false); onExportAllExcel(); }}
+                        className="flex w-full items-center gap-3 px-4 py-2.5 text-sm text-[#241453] hover:bg-[#F8F5FF]"
+                      >
+                        <FileSpreadsheet className="h-4 w-4 text-emerald-600" />
+                        All Tickets — Excel
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => { setExportOpen(false); onExportAllPDF(); }}
+                        className="flex w-full items-center gap-3 px-4 py-2.5 text-sm text-[#241453] hover:bg-[#F8F5FF]"
+                      >
+                        <FilePdf className="h-4 w-4 text-red-500" />
+                        All Tickets — PDF
+                      </button>
+                    </div>
+                  </>
+                )}
+              </div>
             </div>
           </div>
         </div>
 
-        <div className="mt-6 grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-5">
+        <div className="mt-6 grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-6">
           <StatCard title="Total" value={ticketsData?.summary?.total ?? 0} icon={<Ticket className="h-4 w-4" />} />
           <StatCard title="Open" value={ticketsData?.summary?.open ?? 0} icon={<ClipboardList className="h-4 w-4" />} />
           <StatCard title="Red Risk" value={ticketsData?.summary?.redRisk ?? 0} icon={<AlertTriangle className="h-4 w-4" />} />
           <StatCard title="Escalated" value={ticketsData?.summary?.escalated ?? 0} icon={<AlertTriangle className="h-4 w-4" />} />
           <StatCard title="Closed" value={ticketsData?.summary?.closed ?? 0} icon={<ClipboardList className="h-4 w-4" />} />
+          <StatCard
+            title="Avg Close Time"
+            value={ticketsData?.summary?.avgCloseDays ?? "—"}
+            unit={ticketsData?.summary?.avgCloseDays != null ? "days" : undefined}
+            delta={ticketsData?.summary?.avgCloseDelta ?? null}
+            icon={<ClipboardList className="h-4 w-4" />}
+          />
         </div>
 
         <div className="mt-6 overflow-hidden rounded-3xl border border-[#E9E3F5]">
-          <div className="custom-scroll overflow-auto">
+          <div className="custom-scroll overflow-auto" style={{ maxHeight: "calc(100vh - 320px)" }}>
             <table className="w-full min-w-[1250px] text-sm">
-              <thead className="bg-[#FCFBFE]">
+              <thead className="sticky top-0 z-10 bg-[#FCFBFE]">
                 <tr className="border-b border-[#EEE8F8] text-left text-[#7B6D9B]">
                   <th className="px-5 py-4 font-medium">Ticket</th>
                   <th className="px-5 py-4 font-medium">Learner</th>
@@ -2837,20 +4179,21 @@ function TicketsManagementView({
                   <th className="px-5 py-4 font-medium">Evidence</th>
                   <th className="px-5 py-4 font-medium">Actions</th>
                   <th className="px-5 py-4 font-medium">Edit</th>
-                  <th className="px-5 py-4 font-medium">View</th>
+                  {isQA && <th className="px-5 py-4 font-medium">Delete</th>}
+                  {canView && <th className="px-5 py-4 font-medium">View</th>}
                 </tr>
               </thead>
 
               <tbody>
                 {loading ? (
                   <tr>
-                    <td colSpan={14} className="px-5 py-8 text-center text-slate-500">
+                    <td colSpan={(canView ? 1 : 0) + (isQA ? 1 : 0) + 13} className="px-5 py-8 text-center text-slate-500">
                       Loading tickets...
                     </td>
                   </tr>
                 ) : tickets.length === 0 ? (
                   <tr>
-                    <td colSpan={14} className="px-5 py-8 text-center text-slate-500">
+                    <td colSpan={(canView ? 1 : 0) + (isQA ? 1 : 0) + 13} className="px-5 py-8 text-center text-slate-500">
                       No tickets found
                     </td>
                   </tr>
@@ -2907,6 +4250,7 @@ function TicketsManagementView({
                           updating={statusUpdating === item.id}
                           onTicketUpdated={onTicketUpdated}
                           onNotesChanged={onNotesChanged}
+                          onEvidenceChanged={onEvidenceChanged}
                         />
                       </td>
 
@@ -2921,16 +4265,52 @@ function TicketsManagementView({
                         </button>
                       </td>
 
-                      <td className="px-5 py-4">
-                        <button
-                          type="button"
-                          onClick={() => onView(item)}
-                          className="inline-flex items-center gap-2 text-sm font-medium text-[#241453] hover:text-[#6248BE]"
-                        >
-                          <Eye className="h-4 w-4" />
-                          View
-                        </button>
-                      </td>
+                      {isQA && (
+                        <td className="px-5 py-4">
+                          {deleteConfirmId === item.id ? (
+                            <div className="flex items-center gap-1.5">
+                              <button
+                                type="button"
+                                onClick={() => onDeleteConfirm(item.id)}
+                                disabled={deleting}
+                                className="rounded-lg bg-red-500 px-2.5 py-1 text-xs font-semibold text-white hover:bg-red-600 disabled:opacity-60"
+                              >
+                                {deleting ? "..." : "Yes"}
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => onDelete(0)}
+                                disabled={deleting}
+                                className="rounded-lg border border-slate-200 px-2.5 py-1 text-xs font-semibold text-slate-500 hover:bg-slate-50"
+                              >
+                                No
+                              </button>
+                            </div>
+                          ) : (
+                            <button
+                              type="button"
+                              onClick={() => onDelete(item.id)}
+                              className="inline-flex items-center gap-1.5 text-sm font-medium text-red-400 hover:text-red-600"
+                            >
+                              <Trash2 className="h-4 w-4" />
+                              Delete
+                            </button>
+                          )}
+                        </td>
+                      )}
+
+                      {canView && (
+                        <td className="px-5 py-4">
+                          <button
+                            type="button"
+                            onClick={() => onView(item)}
+                            className="inline-flex items-center gap-2 text-sm font-medium text-[#241453] hover:text-[#6248BE]"
+                          >
+                            <Eye className="h-4 w-4" />
+                            View
+                          </button>
+                        </td>
+                      )}
                     </tr>
                   ))
                 )}
@@ -2968,6 +4348,7 @@ export default function CoachWellbeingPage({ setMobileOpen, isDesktop }: CoachWe
   // tickets management state
   const [activeView, setActiveView] = useState<"dashboard" | "tickets">("dashboard");
   const [ticketsLoading, setTicketsLoading] = useState(false);
+  const [ticketsLoadError, setTicketsLoadError] = useState("");
   const [ticketsData, setTicketsData] = useState<SupportTicketsResponse | null>(null);
   const [ticketsSearch, setTicketsSearch] = useState("");
   const [viewTicket, setViewTicket] = useState<SupportTicketRow | null>(null);
@@ -2978,6 +4359,8 @@ export default function CoachWellbeingPage({ setMobileOpen, isDesktop }: CoachWe
   const [ticketFilters, setTicketFilters] = useState<TicketFilters>(emptyFilters);
   const [viewRefreshKey, setViewRefreshKey] = useState(0);
   const [editTicket, setEditTicket] = useState<SupportTicketRow | null>(null);
+  const [deleteConfirmId, setDeleteConfirmId] = useState<number | null>(null);
+  const [deleting, setDeleting] = useState(false);
 
   useEffect(() => {
     const token = localStorage.getItem("access") || localStorage.getItem("token");
@@ -3047,6 +4430,7 @@ export default function CoachWellbeingPage({ setMobileOpen, isDesktop }: CoachWe
 
       try {
         setTicketsLoading(true);
+        setTicketsLoadError("");
 
         const res =
           role === "qa"
@@ -3055,11 +4439,12 @@ export default function CoachWellbeingPage({ setMobileOpen, isDesktop }: CoachWe
 
         if (!mounted) return;
 
-        setTicketsData(res || { summary: { total: 0, open: 0, redRisk: 0, escalated: 0, closed: 0 }, tickets: [] });
-      } catch (err) {
+        setTicketsData(res || { summary: { total: 0, open: 0, redRisk: 0, escalated: 0, closed: 0, avgCloseDays: null, avgCloseDelta: null }, tickets: [] });
+      } catch (err: any) {
         if (!mounted) return;
         console.error("support tickets load error", err);
-        setTicketsData({ summary: { total: 0, open: 0, redRisk: 0, escalated: 0, closed: 0 }, tickets: [] });
+        setTicketsLoadError(err?.message || "Failed to load tickets");
+        setTicketsData({ summary: { total: 0, open: 0, redRisk: 0, escalated: 0, closed: 0, avgCloseDays: null, avgCloseDelta: null }, tickets: [] });
       } finally {
         if (mounted) setTicketsLoading(false);
       }
@@ -3088,7 +4473,7 @@ export default function CoachWellbeingPage({ setMobileOpen, isDesktop }: CoachWe
         incident_time: form.incident_time,
         created_by: form.created_by.trim(),
         days_to_close: form.days_to_close !== "" ? Number(form.days_to_close) : undefined,
-        creator_role: form.creator_role.replace(/​/g, "").trim() || undefined,
+        creator_role: form.creator_role.replace(/\u200B/g, "").trim() || undefined,
       });
 
       const refreshed =
@@ -3107,19 +4492,59 @@ export default function CoachWellbeingPage({ setMobileOpen, isDesktop }: CoachWe
     }
   }
 
-  function handleExport() {
+  const selectedCoachLabel = coachOptions.find((o) => o.value === selectedCoachEmail)?.label || selectedCoachEmail || undefined;
+
+  function handleExportExcel() {
     const tickets = filteredTicketsData?.tickets || [];
     if (tickets.length === 0) return;
-    exportTicketsToCSV(tickets);
+    exportTicketsToExcel(tickets, selectedCoachLabel);
   }
 
-  function recalculateSummary(tickets: SupportTicketRow[]) {
+  async function handleExportPDF() {
+    const tickets = filteredTicketsData?.tickets || [];
+    if (tickets.length === 0) return;
+    await exportTicketsToPDF(tickets, filteredTicketsData?.summary, selectedCoachLabel);
+  }
+
+  async function handleExportAllExcel() {
+    try {
+      const res = await getSupportTickets();
+      const tickets: SupportTicketRow[] = res?.tickets || [];
+      if (tickets.length === 0) return;
+      exportTicketsToExcel(tickets);
+    } catch (err) {
+      console.error("Export all tickets failed", err);
+    }
+  }
+
+  async function handleExportAllPDF() {
+    try {
+      const res = await getSupportTickets();
+      const tickets: SupportTicketRow[] = res?.tickets || [];
+      if (tickets.length === 0) return;
+      exportTicketsToPDF(tickets, res?.summary);
+    } catch (err) {
+      console.error("Export all tickets PDF failed", err);
+    }
+  }
+
+  function recalculateSummary(tickets: SupportTicketRow[], prev?: SupportTicketsResponse | null) {
+    const CLOSED = new Set(["closed", "outcome recorded"]);
+    const closedVals = tickets
+      .filter((t) => CLOSED.has(String(t.status).toLowerCase()))
+      .map((t) => t.daysToClose ?? t.daysOpen ?? 0);
+    const avgCloseDays =
+      closedVals.length > 0
+        ? Math.round((closedVals.reduce((a, b) => a + b, 0) / closedVals.length) * 10) / 10
+        : null;
     return {
       total: tickets.length,
       open: tickets.filter((t) => String(t.status).toLowerCase() === "open").length,
       redRisk: tickets.filter((t) => String(t.risk).toLowerCase() === "red").length,
       escalated: tickets.filter((t) => String(t.status).toLowerCase() === "escalated").length,
-      closed: tickets.filter((t) => String(t.status).toLowerCase() === "closed").length,
+      closed: closedVals.length,
+      avgCloseDays,
+      avgCloseDelta: prev?.summary.avgCloseDelta ?? null,
     };
   }
 
@@ -3128,21 +4553,59 @@ export default function CoachWellbeingPage({ setMobileOpen, isDesktop }: CoachWe
       setStatusUpdating(ticketId);
       await updateSupportTicket(ticketId, { status: newStatus });
 
+      const CLOSED = new Set(["closed", "outcome recorded"]);
+      const nowIso = new Date().toISOString();
+
       setTicketsData((prev) => {
         if (!prev) return prev;
-        const updated = prev.tickets.map((t) =>
-          t.id === ticketId ? { ...t, status: newStatus as TicketStatus } : t
-        );
-        return { ...prev, tickets: updated, summary: recalculateSummary(updated) };
+        const updated = prev.tickets.map((t) => {
+          if (t.id !== ticketId) return t;
+          const patch: Partial<SupportTicketRow> = { status: newStatus as TicketStatus };
+          if (CLOSED.has(newStatus.toLowerCase())) {
+            patch.closedAt = t.closedAt ?? nowIso;
+            if (t.daysToClose == null) {
+              const created = t.createdAt ? new Date(t.createdAt) : null;
+              if (created) patch.daysOpen = Math.max(0, Math.floor((Date.now() - created.getTime()) / 86_400_000));
+            }
+          } else {
+            patch.closedAt = null;
+          }
+          return { ...t, ...patch };
+        });
+        return { ...prev, tickets: updated, summary: recalculateSummary(updated, prev) };
       });
 
-      setViewTicket((prev) =>
-        prev?.id === ticketId ? { ...prev, status: newStatus as TicketStatus } : prev
-      );
+      setViewTicket((prev) => {
+        if (!prev || prev.id !== ticketId) return prev;
+        const patch: Partial<SupportTicketRow> = { status: newStatus as TicketStatus };
+        if (CLOSED.has(newStatus.toLowerCase())) {
+          patch.closedAt = prev.closedAt ?? nowIso;
+        } else {
+          patch.closedAt = null;
+        }
+        return { ...prev, ...patch };
+      });
     } catch (err) {
       console.error("Failed to update ticket status", err);
     } finally {
       setStatusUpdating(null);
+    }
+  }
+
+  async function handleDeleteTicket(ticketId: number) {
+    try {
+      setDeleting(true);
+      await deleteTicket(ticketId);
+      setTicketsData((prev) => {
+        if (!prev) return prev;
+        const updated = prev.tickets.filter((t) => t.id !== ticketId);
+        return { ...prev, tickets: updated, summary: recalculateSummary(updated, prev) };
+      });
+      setDeleteConfirmId(null);
+    } catch (err) {
+      console.error("Failed to delete ticket", err);
+    } finally {
+      setDeleting(false);
     }
   }
 
@@ -3161,10 +4624,36 @@ export default function CoachWellbeingPage({ setMobileOpen, isDesktop }: CoachWe
     });
   }
 
-  function handleNotesChanged(ticketId: number) {
+  async function handleNotesChanged(ticketId: number) {
     if (viewTicket?.id === ticketId) {
       setViewRefreshKey((k) => k + 1);
     }
+    try {
+      const updatedNotes = await getTicketNotes(ticketId);
+      setTicketsData((prev) => {
+        if (!prev) return prev;
+        const updated = prev.tickets.map((t) =>
+          t.id === ticketId ? { ...t, notes: Array.isArray(updatedNotes) ? updatedNotes : t.notes } : t
+        );
+        return { ...prev, tickets: updated };
+      });
+    } catch {}
+  }
+
+  async function handleEvidenceChanged(ticketId: number) {
+    if (viewTicket?.id === ticketId) {
+      setViewRefreshKey((k) => k + 1);
+    }
+    try {
+      const updatedEvidence = await getTicketEvidence(ticketId);
+      setTicketsData((prev) => {
+        if (!prev) return prev;
+        const updated = prev.tickets.map((t) =>
+          t.id === ticketId ? { ...t, evidence: Array.isArray(updatedEvidence) ? updatedEvidence : t.evidence } : t
+        );
+        return { ...prev, tickets: updated };
+      });
+    } catch {}
   }
 
   function handleEditSaved(ticketId: number, changes: UpdateSupportTicketPayload) {
@@ -3214,10 +4703,14 @@ export default function CoachWellbeingPage({ setMobileOpen, isDesktop }: CoachWe
     setTicketError("");
 
     const now = new Date();
+    const triggered = row.triggeredQuestions || [];
+    const triggeredSection = triggered.length > 0
+      ? `\n\nTriggered questions (${triggered.length}):\n${triggered.map((q, i) => `${i + 1}. ${q.text}${q.score != null ? ` (Score: ${q.score})` : ""}${q.level ? ` [${q.level}]` : ""}`).join("\n")}`
+      : "";
     setTicketForm({
       ticket_type: row.riskLevel === "red" ? "safeguarding" : "wellbeing",
       subject: row.recommendedAction || `Support follow up for ${row.studentName || "learner"}`,
-      details: row.followUpReason || "",
+      details: (row.followUpReason || "") + triggeredSection,
       urgency: row.riskLevel === "red" ? "high" : "medium",
       preferred_contact: "email",
       incident_date: now.toISOString().slice(0, 10),
@@ -3268,7 +4761,7 @@ export default function CoachWellbeingPage({ setMobileOpen, isDesktop }: CoachWe
         incident_time: ticketForm.incident_time,
         created_by: ticketForm.created_by.trim(),
         days_to_close: ticketForm.days_to_close !== "" ? Number(ticketForm.days_to_close) : undefined,
-        creator_role: ticketForm.creator_role.replace(/​/g, "").trim() || undefined,
+        creator_role: ticketForm.creator_role.replace(/\u200B/g, "").trim() || undefined,
       });
 
       const refreshed =
@@ -3307,6 +4800,7 @@ export default function CoachWellbeingPage({ setMobileOpen, isDesktop }: CoachWe
         if (!mounted) return;
 
         setData(res || emptyDashboard);
+
       } catch (err: any) {
         if (!mounted) return;
         console.error("coach wellbeing load error", err);
@@ -3347,15 +4841,31 @@ export default function CoachWellbeingPage({ setMobileOpen, isDesktop }: CoachWe
     });
   }, [data, search]);
 
+  const surveyResponsePct = useMemo(() => {
+    const caseload = data?.summary?.caseload ?? 0;
+    const nonResponders = data?.summary?.nonResponders ?? 0;
+    if (!caseload) return 0;
+    return Math.round(((caseload - nonResponders) / caseload) * 100);
+  }, [data]);
+
+  const avgWellbeing = useMemo(() => {
+    const learners = data?.learners ?? [];
+    const scores = learners
+      .map((l) => l.wellbeingScore)
+      .filter((s): s is number => s != null && s > 0);
+    if (!scores.length) return null;
+    return (scores.reduce((a, b) => a + b, 0) / scores.length).toFixed(1);
+  }, [data]);
+
   const filteredTicketsData = useMemo<SupportTicketsResponse>(() => {
     const raw = ticketsData || {
-      summary: { total: 0, open: 0, redRisk: 0, escalated: 0, closed: 0 },
+      summary: { total: 0, open: 0, redRisk: 0, escalated: 0, closed: 0, avgCloseDays: null, avgCloseDelta: null },
       tickets: [],
     };
 
     const q = ticketsSearch.trim().toLowerCase();
 
-    let tickets = raw.tickets.filter((item) => {
+    const tickets = raw.tickets.filter((item) => {
       if (q) {
         const matchesSearch =
           String(item.ticketCode || "").toLowerCase().includes(q) ||
@@ -3382,6 +4892,8 @@ export default function CoachWellbeingPage({ setMobileOpen, isDesktop }: CoachWe
         redRisk: tickets.filter((t) => String(t.risk).toLowerCase() === "red").length,
         escalated: tickets.filter((t) => String(t.status).toLowerCase() === "escalated").length,
         closed: tickets.filter((t) => String(t.status).toLowerCase() === "closed").length,
+        avgCloseDays: raw.summary.avgCloseDays ?? null,
+        avgCloseDelta: raw.summary.avgCloseDelta ?? null,
       },
       tickets,
     };
@@ -3533,26 +5045,28 @@ export default function CoachWellbeingPage({ setMobileOpen, isDesktop }: CoachWe
               />
             ) : null}
 
-            <button
-              type="button"
-              onClick={() => setActiveView((prev) => (prev === "dashboard" ? "tickets" : "dashboard"))}
-              className={`inline-flex h-12 items-center justify-center gap-2 rounded-2xl px-5 text-sm font-medium shadow-sm transition ${activeView === "tickets"
-                ? "bg-[#241453] text-white hover:bg-[#362063]"
-                : "border border-[#DED5F3] bg-white text-[#241453] hover:border-[#CFC2EE]"
-                }`}
-            >
-              {activeView === "tickets" ? (
-                <>
-                  <ArrowLeft className="h-4 w-4" />
-                  Back to Dashboard
-                </>
-              ) : (
-                <>
-                  <Ticket className="h-4 w-4" />
-                  View Tickets
-                </>
-              )}
-            </button>
+            {role === "qa" && (
+              <button
+                type="button"
+                onClick={() => setActiveView((prev) => (prev === "dashboard" ? "tickets" : "dashboard"))}
+                className={`inline-flex h-12 items-center justify-center gap-2 rounded-2xl px-5 text-sm font-medium shadow-sm transition ${activeView === "tickets"
+                  ? "bg-[#241453] text-white hover:bg-[#362063]"
+                  : "border border-[#DED5F3] bg-white text-[#241453] hover:border-[#CFC2EE]"
+                  }`}
+              >
+                {activeView === "tickets" ? (
+                  <>
+                    <ArrowLeft className="h-4 w-4" />
+                    Back to Dashboard
+                  </>
+                ) : (
+                  <>
+                    <Ticket className="h-4 w-4" />
+                    View Tickets
+                  </>
+                )}
+              </button>
+            )}
 
             <div className="flex h-12 w-full items-center gap-2 rounded-2xl border border-[#E7E2F3] bg-[#FBFAFE] px-4 lg:min-w-[320px] lg:max-w-[460px]">
               <Search className="h-4 w-4 shrink-0 text-[#8E82AA]" />
@@ -3569,26 +5083,54 @@ export default function CoachWellbeingPage({ setMobileOpen, isDesktop }: CoachWe
 
       {activeView === "dashboard" ? (
         <>
-          <div className="mb-6 grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
+          <div className="mb-6 grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
             <StatCard
-              title="Caseload"
+              title="Active Learners"
               value={data?.summary?.caseload ?? 0}
               icon={<Users className="h-4 w-4" />}
+              valueColor="text-[#0F9B8E]"
+              iconBg="bg-[#E6F7F6]"
+              iconColor="text-[#0F9B8E]"
             />
             <StatCard
-              title="At Risk"
-              value={data?.summary?.atRisk ?? 0}
-              icon={<AlertTriangle className="h-4 w-4" />}
-            />
-            <StatCard
-              title="Non-Responders"
-              value={data?.summary?.nonResponders ?? 0}
-              icon={<UserRoundX className="h-4 w-4" />}
+              title="Survey Response"
+              value={`${surveyResponsePct}%`}
+              icon={<ClipboardCheck className="h-4 w-4" />}
+              valueColor="text-[#0F9B8E]"
+              iconBg="bg-[#E6F7F6]"
+              iconColor="text-[#0F9B8E]"
             />
             <StatCard
               title="Open Tickets"
               value={data?.summary?.openTickets ?? 0}
               icon={<ClipboardList className="h-4 w-4" />}
+              valueColor="text-amber-500"
+              iconBg="bg-amber-50"
+              iconColor="text-amber-500"
+            />
+            <StatCard
+              title="Red Risk Cases"
+              value={data?.summary?.atRisk ?? 0}
+              icon={<AlertTriangle className="h-4 w-4" />}
+              valueColor="text-red-500"
+              iconBg="bg-red-50"
+              iconColor="text-red-500"
+            />
+            <StatCard
+              title="Avg Wellbeing"
+              value={avgWellbeing ?? "—"}
+              icon={<Heart className="h-4 w-4" />}
+              valueColor="text-[#0F9B8E]"
+              iconBg="bg-[#E6F7F6]"
+              iconColor="text-[#0F9B8E]"
+            />
+            <StatCard
+              title="Non-Responders"
+              value={data?.summary?.nonResponders ?? 0}
+              icon={<UserRoundX className="h-4 w-4" />}
+              valueColor="text-red-500"
+              iconBg="bg-red-50"
+              iconColor="text-red-500"
             />
           </div>
 
@@ -3646,8 +5188,8 @@ export default function CoachWellbeingPage({ setMobileOpen, isDesktop }: CoachWe
                           value: "Students",
                           angle: 0,
                           position: "insideTopLeft",
-                          dx: -32,
-                          dy: -14,
+                          dx: -10,
+                          dy: -21,
                           fontSize: 11,
                           fill: "#8E82AA",
                         }}
@@ -3790,9 +5332,9 @@ export default function CoachWellbeingPage({ setMobileOpen, isDesktop }: CoachWe
                               </p>
                             </div>
 
-                            <button className="h-11 shrink-0 self-start rounded-xl border border-[#D9CFF3] px-4 text-sm font-medium text-[#241453] transition hover:bg-[#F8F5FF]">
+                            {/* <button className="h-11 shrink-0 self-start rounded-xl border border-[#D9CFF3] px-4 text-sm font-medium text-[#241453] transition hover:bg-[#F8F5FF]">
                               Convert to action
-                            </button>
+                            </button> */}
                           </div>
                         </div>
                       ))
@@ -3804,7 +5346,13 @@ export default function CoachWellbeingPage({ setMobileOpen, isDesktop }: CoachWe
           </div>
         </>
       ) : (
-        <TicketsManagementView
+        <>
+          {ticketsLoadError && (
+            <div className="mb-4 rounded-2xl border border-red-200 bg-red-50 px-5 py-3 text-sm text-red-700">
+              <span className="font-semibold">Error loading tickets:</span> {ticketsLoadError}
+            </div>
+          )}
+          <TicketsManagementView
           loading={ticketsLoading}
           search={ticketsSearch}
           onSearchChange={setTicketsSearch}
@@ -3815,11 +5363,21 @@ export default function CoachWellbeingPage({ setMobileOpen, isDesktop }: CoachWe
           onCreateTicket={() => setCreateTicketOpen(true)}
           filters={ticketFilters}
           onFiltersChange={setTicketFilters}
-          onExport={handleExport}
+          onExportExcel={handleExportExcel}
+          onExportPDF={handleExportPDF}
+          onExportAllExcel={handleExportAllExcel}
+          onExportAllPDF={handleExportAllPDF}
           onEdit={setEditTicket}
           onTicketUpdated={handleTicketUpdated}
           onNotesChanged={handleNotesChanged}
+          onEvidenceChanged={handleEvidenceChanged}
+          role={role}
+          onDelete={(id) => setDeleteConfirmId(id === 0 ? null : id)}
+          deleteConfirmId={deleteConfirmId}
+          deleting={deleting}
+          onDeleteConfirm={handleDeleteTicket}
         />
+        </>
       )}
 
       {error ? (

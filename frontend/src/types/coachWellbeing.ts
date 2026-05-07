@@ -33,6 +33,14 @@ export type CoachLearnerRow = {
         max?: number;
       }
   >;
+  triggerCount?: number;
+  triggeredQuestions?: Array<{
+    text: string;
+    score?: number | null;
+    level?: string;
+    note?: string;
+  }>;
+  apprenticeDashboard?: Record<string, unknown>;
 };
 
 export type CoachTrendPoint = {

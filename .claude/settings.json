@@ -1,0 +1,17 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(npx eslint *)",
+      "Bash(npm list *)",
+      "Bash(npm install *)",
+      "PowerShell(head)",
+      "Bash(python -c ' *)",
+      "Bash(.venvScriptspython.exe -c ' *)",
+      "Bash(grep -E \"\\\\.py$|\\\\.sh$\")",
+      "Bash(ls c:/Users/LENOVOO/dashboards/)",
+      "Read(//c/Users/LENOVOO/dashboards/**)",
+      "Bash(Get-Content \"C:\\\\Users\\\\LENOVOO\\\\AppData\\\\Local\\\\Temp\\\\claude\\\\c--Users-LENOVOO-dashboards-admin-dashboard\\\\68e9ae60-4d1d-4eb0-9f11-d3ee9af63e9f\\\\tasks\\\\bgqa9em5e.output\" -ErrorAction SilentlyContinue)",
+      "Bash(PowerShell -Command \"Get-ChildItem -Path 'C:\\\\Users\\\\LENOVOO\\\\dashboards\\\\admin_dashboard\\\\frontend\\\\src' -Recurse | Select-String -Pattern 'auth/login' | Select-Object -First 20\")"
+    ]
+  }
+}

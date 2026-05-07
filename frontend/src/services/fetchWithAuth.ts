@@ -129,6 +129,7 @@ export async function fetchWithAuth(input: string, init: RequestInit = {}) {
       const text = await res.text().catch(() => "");
       throw new Error(`Request failed: ${res.status} ${text}`);
     }
+    if (res.status === 204) return null;
     return res.json();
   }
 
@@ -157,5 +158,6 @@ export async function fetchWithAuth(input: string, init: RequestInit = {}) {
     throw new Error(`Request failed: ${res.status} ${text}`);
   }
 
+  if (res.status === 204) return null;
   return res.json();
 }
