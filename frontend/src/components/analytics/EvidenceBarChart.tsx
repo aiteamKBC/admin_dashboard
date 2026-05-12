@@ -16,6 +16,31 @@ const COLOR_MAP: Record<string, string> = {
   Total: "#866CB6",
 };
 
+const RADIAN = Math.PI / 180;
+
+function SegmentLabel({
+  cx, cy, midAngle, outerRadius, name, value,
+}: {
+  cx: number; cy: number; midAngle: number; outerRadius: number; name: string; value: number;
+}) {
+  const radius = outerRadius + 24;
+  const x = cx + radius * Math.cos(-midAngle * RADIAN);
+  const y = cy + radius * Math.sin(-midAngle * RADIAN);
+  return (
+    <text
+      x={x}
+      y={y}
+      fill={COLOR_MAP[name] || "#666"}
+      textAnchor={x > cx ? "start" : "end"}
+      dominantBaseline="central"
+      fontSize={12}
+      fontWeight={700}
+    >
+      {value}
+    </text>
+  );
+}
+
 function CenterTotal({ total }: { total: number }) {
   return (
     <text x="50%" y="50%" textAnchor="middle" dominantBaseline="middle">
@@ -77,6 +102,17 @@ export default function EvidencePieChart({ data }: Props) {
               outerRadius={90}
               isAnimationActive={false}
               paddingAngle={0}
+              label={(props) => (
+                <SegmentLabel
+                  cx={props.cx}
+                  cy={props.cy}
+                  midAngle={props.midAngle}
+                  outerRadius={props.outerRadius}
+                  name={String(props.name ?? "")}
+                  value={Number(props.value ?? 0)}
+                />
+              )}
+              labelLine={false}
             >
               {overlayData.map((item) => (
                 <Cell

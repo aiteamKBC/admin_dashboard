@@ -85,3 +85,33 @@ export async function createTicketEvidence(
     body: JSON.stringify(payload),
   });
 }
+
+export type BookingAppointmentPayload = {
+  date: string;
+  time: string;
+  duration?: number;
+  service_id?: string;
+  staff_member_id?: string;
+  customer_name?: string;
+  customer_email?: string;
+  notes?: string;
+};
+
+export async function getBookingStaff(serviceId: string): Promise<{ id: string; displayName: string }[]> {
+  return await fetchWithAuth(`/bookings/staff/?service_id=${encodeURIComponent(serviceId)}`);
+}
+
+export async function createBookingAppointment(payload: BookingAppointmentPayload) {
+  return await fetchWithAuth("/bookings/appointments/", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function getBookingServices(): Promise<{ id: string; displayName: string }[]> {
+  return await fetchWithAuth("/bookings/services/");
+}
+
+export async function getBookingAvailability(serviceId: string, date: string): Promise<{ slots: string[]; duration: number; fallback?: boolean }> {
+  return await fetchWithAuth(`/bookings/availability/?service_id=${encodeURIComponent(serviceId)}&date=${date}`);
+}

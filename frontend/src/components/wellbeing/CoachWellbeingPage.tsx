@@ -43,7 +43,7 @@ import {
 import { jsPDF } from "jspdf";
 import autoTable from "jspdf-autotable";
 import * as XLSX from "xlsx";
-import kbcLogoSrc from "@/assets/logo.webp";
+import kbcLogoSrc from "@/assets/logo-icon.png";
 
 import {
   Bar,
@@ -56,7 +56,7 @@ import {
   YAxis,
 } from "recharts";
 
-import { getCoachWellbeing, getCoachOptions, createSupportTicket, getSupportTickets, updateSupportTicket, deleteTicket, createTicketNote, uploadEvidenceFile, createTicketEvidence, getTicketNotes, getTicketEvidence } from "@/services/coachWellbeing";
+import { getCoachWellbeing, getCoachOptions, createSupportTicket, getSupportTickets, updateSupportTicket, deleteTicket, createTicketNote, uploadEvidenceFile, createTicketEvidence, getTicketNotes, getTicketEvidence, createBookingAppointment, getBookingServices, getBookingAvailability, getBookingStaff } from "@/services/coachWellbeing";
 import type { UpdateSupportTicketPayload } from "@/services/coachWellbeing";
 import type {
   CoachLearnerRow,
@@ -164,7 +164,21 @@ type TicketEvidenceRow = {
   file_name: string;
   created_by: string;
   created_at: string | null;
+  // learner-side fields
+  uploaded_by?: string;
+  url?: string;
+  original_name?: string;
+  mime_type?: string;
 };
+
+function isLearnerEvidence(ev: TicketEvidenceRow) { return ev.uploaded_by === "learner"; }
+function evFileUrl(ev: TicketEvidenceRow) { return resolveMediaUrl(ev.file_url || ev.url || ""); }
+function evFileName(ev: TicketEvidenceRow) { return ev.file_name || ev.original_name || ""; }
+function evIsImage(ev: TicketEvidenceRow) {
+  const mime = ev.mime_type || "";
+  const name = evFileName(ev).toLowerCase();
+  return mime.startsWith("image/") || /\.(png|jpe?g|gif|webp|bmp|svg)$/.test(name);
+}
 
 function makeInitialTicketForm(): SupportTicketFormState {
   const now = new Date();
@@ -470,11 +484,10 @@ function TriggeredQuestionsPopover({ questions, count }: { questions: TriggeredQ
                           </span>
                         )}
                         {q.level && (
-                          <span className={`inline-flex items-center rounded-md px-2 py-0.5 text-[11px] font-semibold capitalize ${
-                            q.level === "high"   ? "bg-red-50 text-red-600" :
-                            q.level === "medium" ? "bg-amber-50 text-amber-600" :
-                                                   "bg-green-50 text-green-600"
-                          }`}>
+                          <span className={`inline-flex items-center rounded-md px-2 py-0.5 text-[11px] font-semibold capitalize ${q.level === "high" ? "bg-red-50 text-red-600" :
+                              q.level === "medium" ? "bg-amber-50 text-amber-600" :
+                                "bg-green-50 text-green-600"
+                            }`}>
                             {q.level} Risk
                           </span>
                         )}
@@ -653,6 +666,244 @@ function ApprenticeReportModal({
   );
 }
 
+const RISK_INDICATOR_OPTIONS = [
+  "Physical harm", "Sexual harm", "Emotional / Mental health", "Radicalisation / Extremism",
+  "Neglect", "Domestic abuse", "Modern slavery / exploitation",
+  "Forced marriage / honour-based violence", "Online safety", "Financial harm",
+  "Self-harm", "Bullying / Harassment", "Other (please specify)",
+];
+
+function ReferralFormModal({
+  learner, onClose, onSubmitted,
+}: { learner: TicketableLearnerRow; onClose: () => void; onSubmitted: () => void }) {
+  const storedName = localStorage.getItem("username") || localStorage.getItem("full_name") || "";
+  const storedRole = localStorage.getItem("role") || "Coach";
+  const storedEmail = localStorage.getItem("email") || "";
+
+  const [refName, setRefName] = React.useState(storedName);
+  const [refRole, setRefRole] = React.useState(storedRole);
+  const [refDept, setRefDept] = React.useState("Apprenticeships");
+  const [refContact, setRefContact] = React.useState(storedEmail);
+  const [concernDesc, setConcernDesc] = React.useState("");
+  const [incidentDate, setIncidentDate] = React.useState("");
+  const [incidentTime, setIncidentTime] = React.useState("");
+  const [incidentLocation, setIncidentLocation] = React.useState("");
+  const [thosePresent, setThosePresent] = React.useState("");
+  const [riskChecks, setRiskChecks] = React.useState<boolean[]>(new Array(RISK_INDICATOR_OPTIONS.length).fill(false));
+  const [otherRisk, setOtherRisk] = React.useState("");
+  const [actionTaken, setActionTaken] = React.useState("");
+  const [dslName, setDslName] = React.useState("");
+  const [referralDateTime, setReferralDateTime] = React.useState("");
+  const [consentGiven, setConsentGiven] = React.useState<"yes" | "no" | "">("");
+  const [consentNote, setConsentNote] = React.useState("");
+  const [dslRiskLevel, setDslRiskLevel] = React.useState("");
+  const [dslActionTaken, setDslActionTaken] = React.useState("");
+  const [dslOutcome, setDslOutcome] = React.useState("");
+  const [saving, setSaving] = React.useState(false);
+  const [saveError, setSaveError] = React.useState("");
+  const refNum = React.useMemo(() => `SR-${Date.now().toString().slice(-5)}`, []);
+
+  async function handleSubmit() {
+    if (!concernDesc.trim()) { setSaveError("Please describe the nature of concern (Part 3)."); return; }
+    setSaving(true); setSaveError("");
+    try {
+      const selectedRisks = RISK_INDICATOR_OPTIONS.filter((_, i) => riskChecks[i]);
+      const riskLines = selectedRisks.map(r => r === "Other (please specify)" && otherRisk.trim() ? `• Other: ${otherRisk}` : `• ${r}`).join("\n");
+      const urgency = selectedRisks.some(r => ["Physical harm","Sexual harm","Radicalisation / Extremism","Self-harm"].includes(r)) ? "urgent" : selectedRisks.length > 0 ? "high" : "medium";
+      const details = [
+        `SAFEGUARDING REFERRAL — ${refNum}`,
+        "",
+        "PART 1 — REFERRER DETAILS",
+        `Name: ${refName}  |  Role: ${refRole}  |  Dept: ${refDept}  |  Contact: ${refContact}`,
+        "",
+        "PART 2 — LEARNER DETAILS",
+        `Name: ${learner.studentName}  |  Programme: ${learner.programme || "-"}  |  ID: ${learner.studentId || "-"}  |  Coach: ${(learner as any).coachName || "-"}`,
+        "",
+        "PART 3 — NATURE OF CONCERN",
+        concernDesc,
+        `Date: ${incidentDate || "-"}  |  Time: ${incidentTime || "-"}  |  Location: ${incidentLocation || "-"}  |  Those Present: ${thosePresent || "-"}`,
+        "",
+        "PART 4 — RISK INDICATORS",
+        riskLines || "None selected",
+        "",
+        "PART 5 — ACTION TAKEN SO FAR",
+        actionTaken || "-",
+        "",
+        "PART 6 — REFERRAL TO DSL",
+        `DSL Name: ${dslName || "-"}  |  Date & Time: ${referralDateTime || "-"}`,
+        "",
+        "PART 7 — CONSENT",
+        `Learner consent: ${consentGiven || "Not specified"}${consentGiven === "no" && consentNote ? `\nNote: ${consentNote}` : ""}`,
+        "",
+        "PART 8 — FOR DSL USE ONLY",
+        `Risk Level: ${dslRiskLevel || "-"}  |  Action Taken: ${dslActionTaken || "-"}  |  Outcome: ${dslOutcome || "-"}`,
+        `Unique Reference Number: ${refNum}`,
+      ].join("\n");
+
+      await createSupportTicket({
+        wellbeing_record_id: Number(learner.studentId),
+        ticket_type: "safeguarding",
+        subject: `Safeguarding Referral ${refNum}`,
+        details,
+        urgency,
+        preferred_contact: "email",
+        incident_date: incidentDate || undefined,
+        incident_time: incidentTime || undefined,
+        created_by: storedName,
+        creator_role: storedRole,
+      } as any);
+      onSubmitted();
+    } catch (err: any) {
+      setSaveError(err?.message || "Failed to submit referral.");
+    } finally { setSaving(false); }
+  }
+
+  const inputCls = "h-9 w-full rounded-xl border border-[#DED5F3] px-3 text-sm outline-none focus:border-[#644d93]";
+  const labelCls = "mb-1 block text-xs font-medium text-[#7B6D9B]";
+  const sectionTitleCls = "mb-3 text-sm font-bold text-[#b27715]";
+
+  return (
+    <div className="fixed inset-0 z-[120] flex items-center justify-center bg-black/40 p-4">
+      <div className="custom-scroll flex w-full max-w-2xl flex-col overflow-y-auto rounded-3xl bg-white shadow-2xl" style={{ maxHeight: "92vh" }}>
+        {/* Header */}
+        <div className="sticky top-0 z-10 flex items-start justify-between gap-4 rounded-t-3xl border-b border-[#EEE8F8] bg-white px-6 py-5">
+          <div>
+            <div className="flex items-center gap-2">
+              <span className="rounded-lg bg-[#F0EAFD] px-2 py-0.5 text-xs font-bold text-[#644d93]">{refNum}</span>
+              <h3 className="text-base font-bold text-[#241453]">Safeguarding Referral Form</h3>
+            </div>
+            <p className="mt-0.5 text-sm text-[#7B6D9B]">{learner.studentName} · {learner.studentEmail}</p>
+          </div>
+          <button type="button" onClick={onClose} className="rounded-xl border border-[#E7E2F3] p-2 text-[#241453] hover:bg-[#F8F5FF]"><X className="h-4 w-4" /></button>
+        </div>
+
+        {/* Body */}
+        <div className="space-y-6 px-6 py-5">
+          {/* Part 1 */}
+          <section>
+            <p className={sectionTitleCls}>Part 1 — <span className="text-[#241453]">Details of Referrer</span></p>
+            <div className="grid grid-cols-2 gap-3">
+              {([["Name", refName, setRefName], ["Role", refRole, setRefRole], ["Department", refDept, setRefDept], ["Contact Details", refContact, setRefContact]] as [string, string, React.Dispatch<React.SetStateAction<string>>][]).map(([lbl, val, set]) => (
+                <div key={lbl}><label className={labelCls}>{lbl}</label><input value={val} onChange={e => set(e.target.value)} className={inputCls} /></div>
+              ))}
+            </div>
+          </section>
+
+          {/* Part 2 */}
+          <section>
+            <p className={sectionTitleCls}>Part 2 — <span className="text-[#241453]">Details of Learner</span></p>
+            <div className="grid grid-cols-2 gap-3">
+              {[["Full Name", learner.studentName], ["Programme", learner.programme || "-"], ["Learner ID", String(learner.studentId || "-")], ["Skills Coach", (learner as any).coachName || "-"]].map(([lbl, val]) => (
+                <div key={lbl}><label className={labelCls}>{lbl}</label><div className="flex h-9 items-center rounded-xl border border-[#DED5F3] bg-[#FAFAFF] px-3 text-sm text-[#241453]">{val}</div></div>
+              ))}
+            </div>
+          </section>
+
+          {/* Part 3 */}
+          <section>
+            <p className={sectionTitleCls}>Part 3 — <span className="text-[#241453]">Nature of Concern</span> <span className="text-red-500">*</span></p>
+            <textarea value={concernDesc} onChange={e => setConcernDesc(e.target.value)} rows={4} placeholder="Describe the safeguarding concern in detail..." className="mb-3 w-full rounded-xl border border-[#DED5F3] px-3 py-3 text-sm outline-none focus:border-[#644d93]" />
+            <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+              <div><label className={labelCls}>Date</label><input type="date" value={incidentDate} onChange={e => setIncidentDate(e.target.value)} className={inputCls} /></div>
+              <div><label className={labelCls}>Time</label><input type="time" value={incidentTime} onChange={e => setIncidentTime(e.target.value)} className={inputCls} /></div>
+              <div><label className={labelCls}>Location</label><input value={incidentLocation} onChange={e => setIncidentLocation(e.target.value)} placeholder="e.g. Workplace" className={inputCls} /></div>
+              <div><label className={labelCls}>Those Present</label><input value={thosePresent} onChange={e => setThosePresent(e.target.value)} placeholder="Names" className={inputCls} /></div>
+            </div>
+          </section>
+
+          {/* Part 4 */}
+          <section>
+            <p className={sectionTitleCls}>Part 4 — <span className="text-[#241453]">Risk Indicators</span></p>
+            <div className="grid grid-cols-2 gap-2">
+              {RISK_INDICATOR_OPTIONS.map((opt, i) => (
+                <label key={opt} className="flex cursor-pointer items-center gap-2 rounded-xl border border-[#EEE8F8] px-3 py-2 text-sm text-[#241453] hover:bg-[#F9F5FF]">
+                  <input type="checkbox" checked={riskChecks[i]} onChange={e => { const n = [...riskChecks]; n[i] = e.target.checked; setRiskChecks(n); }} className="accent-[#644d93]" />
+                  {opt}
+                </label>
+              ))}
+            </div>
+            {riskChecks[RISK_INDICATOR_OPTIONS.length - 1] && (
+              <input value={otherRisk} onChange={e => setOtherRisk(e.target.value)} placeholder="Please specify other risk..." className={`mt-2 ${inputCls}`} />
+            )}
+          </section>
+
+          {/* Part 5 */}
+          <section>
+            <p className={sectionTitleCls}>Part 5 — <span className="text-[#241453]">Action Taken So Far</span></p>
+            <textarea value={actionTaken} onChange={e => setActionTaken(e.target.value)} rows={3} placeholder="Describe any actions already taken..." className="w-full rounded-xl border border-[#DED5F3] px-3 py-3 text-sm outline-none focus:border-[#644d93]" />
+          </section>
+
+          {/* Part 6 */}
+          <section>
+            <p className={sectionTitleCls}>Part 6 — <span className="text-[#241453]">Referral to DSL</span></p>
+            <p className="mb-3 text-xs text-[#7B6D9B]">I am making a referral to the Designated Safeguarding Lead (DSL).</p>
+            <div className="grid grid-cols-2 gap-3">
+              <div><label className={labelCls}>Name of DSL</label><input value={dslName} onChange={e => setDslName(e.target.value)} className={inputCls} /></div>
+              <div><label className={labelCls}>Date and Time of Referral</label><input type="datetime-local" value={referralDateTime} onChange={e => setReferralDateTime(e.target.value)} className={inputCls} /></div>
+            </div>
+          </section>
+
+          {/* Part 7 */}
+          <section>
+            <p className={sectionTitleCls}>Part 7 — <span className="text-[#241453]">Consent</span></p>
+            <p className="mb-3 text-xs text-[#7B6D9B]">Has the learner given consent for the referral to be shared?</p>
+            <div className="mb-3 flex gap-3">
+              {(["yes", "no"] as const).map(v => (
+                <button key={v} type="button" onClick={() => setConsentGiven(v)} className={`flex-1 rounded-xl border py-2 text-sm font-medium capitalize transition ${consentGiven === v ? "border-[#644d93] bg-[#644d93] text-white" : "border-[#DED5F3] text-[#241453] hover:bg-[#F9F5FF]"}`}>{v}</button>
+              ))}
+            </div>
+            {consentGiven === "no" && (
+              <textarea value={consentNote} onChange={e => setConsentNote(e.target.value)} rows={2} placeholder="Note why you are proceeding without consent (safeguarding override)..." className="w-full rounded-xl border border-[#DED5F3] px-3 py-3 text-sm outline-none focus:border-[#644d93]" />
+            )}
+          </section>
+
+          {/* Part 8 */}
+          <section>
+            <p className={sectionTitleCls}>Part 8 — <span className="text-[#241453]">For DSL Use Only</span></p>
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className={labelCls}>Risk Level</label>
+                <select value={dslRiskLevel} onChange={e => setDslRiskLevel(e.target.value)} className={inputCls}>
+                  <option value="">— Select —</option>
+                  <option>Low</option>
+                  <option>Medium</option>
+                  <option>High</option>
+                  <option>Critical</option>
+                </select>
+              </div>
+              <div>
+                <label className={labelCls}>Unique Reference Number</label>
+                <div className="flex h-9 items-center rounded-xl border border-[#DED5F3] bg-[#FAFAFF] px-3 text-sm font-semibold text-[#644d93]">{refNum}</div>
+              </div>
+              <div>
+                <label className={labelCls}>Action Taken</label>
+                <input value={dslActionTaken} onChange={e => setDslActionTaken(e.target.value)} placeholder="Action taken by DSL..." className={inputCls} />
+              </div>
+              <div>
+                <label className={labelCls}>Outcome</label>
+                <input value={dslOutcome} onChange={e => setDslOutcome(e.target.value)} placeholder="Outcome of referral..." className={inputCls} />
+              </div>
+            </div>
+          </section>
+
+          <div className="rounded-xl border border-[#DED5F3] bg-[#F9F5FF] px-4 py-3 text-xs text-[#7B6D9B]">
+            <span className="font-semibold text-[#241453]">Note:</span> The referrer must not investigate or share details beyond the DSL. Safeguarding referrals cannot be kept confidential if the DSL deems it necessary to refer to an external agency.
+          </div>
+          {saveError && <div className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-600">{saveError}</div>}
+        </div>
+
+        {/* Footer */}
+        <div className="sticky bottom-0 flex justify-end gap-3 rounded-b-3xl border-t border-[#EEE8F8] bg-white px-6 py-4">
+          <button type="button" onClick={onClose} className="rounded-xl border border-[#DED5F3] px-5 py-2 text-sm font-medium text-[#241453] hover:bg-[#F8F5FF]">Cancel</button>
+          <button type="button" onClick={handleSubmit} disabled={saving} className="rounded-xl bg-[#241453] px-6 py-2 text-sm font-semibold text-white hover:bg-[#362063] disabled:opacity-60">
+            {saving ? "Submitting..." : "Submit Referral"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function LearnerTable({
   rows,
   onOpenTicket,
@@ -661,6 +912,7 @@ function LearnerTable({
   onOpenTicket: (row: TicketableLearnerRow) => void;
 }) {
   const [reportLearner, setReportLearner] = React.useState<TicketableLearnerRow | null>(null);
+  const [referralLearner, setReferralLearner] = React.useState<TicketableLearnerRow | null>(null);
   return (
     <div className="overflow-hidden rounded-2xl border border-[#EEE8F8]">
       <div className="custom-scroll overflow-auto" style={{ maxHeight: "520px" }}>
@@ -679,6 +931,7 @@ function LearnerTable({
               <th className="px-4 py-3 whitespace-nowrap">Triggered</th>
               <th className="px-4 py-3">Action</th>
               <th className="px-4 py-3 whitespace-nowrap">Reports</th>
+              <th className="px-4 py-3 whitespace-nowrap">Referral</th>
               <th className="px-4 py-3 last:pr-5">Follow up</th>
             </tr>
           </thead>
@@ -686,7 +939,7 @@ function LearnerTable({
           <tbody className="divide-y divide-[#F3EFF9]">
             {rows.length === 0 ? (
               <tr>
-                <td colSpan={12} className="px-5 py-10 text-center text-sm text-slate-400">
+                <td colSpan={13} className="px-5 py-10 text-center text-sm text-slate-400">
                   No learners found
                 </td>
               </tr>
@@ -762,15 +1015,25 @@ function LearnerTable({
                       </button>
                     </td>
 
+                    <td className="px-4 py-3">
+                      <button
+                        type="button"
+                        onClick={() => setReferralLearner(row)}
+                        className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-[#F3D9B1] bg-[#FEF9EE] px-3 text-xs font-semibold text-[#b27715] hover:bg-[#FEF0D0]"
+                      >
+                        <FileText className="h-3.5 w-3.5" />
+                        Referral
+                      </button>
+                    </td>
+
                     <td className="px-4 py-3 last:pr-5">
                       <button
                         type="button"
                         onClick={() => onOpenTicket(row)}
-                        className={`inline-flex h-9 items-center justify-center rounded-xl px-4 text-xs font-semibold transition whitespace-nowrap ${
-                          hasOpenTicket
+                        className={`inline-flex h-9 items-center justify-center rounded-xl px-4 text-xs font-semibold transition whitespace-nowrap ${hasOpenTicket
                             ? "border border-[#D9CFF3] bg-[#F5F1FC] text-[#6248BE] hover:bg-[#EEE7FB]"
                             : "bg-[#241453] text-white hover:bg-[#362063]"
-                        }`}
+                          }`}
                       >
                         {openTicketCount > 0 ? `Open ticket (${openTicketCount})` : "Open ticket"}
                       </button>
@@ -787,6 +1050,13 @@ function LearnerTable({
         <ApprenticeReportModal
           learner={reportLearner}
           onClose={() => setReportLearner(null)}
+        />
+      )}
+      {referralLearner && (
+        <ReferralFormModal
+          learner={referralLearner}
+          onClose={() => setReferralLearner(null)}
+          onSubmitted={() => setReferralLearner(null)}
         />
       )}
     </div>
@@ -967,21 +1237,21 @@ function formatTicketDate(value?: string | null) {
 }
 
 const ACTION_ICONS: Record<string, React.ElementType> = {
-  start_review:      Eye,
-  assign_owner:      UserCheck,
-  case_note:         FileText,
-  contact_learner:   MessageCircle,
-  contact_coach:     Phone,
-  request_info:      HelpCircle,
+  start_review: Eye,
+  assign_owner: UserCheck,
+  case_note: FileText,
+  contact_learner: MessageCircle,
+  contact_coach: Phone,
+  request_info: HelpCircle,
   schedule_followup: Calendar,
-  add_evidence:      Paperclip,
-  change_risk:       AlertTriangle,
-  support_plan:      Shield,
-  escalate:          AlertOctagon,
+  add_evidence: Paperclip,
+  change_risk: AlertTriangle,
+  support_plan: Shield,
+  escalate: AlertOctagon,
   external_referral: ExternalLink,
-  record_outcome:    ClipboardCheck,
-  close_case:        XCircle,
-  reopen_case:       RotateCcw,
+  record_outcome: ClipboardCheck,
+  close_case: XCircle,
+  reopen_case: RotateCcw,
 };
 
 const ACTION_GROUPS: ActionGroup[] = [
@@ -1164,23 +1434,23 @@ function TicketActionsDropdown({
                   {/* Items */}
                   {group.items.map((item) => {
                     const Icon = ACTION_ICONS[item.id];
-                    const isDanger  = item.danger;
+                    const isDanger = item.danger;
                     const isSuccess = item.success;
                     const iconCls = isDanger
                       ? "text-red-500 bg-red-50"
                       : isSuccess
-                      ? "text-emerald-600 bg-emerald-50"
-                      : "text-[#644D93] bg-[#F4F0FC]";
+                        ? "text-emerald-600 bg-emerald-50"
+                        : "text-[#644D93] bg-[#F4F0FC]";
                     const labelCls = isDanger
                       ? "text-red-600"
                       : isSuccess
-                      ? "text-emerald-700"
-                      : "text-[#241453]";
+                        ? "text-emerald-700"
+                        : "text-[#241453]";
                     const hoverCls = isDanger
                       ? "hover:bg-red-50"
                       : isSuccess
-                      ? "hover:bg-emerald-50"
-                      : "hover:bg-[#F4F0FC]";
+                        ? "hover:bg-emerald-50"
+                        : "hover:bg-[#F4F0FC]";
                     return (
                       <button
                         key={item.id}
@@ -1236,7 +1506,20 @@ function ActionModal({
   const [note, setNote] = React.useState("");
   const [contactMethod, setContactMethod] = React.useState("email");
   const [followupDate, setFollowupDate] = React.useState("");
+  const [followupTime, setFollowupTime] = React.useState("");
+  const [followupDuration, setFollowupDuration] = React.useState(60);
   const [followupReason, setFollowupReason] = React.useState("");
+  const [bookingId, setBookingId] = React.useState<string | null>(null);
+  const [bookingJoinUrl, setBookingJoinUrl] = React.useState<string | null>(null);
+  const [bookingStatus, setBookingStatus] = React.useState<"idle" | "booked" | "error">("idle");
+  const [bookingError, setBookingError] = React.useState("");
+  const [bookingServices, setBookingServices] = React.useState<{ id: string; displayName: string }[]>([]);
+  const [selectedServiceId, setSelectedServiceId] = React.useState("");
+  const [availableSlots, setAvailableSlots] = React.useState<string[]>([]);
+  const [slotsLoading, setSlotsLoading] = React.useState(false);
+  const [bookingStaff, setBookingStaff] = React.useState<{ id: string; displayName: string }[]>([]);
+  const [selectedStaffId, setSelectedStaffId] = React.useState("");
+  const [staffLoading, setStaffLoading] = React.useState(false);
   const [riskLevel, setRiskLevel] = React.useState("amber");
   const [planDetails, setPlanDetails] = React.useState("");
   const [escalateReason, setEscalateReason] = React.useState("");
@@ -1250,6 +1533,43 @@ function ActionModal({
   const [evidencePreview, setEvidencePreview] = React.useState<string | null>(null);
   const [saving, setSaving] = React.useState(false);
   const [saveError, setSaveError] = React.useState("");
+
+  // Auto-select the Safeguarding service when modal opens
+  React.useEffect(() => {
+    if (type === "schedule_followup" && !selectedServiceId) {
+      setSelectedServiceId("7730f8e4-c0e4-4ba6-ba5e-8da5dbea5b5f");
+    }
+  }, [type]);
+
+  // Fetch staff members when service is selected
+  React.useEffect(() => {
+    if (type !== "schedule_followup" || !selectedServiceId) return;
+    setBookingStaff([]);
+    setSelectedStaffId("");
+    setStaffLoading(true);
+    getBookingStaff(selectedServiceId)
+      .then((staff) => {
+        setBookingStaff(staff);
+        if (staff.length === 1) setSelectedStaffId(staff[0]?.id ?? "");
+      })
+      .catch(() => setBookingStaff([]))
+      .finally(() => setStaffLoading(false));
+  }, [selectedServiceId, type]);
+
+  // Fetch available slots when service + date both set
+  React.useEffect(() => {
+    if (type !== "schedule_followup" || !selectedServiceId || !followupDate) return;
+    setSlotsLoading(true);
+    setAvailableSlots([]);
+    setFollowupTime("");
+    getBookingAvailability(selectedServiceId, followupDate)
+      .then((data) => {
+        setAvailableSlots(data.slots || []);
+        if (data.duration) setFollowupDuration(data.duration);
+      })
+      .catch(() => { setAvailableSlots([]); })
+      .finally(() => setSlotsLoading(false));
+  }, [selectedServiceId, followupDate]);
 
   if (!type) return null;
 
@@ -1316,8 +1636,39 @@ function ActionModal({
       }
 
       if (type === "schedule_followup") {
-        const noteText = `📅 Follow-up scheduled for ${followupDate}${followupReason.trim() ? ` — ${followupReason.trim()}` : ""}`;
+        const timeTag = followupTime ? ` at ${followupTime}` : "";
+
+        // Try to create the booking via API
+        let reservationConfirmed = false;
+        let bookingAttempted = false;
+        if (followupDate && followupTime && selectedServiceId) {
+          bookingAttempted = true;
+          try {
+            const result = await createBookingAppointment({
+              date: followupDate,
+              time: followupTime,
+              service_id: selectedServiceId,
+              staff_member_id: selectedStaffId || undefined,
+              customer_name: ticket.learnerName || "",
+              customer_email: ticket.learnerEmail || "",
+              notes: followupReason.trim() || undefined,
+            });
+            // reservationConfirmed=true means Graph created it directly
+            // reservationConfirmed=false (202) means pending via webhook fallback
+            reservationConfirmed = result?.reservationConfirmed === true;
+          } catch {
+            // Hard failure — open booking page as last resort
+          }
+        }
+
+        const noteText = `📅 Follow-up scheduled for ${followupDate}${timeTag}${followupReason.trim() ? ` — ${followupReason.trim()}` : ""}`;
         await createTicketNote(ticket.id, noteText);
+
+        // Open booking page only if booking failed completely (no confirmation AND no webhook)
+        if (bookingAttempted && !reservationConfirmed) {
+          window.open("https://outlook.office.com/bookings/s/StudentSupport1@kentbusinesscollege.com", "_blank");
+        }
+
         onConfirm("follow-up scheduled", { notesChanged: true });
         return;
       }
@@ -1433,25 +1784,102 @@ function ActionModal({
       case "schedule_followup":
         return (
           <div className="space-y-4">
+            {/* Booking service (fixed) */}
+            <div>
+              <label className="mb-1 block text-sm font-medium text-[#241453]">Booking Service</label>
+              <div className="h-11 flex items-center rounded-xl border border-[#DED5F3] bg-[#FAFAFF] px-3 text-sm text-[#644d93] font-medium">
+                Safeguarding — Student Support Calendar
+              </div>
+            </div>
+
+            {/* Learner email (read-only) */}
+            {ticket.learnerEmail && (
+              <div>
+                <label className="mb-1 block text-sm font-medium text-[#241453]">Learner Email</label>
+                <div className="h-11 flex items-center rounded-xl border border-[#DED5F3] bg-[#FAFAFF] px-3 text-sm text-[#555]">
+                  {ticket.learnerEmail}
+                </div>
+              </div>
+            )}
+
+            {/* Staff member dropdown */}
+            {(staffLoading || bookingStaff.length > 0) && (
+              <div>
+                <label className="mb-1 block text-sm font-medium text-[#241453]">Assign Staff Member</label>
+                {staffLoading ? (
+                  <div className="h-11 flex items-center gap-2 rounded-xl border border-[#DED5F3] bg-[#FAFAFF] px-3 text-sm text-[#9D8EC7]">
+                    <svg className="h-4 w-4 animate-spin shrink-0" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8z" />
+                    </svg>
+                    Loading staff…
+                  </div>
+                ) : (
+                  <select
+                    value={selectedStaffId}
+                    onChange={(e) => setSelectedStaffId(e.target.value)}
+                    className="h-11 w-full rounded-xl border border-[#DED5F3] px-3 text-sm outline-none bg-white"
+                  >
+                    <option value="">— Any available staff —</option>
+                    {bookingStaff.map((s) => (
+                      <option key={s.id} value={s.id}>{s.displayName}</option>
+                    ))}
+                  </select>
+                )}
+              </div>
+            )}
+
+            {/* Date picker */}
             <div>
               <label className="mb-2 block text-sm font-medium text-[#241453]">Follow-up Date *</label>
-              <input
-                type="date"
-                value={followupDate}
-                onChange={(e) => setFollowupDate(e.target.value)}
-                className="h-11 w-full rounded-xl border border-[#DED5F3] px-3 text-sm outline-none"
-              />
+              <input type="date" value={followupDate} onChange={(e) => { setFollowupDate(e.target.value); setFollowupTime(""); }}
+                className="h-11 w-full rounded-xl border border-[#DED5F3] px-3 text-sm outline-none" />
             </div>
+
+            {/* Available time slots */}
+            {selectedServiceId && followupDate && (
+              <div>
+                <label className="mb-2 block text-sm font-medium text-[#241453]">
+                  Available Times <span className="font-normal text-[#9D8EC7] text-xs">(UK time{followupDuration > 0 ? ` · ${followupDuration} min` : ""})</span>
+                </label>
+                {slotsLoading ? (
+                  <div className="rounded-xl border border-[#DED5F3] px-3 py-3 text-sm text-[#9D8EC7]">Loading available slots…</div>
+                ) : availableSlots.length === 0 ? (
+                  <div className="rounded-xl border border-[#EEE8F8] bg-[#FAFAFF] px-3 py-3 text-sm text-[#9D8EC7]">No available slots for this date. Try another day.</div>
+                ) : (
+                  <div className="flex flex-wrap gap-2">
+                    {availableSlots.map((slot) => (
+                      <button key={slot} type="button" onClick={() => setFollowupTime(slot)}
+                        className={`rounded-xl border px-4 py-2 text-sm font-medium transition ${followupTime === slot ? "border-[#644d93] bg-[#644d93] text-white" : "border-[#DED5F3] text-[#241453] hover:bg-[#F9F5FF]"}`}>
+                        {slot}
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* Reason */}
             <div>
               <label className="mb-2 block text-sm font-medium text-[#241453]">Purpose / Reason</label>
-              <textarea
-                value={followupReason}
-                onChange={(e) => setFollowupReason(e.target.value)}
-                rows={3}
+              <textarea value={followupReason} onChange={(e) => setFollowupReason(e.target.value)} rows={3}
                 placeholder="Reason for follow-up..."
-                className="w-full rounded-xl border border-[#DED5F3] px-3 py-3 text-sm outline-none"
-              />
+                className="w-full rounded-xl border border-[#DED5F3] px-3 py-3 text-sm outline-none" />
             </div>
+
+            {/* Info */}
+            {followupDate && followupTime ? (
+              <div className="flex items-center gap-2 rounded-xl border border-[#C5B8E8] bg-[#F0EAFF] px-4 py-3 text-sm text-[#644d93]">
+                <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" />
+                </svg>
+                <span>Confirming will save a case note and open the <strong>Student Support Booking Page</strong> to complete the appointment.</span>
+              </div>
+            ) : (
+              <div className="rounded-xl border border-[#EEE8F8] bg-[#FAFAFF] px-4 py-3 text-sm text-[#9D8EC7]">
+                Select a date to see available time slots.
+              </div>
+            )}
           </div>
         );
 
@@ -1764,9 +2192,8 @@ function ActionModal({
             type="button"
             disabled={!canSubmit() || saving}
             onClick={handleSubmit}
-            className={`rounded-xl px-5 py-2.5 text-sm font-medium text-white transition disabled:opacity-60 ${
-              isDanger ? "bg-red-600 hover:bg-red-700" : "bg-[#241453] hover:bg-[#362063]"
-            }`}
+            className={`rounded-xl px-5 py-2.5 text-sm font-medium text-white transition disabled:opacity-60 ${isDanger ? "bg-red-600 hover:bg-red-700" : "bg-[#241453] hover:bg-[#362063]"
+              }`}
           >
             {saving ? "Saving..." : "Confirm"}
           </button>
@@ -1778,13 +2205,13 @@ function ActionModal({
 
 function TicketNotesPopover({ notes }: { notes: TicketNoteRow[] }) {
   const [open, setOpen] = React.useState(false);
-  const btnRef   = React.useRef<HTMLButtonElement>(null);
+  const btnRef = React.useRef<HTMLButtonElement>(null);
   const panelRef = React.useRef<HTMLDivElement>(null);
-  const listRef  = React.useRef<HTMLDivElement>(null);
+  const listRef = React.useRef<HTMLDivElement>(null);
 
   React.useLayoutEffect(() => {
     if (!open || !btnRef.current || !panelRef.current) return;
-    const btn  = btnRef.current.getBoundingClientRect();
+    const btn = btnRef.current.getBoundingClientRect();
     const panel = panelRef.current;
     const pw = panel.offsetWidth;
     const vw = window.innerWidth;
@@ -1814,7 +2241,7 @@ function TicketNotesPopover({ notes }: { notes: TicketNoteRow[] }) {
     }
 
     panel.style.left = `${left}px`;
-    panel.style.top  = `${top}px`;
+    panel.style.top = `${top}px`;
     if (listRef.current) listRef.current.style.maxHeight = `${Math.min(listMaxH, 360)}px`;
     panel.style.visibility = "visible";
   }, [open]);
@@ -1865,13 +2292,13 @@ function TicketNotesPopover({ notes }: { notes: TicketNoteRow[] }) {
 
 function TicketEvidencePopover({ evidence }: { evidence: TicketEvidenceRow[] }) {
   const [open, setOpen] = React.useState(false);
-  const btnRef   = React.useRef<HTMLButtonElement>(null);
+  const btnRef = React.useRef<HTMLButtonElement>(null);
   const panelRef = React.useRef<HTMLDivElement>(null);
-  const listRef  = React.useRef<HTMLDivElement>(null);
+  const listRef = React.useRef<HTMLDivElement>(null);
 
   React.useLayoutEffect(() => {
     if (!open || !btnRef.current || !panelRef.current) return;
-    const btn  = btnRef.current.getBoundingClientRect();
+    const btn = btnRef.current.getBoundingClientRect();
     const panel = panelRef.current;
     const pw = panel.offsetWidth;
     const vw = window.innerWidth;
@@ -1898,7 +2325,7 @@ function TicketEvidencePopover({ evidence }: { evidence: TicketEvidenceRow[] }) 
     }
 
     panel.style.left = `${left}px`;
-    panel.style.top  = `${top}px`;
+    panel.style.top = `${top}px`;
     if (listRef.current) listRef.current.style.maxHeight = `${Math.min(listMaxH, 360)}px`;
     panel.style.visibility = "visible";
   }, [open]);
@@ -2013,11 +2440,10 @@ function FiltersPanel({
               key={s}
               type="button"
               onClick={() => toggle("status", s)}
-              className={`rounded-xl px-2.5 py-1 text-xs font-medium capitalize transition ${
-                filters.status.includes(s)
+              className={`rounded-xl px-2.5 py-1 text-xs font-medium capitalize transition ${filters.status.includes(s)
                   ? "bg-[#241453] text-white"
                   : "border border-[#E7E2F3] text-[#241453] hover:bg-[#F8F5FF]"
-              }`}
+                }`}
             >
               {s}
             </button>
@@ -2033,11 +2459,10 @@ function FiltersPanel({
               key={t}
               type="button"
               onClick={() => toggle("type", t)}
-              className={`rounded-xl px-2.5 py-1 text-xs font-medium capitalize transition ${
-                filters.type.includes(t)
+              className={`rounded-xl px-2.5 py-1 text-xs font-medium capitalize transition ${filters.type.includes(t)
                   ? "bg-[#241453] text-white"
                   : "border border-[#E7E2F3] text-[#241453] hover:bg-[#F8F5FF]"
-              }`}
+                }`}
             >
               {t}
             </button>
@@ -2053,11 +2478,10 @@ function FiltersPanel({
               key={r}
               type="button"
               onClick={() => toggle("risk", r)}
-              className={`rounded-xl px-2.5 py-1 text-xs font-medium capitalize transition ${
-                filters.risk.includes(r)
+              className={`rounded-xl px-2.5 py-1 text-xs font-medium capitalize transition ${filters.risk.includes(r)
                   ? ticketRiskBadgeClass(r)
                   : "border border-[#E7E2F3] text-[#241453] hover:bg-[#F8F5FF]"
-              }`}
+                }`}
             >
               {r}
             </button>
@@ -2144,11 +2568,10 @@ function CreateTicketModal({
                   key={l.studentId}
                   type="button"
                   onClick={() => setSelectedId(String(l.studentId))}
-                  className={`flex w-full items-center justify-between px-4 py-2.5 text-left text-sm transition ${
-                    String(l.studentId) === selectedId
+                  className={`flex w-full items-center justify-between px-4 py-2.5 text-left text-sm transition ${String(l.studentId) === selectedId
                       ? "bg-[#F4F0FC] text-[#241453]"
                       : "text-[#3D2A73] hover:bg-[#FAF8FE]"
-                  }`}
+                    }`}
                 >
                   <div>
                     <div className="font-medium">{l.studentName || "-"}</div>
@@ -2214,9 +2637,8 @@ function CreateTicketModal({
                 if (subjectTouched) setSubjectTouched(false);
               }}
               placeholder="Enter ticket subject"
-              className={`h-11 w-full rounded-xl border px-3 text-sm outline-none focus:border-[#644D93] ${
-                subjectTouched && !form.subject.trim() ? "border-red-400 bg-red-50" : "border-[#DED5F3]"
-              }`}
+              className={`h-11 w-full rounded-xl border px-3 text-sm outline-none focus:border-[#644D93] ${subjectTouched && !form.subject.trim() ? "border-red-400 bg-red-50" : "border-[#DED5F3]"
+                }`}
             />
             {subjectTouched && !form.subject.trim() && (
               <p className="mt-1 text-xs text-red-500">Subject is required</p>
@@ -2365,21 +2787,21 @@ function CreateTicketModal({
 
 function exportTicketsToExcel(tickets: SupportTicketRow[], coachLabel?: string) {
   const rows = tickets.map((t) => ({
-    "Ticket":      t.ticketCode,
-    "Learner":     t.learnerName,
-    "Email":       t.learnerEmail,
-    "Type":        t.type,
-    "Risk":        t.risk,
-    "Urgency":     t.urgency,
+    "Ticket": t.ticketCode,
+    "Learner": t.learnerName,
+    "Email": t.learnerEmail,
+    "Type": t.type,
+    "Risk": t.risk,
+    "Urgency": t.urgency,
 
-    "Created":     formatTicketDate(t.createdAt),
-    "Closed":      t.closedAt ? formatTicketDate(t.closedAt) : "-",
-    "Created By":  t.createdBy || "-",
-    "Source":      t.source || "-",
-    "Status":      t.status,
-    "Days Open":   t.daysToClose ?? t.daysOpen ?? 0,
-    "Subject":     t.subject || "",
-    "Details":     t.details || "",
+    "Created": formatTicketDate(t.createdAt),
+    "Closed": t.closedAt ? formatTicketDate(t.closedAt) : "-",
+    "Created By": t.createdBy || "-",
+    "Source": t.source || "-",
+    "Status": t.status,
+    "Days Open": t.daysToClose ?? t.daysOpen ?? 0,
+    "Subject": t.subject || "",
+    "Details": t.details || "",
   }));
 
   const ws = XLSX.utils.json_to_sheet(rows);
@@ -2485,8 +2907,8 @@ function flattenValueForPdf(value: unknown): string {
       const qualifier = obj.label
         ? pdfText(String(obj.label))
         : obj.type
-        ? pdfText(String(obj.type))
-        : null;
+          ? pdfText(String(obj.type))
+          : null;
       if (text && text !== "-") return qualifier ? `${text}  (${qualifier})` : text;
     }
 
@@ -2519,24 +2941,24 @@ function buildRecommendationRows(
   let isFirst = true;
 
   for (const item of arr) {
-    const tag         = item.tag ? String(item.tag).toUpperCase() : "";
-    const title       = item.title ? pdfText(String(item.title)) : null;
+    const tag = item.tag ? String(item.tag).toUpperCase() : "";
+    const title = item.title ? pdfText(String(item.title)) : null;
     const sourceTitle = (item.source_title ?? item.sourceTitle) ? pdfText(String(item.source_title ?? item.sourceTitle)) : null;
 
     // Accept any common field name for the description/reason text
     const rawDesc = item.reason ?? item.description ?? item.details ?? item.body ?? item.content ?? item.notes ?? item.summary;
-    const reason  = rawDesc ? pdfText(String(rawDesc)) : null;
+    const reason = rawDesc ? pdfText(String(rawDesc)) : null;
 
     // bullet_points can be an array of strings or a string
     const rawBullets = item.bullet_points ?? item.bulletPoints ?? item.bullets ?? item.points;
     const bulletArr: string[] = Array.isArray(rawBullets)
       ? rawBullets.map((b) => pdfText(String(b))).filter((b) => b && b !== "-")
       : rawBullets
-      ? pdfText(String(rawBullets)).split("\n").map((l) => l.trim()).filter(Boolean)
-      : [];
+        ? pdfText(String(rawBullets)).split("\n").map((l) => l.trim()).filter(Boolean)
+        : [];
 
     const urlRaw = item.source_url ?? item.sourceUrl ?? item.url ?? item.link ?? item.href;
-    const url    = urlRaw && /^https?:\/\//i.test(String(urlRaw)) ? String(urlRaw) : null;
+    const url = urlRaw && /^https?:\/\//i.test(String(urlRaw)) ? String(urlRaw) : null;
     if (!title && !reason && bulletArr.length === 0) continue;
 
     const indent = tag ? 16 : 10;
@@ -2691,41 +3113,39 @@ async function exportApprenticeToPDF(learner: TicketableLearnerRow) {
   const today = new Date().toLocaleDateString("en-GB", { day: "2-digit", month: "long", year: "numeric" });
 
   const C = {
-    purple:      [100, 77, 147]  as [number, number, number],
-    purpleDeep:  [50, 32, 100]   as [number, number, number],
+    purple: [100, 77, 147] as [number, number, number],
+    purpleDeep: [50, 32, 100] as [number, number, number],
     purpleLight: [168, 140, 217] as [number, number, number],
-    purpleBg:    [240, 234, 253] as [number, number, number],
-    cardBg:      [247, 244, 255] as [number, number, number],
-    border:      [218, 208, 240] as [number, number, number],
-    dark:        [28, 16, 60]    as [number, number, number],
-    grey:        [118, 108, 142] as [number, number, number],
-    white:       [255, 255, 255] as [number, number, number],
-    textBody:    [55, 45, 82]    as [number, number, number],
+    purpleBg: [240, 234, 253] as [number, number, number],
+    cardBg: [247, 244, 255] as [number, number, number],
+    border: [218, 208, 240] as [number, number, number],
+    dark: [28, 16, 60] as [number, number, number],
+    grey: [118, 108, 142] as [number, number, number],
+    white: [255, 255, 255] as [number, number, number],
+    textBody: [55, 45, 82] as [number, number, number],
   };
 
-  // ── Header: shield indicator + label (left) | logo (right) ────
-  // Small shield-style indicator
-  doc.setFillColor(...C.purple);
-  doc.roundedRect(mx, 7, 5, 5, 1, 1, "F");
-  doc.setFillColor(...C.white);
-  doc.setLineWidth(0.5);
-  doc.setDrawColor(...C.white);
-  doc.line(mx + 1.5, 9.5, mx + 2.3, 10.3);
-  doc.line(mx + 2.3, 10.3, mx + 3.7, 8.7);
+  // ── Header: logo (left) + shield indicator + title ─────────────
+  const lgW = 16;
+  const lgH = lgW / 1.52;   // ≈ 10.5 mm
+  const lgX = mx;
+  const lgY = 4.5;
+  const lgPad = 1.5;
+  // Light purple background behind logo
+  doc.setFillColor(...C.purpleBg);
+  doc.roundedRect(lgX - lgPad, lgY - lgPad, lgW + lgPad * 2, lgH + lgPad * 2, 2, 2, "F");
+  if (logoDataUrl) {
+    doc.addImage(logoDataUrl, "PNG", lgX, lgY, lgW, lgH);
+  }
 
+  // Title — vertically centered with logo
+  const hdrTextY = lgY + lgH / 2 + 1.5;
   doc.setFontSize(8);
   doc.setFont("helvetica", "bold");
   doc.setTextColor(...C.purple);
-  doc.text("LEARNER SAFEGUARDING REPORT", mx + 7.5, 10.5);
+  doc.text("LEARNER SAFEGUARDING REPORT", lgX + lgW + lgPad * 2 + 4, hdrTextY);
 
-  // KBC logo — top right, no white box
-  const lgW = 22;
-  const lgH = lgW / 1.52;   // ≈ 14.5 mm
-  if (logoDataUrl) {
-    doc.addImage(logoDataUrl, "PNG", pageW - mx - lgW, 4, lgW, lgH);
-  }
-
-  // Separator — placed below logo bottom (4 + 14.5 + 1 ≈ 20)
+  // Separator
   doc.setDrawColor(...C.border);
   doc.setLineWidth(0.3);
   doc.line(mx, 20, pageW - mx, 20);
@@ -2758,29 +3178,29 @@ async function exportApprenticeToPDF(learner: TicketableLearnerRow) {
 
   // ── Stat cards ────────────────────────────────────────────────
   const statsY = 48;
-  const cardH  = 30;
+  const cardH = 30;
   const cardGap = 5;
-  const cardW   = (contentW - cardGap) / 2;
+  const cardW = (contentW - cardGap) / 2;
 
   const riskTextColors: Record<string, [number, number, number]> = {
-    red:   [185, 28, 28],
+    red: [185, 28, 28],
     amber: [161, 98, 7],
     green: [21, 128, 61],
   };
   const riskBgColors: Record<string, [number, number, number]> = {
-    red:   [254, 242, 242],
+    red: [254, 242, 242],
     amber: [255, 251, 235],
     green: [240, 253, 244],
   };
   const riskDescriptions: Record<string, string> = {
-    red:   "High risk – immediate action required.",
+    red: "High risk – immediate action required.",
     amber: "Moderate risk – monitoring and support recommended.",
     green: "Low risk – continue current support.",
   };
-  const riskKey      = (learner.riskLevel || "").toLowerCase();
+  const riskKey = (learner.riskLevel || "").toLowerCase();
   const riskTxtColor = riskTextColors[riskKey] ?? C.purple;
-  const riskBg       = riskBgColors[riskKey]   ?? C.purpleBg;
-  const riskDesc     = riskDescriptions[riskKey] ?? "";
+  const riskBg = riskBgColors[riskKey] ?? C.purpleBg;
+  const riskDesc = riskDescriptions[riskKey] ?? "";
 
   // Risk card
   doc.setFillColor(...riskBg);
@@ -2828,9 +3248,9 @@ async function exportApprenticeToPDF(learner: TicketableLearnerRow) {
 
   // Light card bg + dark purple bold text for section headers
   const secHdrStyle = {
-    fillColor: C.cardBg   as [number, number, number],
+    fillColor: C.cardBg as [number, number, number],
     textColor: C.purpleDeep as [number, number, number],
-    fontStyle: "bold"     as const,
+    fontStyle: "bold" as const,
     fontSize: 9,
     cellPadding: { top: 5, bottom: 5, left: 8, right: 6 },
   };
@@ -2872,8 +3292,8 @@ async function exportApprenticeToPDF(learner: TicketableLearnerRow) {
     const raw = String(hookData.cell.raw ?? "");
     if (!/^https?:\/\//i.test(raw)) return;
     const lp = Number((hookData.cell.styles?.cellPadding as any)?.left ?? 4);
-    const x  = hookData.cell.x + lp;
-    const y  = hookData.cell.y + Number((hookData.cell.styles?.cellPadding as any)?.top ?? 4) + 2.5;
+    const x = hookData.cell.x + lp;
+    const y = hookData.cell.y + Number((hookData.cell.styles?.cellPadding as any)?.top ?? 4) + 2.5;
     const tw = Math.min(doc.getTextWidth(raw), hookData.cell.width - lp * 2);
     doc.setDrawColor(60, 80, 200);
     doc.setLineWidth(0.3);
@@ -2918,7 +3338,7 @@ async function exportApprenticeToPDF(learner: TicketableLearnerRow) {
 
       // ── {text, type}[] → CONCERNS / POSITIVES ─────────────────
       if (isTextTypeArr(sectionValue)) {
-        const lefts  = sectionValue.filter(i => (i.type || "").toLowerCase() !== "positive").map(i => pdfText(i.text));
+        const lefts = sectionValue.filter(i => (i.type || "").toLowerCase() !== "positive").map(i => pdfText(i.text));
         const rights = sectionValue.filter(i => (i.type || "").toLowerCase() === "positive").map(i => pdfText(i.text));
         const maxRows = Math.max(lefts.length, rights.length, 1);
         const colW = (contentW - 2) / 2;
@@ -2926,13 +3346,13 @@ async function exportApprenticeToPDF(learner: TicketableLearnerRow) {
         const twoColBody: object[][] = [
           [{ content: title, colSpan: 2, styles: secHdrStyle }],
           [
-            { content: "CONCERNS",  styles: { fontStyle: "bold" as const, fontSize: 7.5, textColor: [160, 40, 40]  as [number, number, number], fillColor: C.cardBg as [number, number, number], cellPadding: { top: 4, bottom: 3, left: 8, right: 4 } } },
-            { content: "POSITIVES", styles: { fontStyle: "bold" as const, fontSize: 7.5, textColor: [30, 110, 60]   as [number, number, number], fillColor: C.cardBg as [number, number, number], cellPadding: { top: 4, bottom: 3, left: 5, right: 5 } } },
+            { content: "CONCERNS", styles: { fontStyle: "bold" as const, fontSize: 7.5, textColor: [160, 40, 40] as [number, number, number], fillColor: C.cardBg as [number, number, number], cellPadding: { top: 4, bottom: 3, left: 8, right: 4 } } },
+            { content: "POSITIVES", styles: { fontStyle: "bold" as const, fontSize: 7.5, textColor: [30, 110, 60] as [number, number, number], fillColor: C.cardBg as [number, number, number], cellPadding: { top: 4, bottom: 3, left: 5, right: 5 } } },
           ],
         ];
         for (let i = 0; i < maxRows; i++) {
           twoColBody.push([
-            { content: lefts[i]  ? `\xB7  ${lefts[i]}`  : "", styles: { fontSize: 8, textColor: C.textBody as [number, number, number], fillColor: C.cardBg as [number, number, number], cellPadding: { top: 2.5, bottom: 2.5, left: 8, right: 4 } } },
+            { content: lefts[i] ? `\xB7  ${lefts[i]}` : "", styles: { fontSize: 8, textColor: C.textBody as [number, number, number], fillColor: C.cardBg as [number, number, number], cellPadding: { top: 2.5, bottom: 2.5, left: 8, right: 4 } } },
             { content: rights[i] ? `\xB7  ${rights[i]}` : "", styles: { fontSize: 8, textColor: C.textBody as [number, number, number], fillColor: C.cardBg as [number, number, number], cellPadding: { top: 2.5, bottom: 2.5, left: 5, right: 5 } } },
           ]);
         }
@@ -2956,10 +3376,10 @@ async function exportApprenticeToPDF(learner: TicketableLearnerRow) {
       // ── Two-column object (AI Insights | Recommended Actions) ──
       if (isTwoColObj(sectionValue)) {
         const entries = Object.entries(sectionValue as Record<string, unknown>);
-        const leftE   = entries.find(([k]) => k.toLowerCase().includes("insight") || k.toLowerCase().includes("ai")) ?? entries[0]!;
-        const rightE  = entries.find(([k]) => k.toLowerCase().includes("action") || k.toLowerCase().includes("recommend")) ?? entries[entries.length - 1]!;
-        const toArr   = (v: unknown) => (Array.isArray(v) ? v.map(x => pdfText(String(x))) : [pdfText(String(v))]);
-        const leftItems  = toArr(leftE[1]);
+        const leftE = entries.find(([k]) => k.toLowerCase().includes("insight") || k.toLowerCase().includes("ai")) ?? entries[0]!;
+        const rightE = entries.find(([k]) => k.toLowerCase().includes("action") || k.toLowerCase().includes("recommend")) ?? entries[entries.length - 1]!;
+        const toArr = (v: unknown) => (Array.isArray(v) ? v.map(x => pdfText(String(x))) : [pdfText(String(v))]);
+        const leftItems = toArr(leftE[1]);
         const rightItems = toArr(rightE[1]);
         const maxRows = Math.max(leftItems.length, rightItems.length, 1);
         const colW = (contentW - 2) / 2;
@@ -2975,7 +3395,7 @@ async function exportApprenticeToPDF(learner: TicketableLearnerRow) {
         ];
         for (let i = 0; i < maxRows; i++) {
           twoColBody.push([
-            { content: leftItems[i]  ? `\xB7  ${leftItems[i]}`  : "", styles: { fontSize: 8, textColor: C.textBody as [number, number, number], fillColor: C.cardBg as [number, number, number], cellPadding: { top: 2.5, bottom: 2.5, left: 8, right: 4 } } },
+            { content: leftItems[i] ? `\xB7  ${leftItems[i]}` : "", styles: { fontSize: 8, textColor: C.textBody as [number, number, number], fillColor: C.cardBg as [number, number, number], cellPadding: { top: 2.5, bottom: 2.5, left: 8, right: 4 } } },
             { content: rightItems[i] ? `\xB7  ${rightItems[i]}` : "", styles: { fontSize: 8, textColor: C.textBody as [number, number, number], fillColor: C.cardBg as [number, number, number], cellPadding: { top: 2.5, bottom: 2.5, left: 5, right: 5 } } },
           ]);
         }
@@ -3010,12 +3430,12 @@ async function exportApprenticeToPDF(learner: TicketableLearnerRow) {
         ...rows.map(([lbl, val]) =>
           hasLabels
             ? [
-                { content: lbl, styles: { textColor: C.purple as [number, number, number], fontStyle: "bold" as const, fontSize: 7.5, fillColor: C.cardBg as [number, number, number], cellPadding: { top: 4, bottom: 4, left: 8, right: 4 } } },
-                { content: isUrl(val) ? `>> ${val}` : val, styles: { textColor: isUrl(val) ? [40, 70, 185] as [number, number, number] : C.textBody as [number, number, number], fontStyle: isUrl(val) ? "italic" as const : "normal" as const, fontSize: 8, fillColor: C.cardBg as [number, number, number], cellPadding: { top: 4, bottom: 4, left: 4, right: 7 } } },
-              ]
+              { content: lbl, styles: { textColor: C.purple as [number, number, number], fontStyle: "bold" as const, fontSize: 7.5, fillColor: C.cardBg as [number, number, number], cellPadding: { top: 4, bottom: 4, left: 8, right: 4 } } },
+              { content: isUrl(val) ? `>> ${val}` : val, styles: { textColor: isUrl(val) ? [40, 70, 185] as [number, number, number] : C.textBody as [number, number, number], fontStyle: isUrl(val) ? "italic" as const : "normal" as const, fontSize: 8, fillColor: C.cardBg as [number, number, number], cellPadding: { top: 4, bottom: 4, left: 4, right: 7 } } },
+            ]
             : [
-                { content: val, styles: { textColor: C.textBody as [number, number, number], fontSize: 8, fontStyle: "italic" as const, fillColor: C.cardBg as [number, number, number], cellPadding: { top: 5, bottom: 6, left: 8, right: 7 } } },
-              ]
+              { content: val, styles: { textColor: C.textBody as [number, number, number], fontSize: 8, fontStyle: "italic" as const, fillColor: C.cardBg as [number, number, number], cellPadding: { top: 5, bottom: 6, left: 8, right: 7 } } },
+            ]
         ),
       ];
 
@@ -3048,7 +3468,7 @@ async function exportApprenticeToPDF(learner: TicketableLearnerRow) {
   const totalPages = (doc as any).internal.getNumberOfPages();
   for (let p = 1; p <= totalPages; p++) {
     doc.setPage(p);
-    const ph   = doc.internal.pageSize.getHeight();
+    const ph = doc.internal.pageSize.getHeight();
     const footH = 16;
     const footY = ph - footH;
 
@@ -3097,59 +3517,59 @@ async function exportTicketsToPDF(tickets: SupportTicketRow[], summary?: Support
   const logoDataUrl = await loadLogoDataUrl();
 
   const doc = new jsPDF({ orientation: "landscape", unit: "mm", format: "a4" });
-  const pageW  = doc.internal.pageSize.getWidth();   // 297mm
-  const pageH  = doc.internal.pageSize.getHeight();  // 210mm
-  const today  = new Date().toLocaleDateString("en-GB", { day: "2-digit", month: "long", year: "numeric" });
+  const pageW = doc.internal.pageSize.getWidth();   // 297mm
+  const pageH = doc.internal.pageSize.getHeight();  // 210mm
+  const today = new Date().toLocaleDateString("en-GB", { day: "2-digit", month: "long", year: "numeric" });
 
   // ── Header bar ──────────────────────────────────────────────────────────────
   const headerH = coachLabel ? 24 : 18;
-  doc.setFillColor(100, 77, 147);
+  doc.setFillColor(36, 20, 83);   // --color-15: #241453
   doc.roundedRect(10, 8, pageW - 20, headerH, 3, 3, "F");
 
-  // KBC Logo — white badge in right side of header
-  const tLogoW = (headerH - 4) * 1.52;
-  const tLogoH = headerH - 4;
-  const tBadgePad = 2;
-  const tBadgeW = tLogoW + tBadgePad * 2;
-  const tBadgeH = tLogoH + tBadgePad * 2;
-  const tBadgeX = pageW - 10 - tBadgeW - 1;
-  const tBadgeY = 8 + (headerH - tBadgeH) / 2;
-  doc.setFillColor(255, 255, 255);
-  doc.roundedRect(tBadgeX, tBadgeY, tBadgeW, tBadgeH, 2, 2, "F");
+  // KBC Logo — left side, no white badge, sits directly on purple header
+  const tLogoH = 14;
+  const tLogoW = Math.round(tLogoH * 1.5 * 10) / 10;
+
+  const logoX = 14;
+  const logoY = 8 + (headerH - tLogoH) / 2;
+
   if (logoDataUrl) {
-    doc.addImage(logoDataUrl, "PNG", tBadgeX + tBadgePad, tBadgeY + tBadgePad, tLogoW, tLogoH);
+    doc.addImage(logoDataUrl, "PNG", logoX, logoY, tLogoW, tLogoH);
   }
+
+  const textStartX = logoX + tLogoW + 5;
+  const headerMidY = 8 + headerH / 2 + 1.5;  // vertical center baseline for single-line text
+  const titleY = coachLabel ? 8 + headerH * 0.38 : headerMidY;
 
   // Title
   doc.setTextColor(255, 255, 255);
   doc.setFontSize(13);
   doc.setFont("helvetica", "bold");
-  const titleY = coachLabel ? 16 : 19;
-  doc.text("Safeguarding Tickets Report", 18, titleY);
+  doc.text("Safeguarding Tickets Report", textStartX, titleY);
 
-  // Coach name — subtitle line below the title
+  // Coach name — subtitle below title
   if (coachLabel) {
     doc.setFontSize(9);
     doc.setFont("helvetica", "normal");
-    doc.setTextColor(220, 205, 255);
-    doc.text(`Coach: ${pdfText(coachLabel)}`, 18, 23);
+    doc.setTextColor(168, 140, 217);  // --color-11: #a88cd9
+    doc.text(`Coach: ${pdfText(coachLabel)}`, textStartX, 8 + headerH * 0.72);
   }
 
-  // Date — left of logo badge
+  // Date — vertically centered on the right
   doc.setFontSize(8);
   doc.setFont("helvetica", "normal");
-  doc.setTextColor(220, 205, 255);
-  doc.text(`Generated: ${today}`, tBadgeX - 4, coachLabel ? 16 : 19, { align: "right" });
+  doc.setTextColor(168, 140, 217);  // --color-11: #a88cd9
+  doc.text(`Generated: ${today}`, pageW - 14, headerMidY, { align: "right" });
 
   // ── Summary cards ───────────────────────────────────────────────────────────
-  const cardsY  = 8 + headerH + 2;   // 2mm gap after header
-  const cardsH  = 16;
+  const cardsY = 8 + headerH + 2;   // 2mm gap after header
+  const cardsH = 16;
   if (summary) {
     const cards = [
-      { label: "Total",     value: String(summary.total) },
-      { label: "Open",      value: String(summary.open) },
-      { label: "Closed",    value: String(summary.closed) },
-      { label: "Red Risk",  value: String(summary.redRisk) },
+      { label: "Total", value: String(summary.total) },
+      { label: "Open", value: String(summary.open) },
+      { label: "Closed", value: String(summary.closed) },
+      { label: "Red Risk", value: String(summary.redRisk) },
       { label: "Escalated", value: String(summary.escalated) },
       { label: "Avg Close", value: summary.avgCloseDays != null ? `${summary.avgCloseDays} days` : "-" },
     ];
@@ -3174,7 +3594,7 @@ async function exportTicketsToPDF(tickets: SupportTicketRow[], summary?: Support
   // Columns: Ticket(16) Learner(44) Type(20) Risk(16) Status(26)
   //          Created(20) Closed(20) Days(14) Urgency(20) Subject(36) Notes(45) = 277
   const RISK_COLORS: Record<string, [number, number, number]> = {
-    red:   [255, 235, 235],
+    red: [255, 235, 235],
     amber: [255, 248, 230],
     green: [235, 255, 240],
   };
@@ -3188,16 +3608,35 @@ async function exportTicketsToPDF(tickets: SupportTicketRow[], summary?: Support
       "Created", "Closed", "Days", "Urgency", "Subject", "Case Notes",
     ]],
     body: tickets.map((t) => {
-      // Notes summary: first 2 notes joined, fallback to first 200 chars of details
+      // Strip emoji/non-Latin but preserve \n for line breaks in the cell
+      const cleanNote = (text: string) =>
+        text
+          .replace(/[\uD800-\uDFFF]/g, "")               // surrogate pairs (emoji)
+          .replace(/[^\x20-\x7E\xA0-\xFF\n]/g, "")       // keep ASCII + Latin + newlines
+          .replace(/[^\S\n]+/g, " ")                       // collapse spaces but not newlines
+          .replace(/\n{3,}/g, "\n\n")                      // max 2 consecutive newlines
+          .trim();
+
+      // Fix auto-generated text that runs words together (e.g. "MediumTotal", "6.57Trigger")
+      const fixSpacing = (text: string) =>
+        cleanNote(
+          text
+            .replace(/([a-z\d])([A-Z])/g, "$1 $2")  // "MediumTotal" → "Medium Total"
+            .replace(/\.([A-Z])/g, ".\n$1")           // "survey.Risk" → "survey.\nRisk"
+            .replace(/:\s*/g, ": ")                    // normalise colons
+        );
+
       const notesList = (t.notes || []).slice(0, 2);
       const rawNotes = notesList.length > 0
-        ? notesList.map((n) => n.note).join("  /  ").substring(0, 200)
-        : (t.details || "-").substring(0, 200);
+        ? fixSpacing(notesList.map((n) => n.note).join(" / ").substring(0, 300))
+        : fixSpacing((t.details || "-").substring(0, 300));
 
       const cap = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
+      // Break email at @ so it wraps cleanly instead of mid-word
+      const emailDisplay = pdfText(t.learnerEmail).replace("@", "@\n");
       return [
         pdfText(t.ticketCode),
-        `${pdfText(t.learnerName)}\n${pdfText(t.learnerEmail)}`,
+        `${pdfText(t.learnerName)}\n${emailDisplay}`,
         pdfText(cap(t.type || "-")),
         pdfText(cap(t.risk || "-")),
         pdfText(cap(t.status || "-")),
@@ -3206,39 +3645,40 @@ async function exportTicketsToPDF(tickets: SupportTicketRow[], summary?: Support
         String(t.daysToClose ?? t.daysOpen ?? 0),
         pdfText(cap(t.urgency || "-")),
         pdfText(t.subject),
-        pdfText(rawNotes),
+        rawNotes,
       ];
     }),
     styles: {
       fontSize: 8,
-      cellPadding: { top: 3, right: 3, bottom: 3, left: 3 },
+      cellPadding: { top: 4, right: 4, bottom: 5, left: 4 },
       overflow: "linebreak",
-      lineColor: [233, 227, 245],
-      lineWidth: 0.2,
+      lineColor: [200, 185, 230],
+      lineWidth: 0.25,
       textColor: [36, 20, 83],
-      valign: "top",
+      valign: "middle",
+      minCellHeight: 10,
     },
     headStyles: {
-      fillColor: [36, 20, 83],
+      fillColor: [36, 20, 83],   // --color-15: #241453
       textColor: [255, 255, 255],
       fontStyle: "bold",
       fontSize: 8,
       halign: "center",
-      cellPadding: { top: 4, right: 3, bottom: 4, left: 3 },
+      cellPadding: { top: 5, right: 4, bottom: 5, left: 4 },
     },
     alternateRowStyles: { fillColor: [252, 251, 254] },
     columnStyles: {
-      0:  { cellWidth: 16, halign: "center", fontStyle: "bold" },
-      1:  { cellWidth: 44 },
-      2:  { cellWidth: 20, halign: "center" },
-      3:  { cellWidth: 16, halign: "center" },
-      4:  { cellWidth: 26, halign: "center" },
-      5:  { cellWidth: 20, halign: "center" },
-      6:  { cellWidth: 20, halign: "center" },
-      7:  { cellWidth: 14, halign: "center" },
-      8:  { cellWidth: 20, halign: "center" },
-      9:  { cellWidth: 36 },
-      10: { cellWidth: 45 },
+      0: { cellWidth: 16, halign: "center", fontStyle: "bold" },
+      1: { cellWidth: 44 },
+      2: { cellWidth: 24, halign: "center" },
+      3: { cellWidth: 16, halign: "center" },
+      4: { cellWidth: 26, halign: "center" },
+      5: { cellWidth: 20, halign: "center" },
+      6: { cellWidth: 20, halign: "center" },
+      7: { cellWidth: 14, halign: "center" },
+      8: { cellWidth: 20, halign: "center" },
+      9: { cellWidth: 28 },
+      10: { cellWidth: 49 },
     },
     didParseCell(data) {
       if (data.section === "body" && data.column.index === 3) {
@@ -3437,7 +3877,7 @@ function TicketDetailPanel({
                 <div className="rounded-xl border border-[#ECE7F7] p-3">
                   <div className="text-[10px] font-medium text-[#7B6D9B]">Source</div>
                   <div className="mt-1 text-sm font-medium text-[#241453]">
-                    {ticket.source || "-"}
+                    {ticket.createdBy === "learner" ? "Dashboard" : ticket.source || "-"}
                   </div>
                 </div>
                 <div className="rounded-xl border border-[#ECE7F7] p-3">
@@ -3513,52 +3953,122 @@ function TicketDetailPanel({
               )}
             </div>
 
-            {/* Evidence */}
-            <div>
-              <div className="mb-3 flex items-center justify-between">
-                <div className="text-[10px] font-semibold uppercase tracking-wider text-[#7B6D9B]">
-                  Evidence
-                </div>
-                {evidence.length > 0 && (
-                  <span className="text-[10px] text-[#B8AACC]">{evidence.length} item{evidence.length !== 1 ? "s" : ""}</span>
-                )}
-              </div>
-              {notesLoading ? (
-                <p className="text-xs text-slate-400">Loading...</p>
-              ) : evidence.length === 0 ? (
-                <div className="rounded-xl border border-dashed border-[#EEE8F8] px-4 py-3 text-xs text-slate-400">
-                  No evidence yet. Use Actions → Add Evidence.
-                </div>
-              ) : (
-                <div className="space-y-2">
-                  {evidence.map((ev) => (
-                    <div key={ev.id} className="rounded-xl border border-[#EEE8F8] p-3">
-                      <div className="flex items-center justify-between gap-2 mb-1.5">
-                        <span className="text-[10px] text-[#8E82AA]">{ev.created_by || "Coach"}</span>
-                        <span className="text-[10px] text-[#B8AACC]">
-                          {ev.created_at ? formatTicketDate(ev.created_at) : ""}
-                        </span>
-                      </div>
-                      {ev.description && (
-                        <p className="text-sm text-[#241453]">{ev.description}</p>
-                      )}
-                      {ev.file_url && (
-                        <a
-                          href={resolveMediaUrl(ev.file_url)}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          onClick={(e) => e.stopPropagation()}
-                          className="mt-2 flex items-center gap-1.5 text-xs font-medium text-[#6248BE] hover:underline"
-                        >
-                          <ImageIcon className="h-3.5 w-3.5" />
-                          {ev.file_name || "View image"}
-                        </a>
-                      )}
+            {/* Evidence — coach-uploaded */}
+            {(() => {
+              const coachEvidence = evidence.filter(ev => !isLearnerEvidence(ev));
+              return (
+                <div>
+                  <div className="mb-3 flex items-center justify-between">
+                    <div className="text-[10px] font-semibold uppercase tracking-wider text-[#7B6D9B]">Evidence</div>
+                    {coachEvidence.length > 0 && (
+                      <span className="text-[10px] text-[#B8AACC]">{coachEvidence.length} item{coachEvidence.length !== 1 ? "s" : ""}</span>
+                    )}
+                  </div>
+                  {notesLoading ? (
+                    <p className="text-xs text-slate-400">Loading...</p>
+                  ) : coachEvidence.length === 0 ? (
+                    <div className="rounded-xl border border-dashed border-[#EEE8F8] px-4 py-3 text-xs text-slate-400">
+                      No evidence yet. Use Actions → Add Evidence.
                     </div>
-                  ))}
+                  ) : (
+                    <div className="space-y-2">
+                      {coachEvidence.map((ev) => (
+                        <div key={ev.id} className="rounded-xl border border-[#EEE8F8] p-3">
+                          <div className="flex items-center justify-between gap-2 mb-1.5">
+                            <span className="text-[10px] text-[#8E82AA]">{ev.created_by || "Coach"}</span>
+                            <span className="text-[10px] text-[#B8AACC]">{ev.created_at ? formatTicketDate(ev.created_at) : ""}</span>
+                          </div>
+                          {ev.description && <p className="text-sm text-[#241453]">{ev.description}</p>}
+                          {ev.file_url && (
+                            <a
+                              href={resolveMediaUrl(ev.file_url)}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              onClick={(e) => e.stopPropagation()}
+                              className="mt-2 flex items-center gap-1.5 text-xs font-medium text-[#6248BE] hover:underline"
+                            >
+                              <ImageIcon className="h-3.5 w-3.5" />
+                              {ev.file_name || "View file"}
+                            </a>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  )}
                 </div>
-              )}
-            </div>
+              );
+            })()}
+
+            {/* Evidence from Learner Side */}
+            {(() => {
+              const learnerEvidence = evidence.filter(isLearnerEvidence);
+              if (notesLoading || learnerEvidence.length === 0) return null;
+              return (
+                <div>
+                  <div className="mb-3 flex items-center justify-between">
+                    <div className="text-[10px] font-semibold uppercase tracking-wider text-[#7B6D9B]">
+                      Evidence from Learner Side
+                    </div>
+                    <span className="text-[10px] text-[#B8AACC]">{learnerEvidence.length} item{learnerEvidence.length !== 1 ? "s" : ""}</span>
+                  </div>
+                  <div className="space-y-2">
+                    {learnerEvidence.map((ev, i) => {
+                      const fileUrl = evFileUrl(ev);
+                      const fileName = evFileName(ev);
+                      const isImg = evIsImage(ev);
+                      return (
+                        <div key={ev.id ?? i} className="overflow-hidden rounded-xl border border-[#E8F4FF] bg-[#F5FAFF]">
+                          {isImg && fileUrl && (
+                            <a href={fileUrl} target="_blank" rel="noopener noreferrer">
+                              <img
+                                src={fileUrl}
+                                alt={fileName || "Learner evidence"}
+                                className="max-h-44 w-full object-cover transition hover:opacity-90"
+                                onError={(e) => { (e.target as HTMLImageElement).style.display = "none"; }}
+                              />
+                            </a>
+                          )}
+                          <div className="p-3">
+                            <div className="mb-2 flex items-center gap-1.5">
+                              <span className="rounded-full bg-[#E0EDFF] px-2 py-0.5 text-[10px] font-medium text-[#2563EB]">Learner</span>
+                              {ev.created_at && (
+                                <span className="text-[10px] text-[#B8AACC]">{formatTicketDate(ev.created_at)}</span>
+                              )}
+                            </div>
+                            {fileName && (
+                              <p className="mb-2 truncate text-xs text-[#241453]">{fileName}</p>
+                            )}
+                            {fileUrl && (
+                              <div className="flex items-center gap-2">
+                                <a
+                                  href={fileUrl}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  className="inline-flex items-center gap-1 rounded-lg bg-[#EEF4FF] px-2.5 py-1.5 text-xs font-medium text-[#2563EB] hover:bg-[#DBEAFE] transition"
+                                >
+                                  <ImageIcon className="h-3 w-3" />
+                                  View
+                                </a>
+                                <a
+                                  href={fileUrl}
+                                  download={fileName || true}
+                                  className="inline-flex items-center gap-1 rounded-lg bg-[#F0FDF4] px-2.5 py-1.5 text-xs font-medium text-[#047857] hover:bg-[#DCFCE7] transition"
+                                >
+                                  <svg className="h-3 w-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                                    <path strokeLinecap="round" strokeLinejoin="round" d="M4 16v2a2 2 0 002 2h12a2 2 0 002-2v-2M7 10l5 5 5-5M12 4v11" />
+                                  </svg>
+                                  Download
+                                </a>
+                              </div>
+                            )}
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              );
+            })()}
           </div>
         </div>
 
@@ -3805,9 +4315,8 @@ function OpenTicketModal({
               value={form.subject}
               onChange={(e) => onChange("subject", e.target.value)}
               placeholder="Enter ticket subject"
-              className={`h-11 w-full rounded-xl border px-3 text-sm outline-none focus:border-[#644D93] ${
-                error && !form.subject.trim() ? "border-red-400 bg-red-50" : "border-[#DED5F3]"
-              }`}
+              className={`h-11 w-full rounded-xl border px-3 text-sm outline-none focus:border-[#644D93] ${error && !form.subject.trim() ? "border-red-400 bg-red-50" : "border-[#DED5F3]"
+                }`}
             />
           </div>
 
@@ -4049,11 +4558,10 @@ function TicketsManagementView({
                 <button
                   type="button"
                   onClick={() => setFiltersOpen((prev) => !prev)}
-                  className={`inline-flex h-10 items-center gap-2 rounded-2xl border px-4 text-sm transition ${
-                    activeFilterCount > 0
+                  className={`inline-flex h-10 items-center gap-2 rounded-2xl border px-4 text-sm transition ${activeFilterCount > 0
                       ? "border-[#241453] bg-[#241453] text-white"
                       : "border-[#E7E2F3] text-[#241453] hover:bg-[#F8F5FF]"
-                  }`}
+                    }`}
                 >
                   Filters
                   {activeFilterCount > 0 && (
@@ -4070,7 +4578,7 @@ function TicketsManagementView({
                       className="fixed inset-0 z-40 cursor-default"
                       onClick={() => setFiltersOpen(false)}
                     />
-                    <div className="relative z-50">
+                    <div className="z-50">
                       <FiltersPanel
                         filters={filters}
                         onChange={onFiltersChange}
@@ -4215,7 +4723,7 @@ function TicketsManagementView({
                         </span>
                       </td>
 
-                      <td className="px-5 py-4 text-slate-600">{item.source || "-"}</td>
+                      <td className="px-5 py-4 text-slate-600">{item.createdBy === "learner" ? "Dashboard" : item.source || "-"}</td>
                       <td className="px-5 py-4 text-slate-600">{formatTicketDate(item.createdAt)}</td>
                       <td className="px-5 py-4 text-slate-600">{item.createdBy || "-"}</td>
 
@@ -4236,11 +4744,14 @@ function TicketsManagementView({
                       </td>
 
                       <td className="px-5 py-4">
-                        {(item.evidence?.length ?? 0) > 0 ? (
-                          <TicketEvidencePopover evidence={item.evidence!} />
-                        ) : (
-                          <span className="text-slate-300">—</span>
-                        )}
+                        {(() => {
+                          const coachEv = (item.evidence ?? []).filter(e => !isLearnerEvidence(e));
+                          return coachEv.length > 0 ? (
+                            <TicketEvidencePopover evidence={coachEv} />
+                          ) : (
+                            <span className="text-slate-300">—</span>
+                          );
+                        })()}
                       </td>
 
                       <td className="px-5 py-4">
@@ -4637,7 +5148,7 @@ export default function CoachWellbeingPage({ setMobileOpen, isDesktop }: CoachWe
         );
         return { ...prev, tickets: updated };
       });
-    } catch {}
+    } catch { }
   }
 
   async function handleEvidenceChanged(ticketId: number) {
@@ -4653,7 +5164,7 @@ export default function CoachWellbeingPage({ setMobileOpen, isDesktop }: CoachWe
         );
         return { ...prev, tickets: updated };
       });
-    } catch {}
+    } catch { }
   }
 
   function handleEditSaved(ticketId: number, changes: UpdateSupportTicketPayload) {
@@ -5230,9 +5741,9 @@ export default function CoachWellbeingPage({ setMobileOpen, isDesktop }: CoachWe
                         wrapperStyle={{ fontSize: 11, paddingTop: 10, color: "#7B6D9B" }}
                       />
 
-                      <Bar dataKey="red"   name="At Risk"  stackId="a" fill="#EF4444" radius={[0, 0, 3, 3]} />
+                      <Bar dataKey="red" name="At Risk" stackId="a" fill="#EF4444" radius={[0, 0, 3, 3]} />
                       <Bar dataKey="amber" name="Moderate" stackId="a" fill="#F59E0B" radius={[0, 0, 0, 0]} />
-                      <Bar dataKey="green" name="Safe"     stackId="a" fill="#10B981" radius={[6, 6, 0, 0]} />
+                      <Bar dataKey="green" name="Safe" stackId="a" fill="#10B981" radius={[6, 6, 0, 0]} />
                     </BarChart>
                   </ResponsiveContainer>
                 </div>
@@ -5353,30 +5864,30 @@ export default function CoachWellbeingPage({ setMobileOpen, isDesktop }: CoachWe
             </div>
           )}
           <TicketsManagementView
-          loading={ticketsLoading}
-          search={ticketsSearch}
-          onSearchChange={setTicketsSearch}
-          ticketsData={filteredTicketsData}
-          onView={setViewTicket}
-          onStatusChange={handleStatusChange}
-          statusUpdating={statusUpdating}
-          onCreateTicket={() => setCreateTicketOpen(true)}
-          filters={ticketFilters}
-          onFiltersChange={setTicketFilters}
-          onExportExcel={handleExportExcel}
-          onExportPDF={handleExportPDF}
-          onExportAllExcel={handleExportAllExcel}
-          onExportAllPDF={handleExportAllPDF}
-          onEdit={setEditTicket}
-          onTicketUpdated={handleTicketUpdated}
-          onNotesChanged={handleNotesChanged}
-          onEvidenceChanged={handleEvidenceChanged}
-          role={role}
-          onDelete={(id) => setDeleteConfirmId(id === 0 ? null : id)}
-          deleteConfirmId={deleteConfirmId}
-          deleting={deleting}
-          onDeleteConfirm={handleDeleteTicket}
-        />
+            loading={ticketsLoading}
+            search={ticketsSearch}
+            onSearchChange={setTicketsSearch}
+            ticketsData={filteredTicketsData}
+            onView={setViewTicket}
+            onStatusChange={handleStatusChange}
+            statusUpdating={statusUpdating}
+            onCreateTicket={() => setCreateTicketOpen(true)}
+            filters={ticketFilters}
+            onFiltersChange={setTicketFilters}
+            onExportExcel={handleExportExcel}
+            onExportPDF={handleExportPDF}
+            onExportAllExcel={handleExportAllExcel}
+            onExportAllPDF={handleExportAllPDF}
+            onEdit={setEditTicket}
+            onTicketUpdated={handleTicketUpdated}
+            onNotesChanged={handleNotesChanged}
+            onEvidenceChanged={handleEvidenceChanged}
+            role={role}
+            onDelete={(id) => setDeleteConfirmId(id === 0 ? null : id)}
+            deleteConfirmId={deleteConfirmId}
+            deleting={deleting}
+            onDeleteConfirm={handleDeleteTicket}
+          />
         </>
       )}
 

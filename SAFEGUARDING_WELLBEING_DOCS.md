@@ -13,6 +13,7 @@
 9. [Role-Based Access Control](#role-based-access-control)
 10. [PDF & Excel Export](#pdf--excel-export)
 11. [Support Tickets Table Setup](#support-tickets-table-setup)
+12. [Microsoft Bookings Integration](#microsoft-bookings-integration)
 
 ---
 
@@ -357,6 +358,10 @@ All functions use `fetchWithAuth` which automatically handles JWT refresh.
 | `getTicketEvidence(id)` | Get all evidence for a ticket |
 | `uploadEvidenceFile(file)` | Upload a file, returns URL |
 | `createTicketEvidence(id, payload)` | Attach evidence record |
+| `getBookingServices()` | List all Microsoft Bookings services |
+| `getBookingStaff(serviceId)` | List staff members assigned to a service |
+| `getBookingAvailability(serviceId, date)` | Get available time slots for a date |
+| `createBookingAppointment(payload)` | Create a Microsoft Bookings appointment |
 
 ---
 
@@ -628,3 +633,160 @@ CREATE TABLE IF NOT EXISTS support_tickets (
     submitted_by        TEXT
 );
 ```
+
+---
+
+## Microsoft Bookings Integration
+
+The **Schedule Follow-up** action in the ticket Actions menu allows coaches to book a Microsoft Bookings appointment directly from the dashboard, linked to the learner's ticket.
+
+### Overview
+
+- **Service:** Safeguarding — Student Support Calendar (`StudentSupport1@kentbusinesscollege.com`)
+- **Auth method:** Azure AD Client Credentials Flow (app-level token, no user login required)
+- **API:** Microsoft Graph v1.0 — `POST /solutions/bookingBusinesses/{id}/appointments`
+- **Timezone:** All times are UK local time (`GMT Standard Time`). Slots shown in the modal are UK time.
+- **Fallback:** If the Graph API fails, a case note is still saved and the Microsoft Bookings self-service page opens in a new tab.
+
+### Environment Variables (`.env`)
+
+| Variable | Purpose |
+|----------|---------|
+| `BOOKING_TENANT_ID` | Azure AD tenant ID |
+| `BOOKING_CLIENT_ID` | App registration client ID |
+| `BOOKING_CLIENT_SECRET` | App registration client secret |
+| `BOOKING_BUSINESS_ID` | `StudentSupport1@kentbusinesscollege.com` |
+| `BOOKING_SERVICE_ID` | Safeguarding service UUID |
+
+### Backend — `backend/accounts/booking_views.py`
+
+| Class | Method | Purpose |
+|-------|--------|---------|
+| `BookingServicesView` | `GET` | Lists all services for the booking business |
+| `BookingStaffView` | `GET` | Lists staff members assigned to a service (`?service_id=`) |
+| `BookingAvailabilityView` | `GET` | Returns available time slots for a date (`?service_id=&date=`) |
+| `CreateBookingView` | `POST` | Creates a booking appointment via Microsoft Graph v1.0 |
+
+#### `GET /bookings/services/`
+
+Returns `[{ id, displayName }]` for all services in the booking business.
+
+#### `GET /bookings/staff/?service_id=<id>`
+
+Returns `[{ id, displayName }]` filtered to staff assigned to that service.
+
+#### `GET /bookings/availability/?service_id=<id>&date=<YYYY-MM-DD>`
+
+Fetches real staff availability via `getStaffAvailability`. Falls back to business hours (08:00–18:00, 30-min intervals) if the API is unavailable.
+
+**Response:**
+```json
+{ "slots": ["08:00", "08:30", "09:00", ...], "duration": 60, "fallback": true }
+```
+`fallback: true` means the slots are generated from business hours, not live availability.
+
+#### `POST /bookings/appointments/`
+
+Creates the booking. Requires JWT authentication.
+
+**Request Body:**
+```json
+{
+  "date": "2026-05-12",
+  "time": "10:00",
+  "duration": 60,
+  "service_id": "7730f8e4-c0e4-4ba6-ba5e-8da5dbea5b5f",
+  "staff_member_id": "<optional staff UUID>",
+  "customer_name": "Rewan Yasser",
+  "customer_email": "rewan@kentbusinesscollege.com",
+  "notes": "Follow-up regarding support plan"
+}
+```
+
+**Microsoft Graph payload sent (v1.0):**
+```json
+{
+  "@odata.type": "#microsoft.graph.bookingAppointment",
+  "serviceId": "...",
+  "staffMemberIds": ["<staff-id>"],
+  "customerTimeZone": "GMT Standard Time",
+  "isLocationOnline": true,
+  "optOutOfCustomerEmail": false,
+  "smsNotificationsEnabled": false,
+  "startDateTime": { "dateTime": "2026-05-12T10:00:00", "timeZone": "GMT Standard Time" },
+  "endDateTime":   { "dateTime": "2026-05-12T11:00:00", "timeZone": "GMT Standard Time" },
+  "additionalInformation": "...",
+  "customers": [{ "@odata.type": "#microsoft.graph.bookingCustomerInformation", "name": "...", "emailAddress": "..." }]
+}
+```
+
+> **Important:** Use `startDateTime`/`endDateTime` (not `start`/`end`) and `GMT Standard Time` timezone. Using `start`/`end` or `UTC` timezone causes a `500 UnknownError` from the v1.0 endpoint.
+
+**Success Response (201):**
+```json
+{ "reservationConfirmed": true, "id": "<booking-id>", "joinWebUrl": "..." }
+```
+
+**Fallback Response (202 — Graph failed but request recorded):**
+```json
+{ "reservationConfirmed": false, "status": "pending" }
+```
+
+### Backend — URL Routes (`backend/tasks/urls.py`)
+
+```python
+path("bookings/appointments/", CreateBookingView.as_view())
+path("bookings/services/",     BookingServicesView.as_view())
+path("bookings/availability/", BookingAvailabilityView.as_view())
+path("bookings/staff/",        BookingStaffView.as_view())
+```
+
+### Frontend Services (`frontend/src/services/coachWellbeing.ts`)
+
+| Function | Description |
+|----------|-------------|
+| `getBookingServices()` | Returns `{ id, displayName }[]` — all booking services |
+| `getBookingStaff(serviceId)` | Returns `{ id, displayName }[]` — staff for a service |
+| `getBookingAvailability(serviceId, date)` | Returns `{ slots, duration, fallback? }` |
+| `createBookingAppointment(payload)` | Creates appointment, returns `{ reservationConfirmed, id?, joinWebUrl? }` |
+
+**`BookingAppointmentPayload` type:**
+```typescript
+type BookingAppointmentPayload = {
+  date: string;           // "YYYY-MM-DD"
+  time: string;           // "HH:MM" (UK local time)
+  duration?: number;      // minutes, default 60
+  service_id?: string;
+  staff_member_id?: string;
+  customer_name?: string;
+  customer_email?: string;
+  notes?: string;
+};
+```
+
+### Frontend UI — Schedule Follow-up Modal
+
+**Location:** `ActionModal` → `case "schedule_followup"` in `CoachWellbeingPage.tsx`
+
+**Fields shown:**
+1. **Booking Service** — read-only, fixed to "Safeguarding — Student Support Calendar"
+2. **Learner Email** — read-only, pre-filled from `ticket.learnerEmail`
+3. **Assign Staff Member** — dropdown loaded from `getBookingStaff()`, shows spinner while loading
+4. **Follow-up Date** — date picker (required)
+5. **Available Times (UK time)** — slot buttons loaded from `getBookingAvailability()`, label clearly states UK time
+6. **Purpose / Reason** — optional textarea
+
+**On Confirm:**
+1. Calls `createBookingAppointment()` with all selected values
+2. If `reservationConfirmed: true` → booking created in Microsoft Bookings ✅
+3. If API returns 202 or throws → saves case note + opens Microsoft Bookings self-service page as fallback
+4. Always saves a case note: `📅 Follow-up scheduled for {date} at {time} — {reason}`
+5. Sets ticket status to `"follow-up scheduled"`
+
+### Timezone Note
+
+All time slots are in **UK local time (GMT/BST)**. The Bookings calendar in the Microsoft admin interface displays times in the viewer's Microsoft account timezone. For viewers in other timezones (e.g. UTC+3), a 12:00 UK booking will appear as 14:00 locally — this is correct behaviour.
+
+### Staff Loading UX
+
+The staff dropdown shows a spinning loader (`animate-spin`) while fetching. If only one staff member is assigned to the service, they are auto-selected.

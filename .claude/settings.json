@@ -11,7 +11,9 @@
       "Bash(ls c:/Users/LENOVOO/dashboards/)",
       "Read(//c/Users/LENOVOO/dashboards/**)",
       "Bash(Get-Content \"C:\\\\Users\\\\LENOVOO\\\\AppData\\\\Local\\\\Temp\\\\claude\\\\c--Users-LENOVOO-dashboards-admin-dashboard\\\\68e9ae60-4d1d-4eb0-9f11-d3ee9af63e9f\\\\tasks\\\\bgqa9em5e.output\" -ErrorAction SilentlyContinue)",
-      "Bash(PowerShell -Command \"Get-ChildItem -Path 'C:\\\\Users\\\\LENOVOO\\\\dashboards\\\\admin_dashboard\\\\frontend\\\\src' -Recurse | Select-String -Pattern 'auth/login' | Select-Object -First 20\")"
+      "Bash(PowerShell -Command \"Get-ChildItem -Path 'C:\\\\Users\\\\LENOVOO\\\\dashboards\\\\admin_dashboard\\\\frontend\\\\src' -Recurse | Select-String -Pattern 'auth/login' | Select-Object -First 20\")",
+      "Read(//c/Users/LENOVOO/OneDrive - Kent Business College/Desktop/**)",
+      "Bash(grep -E \"\\\\.\\(md|txt\\)$\")"
     ]
   }
 }

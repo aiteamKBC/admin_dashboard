@@ -71,12 +71,12 @@ function StatCard({
   const safeValue = typeof value === "number" ? value : 0;
 
   return (
-    <div className="bg-white rounded-xl p-4 shadow-lg border border-white/40">
-      <div className="flex items-center gap-2 text-sm text-gray-500">
-        <span className="inline-flex h-7 w-7 items-center justify-center rounded-lg ">
+    <div className="bg-white rounded-xl p-4 shadow-lg border border-white/40 flex flex-col justify-between min-h-[90px]">
+      <div className="flex items-start gap-2 text-sm text-gray-500">
+        <span className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-lg">
           <i className={`${icon} text-[#B27715] text-lg`} />
         </span>
-        <span className="truncate">{title}</span>
+        <span className="leading-snug">{title}</span>
       </div>
 
       <p className="text-2xl font-bold text-[#644D93] mt-2">{safeValue}</p>

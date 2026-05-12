@@ -4,6 +4,7 @@ from .views import (
     CoachTasksView,
     CoachTaskDetailView,
     EvidenceUploadView,
+    TicketFileUploadView,
     EmailOrUsernameTokenObtainPairView,
     coach_wellbeing_dashboard,
     coach_options,
@@ -13,6 +14,7 @@ from .views import (
     ticket_notes,
     ticket_evidence,
 )
+from accounts.booking_views import CreateBookingView, BookingDiagnosticView, BookingServicesView, BookingAvailabilityView, BookingFixServiceView, BookingTestCreateView, BookingPublishView, BookingStaffView
 
 urlpatterns = [
     path("coaches/<str:coach_id>/tasks/", CoachTasksView.as_view()),
@@ -27,4 +29,13 @@ urlpatterns = [
 path("support-tickets/<int:ticket_id>/", update_support_ticket, name="update-support-ticket"),
     path("support-tickets/<int:ticket_id>/notes/", ticket_notes, name="ticket-notes"),
     path("support-tickets/<int:ticket_id>/evidence/", ticket_evidence, name="ticket-evidence"),
+    path("tickets/<int:ticket_id>/upload-file/", TicketFileUploadView.as_view(), name="ticket-file-upload"),
+    path("bookings/appointments/", CreateBookingView.as_view(), name="create-booking"),
+    path("bookings/services/", BookingServicesView.as_view(), name="booking-services"),
+    path("bookings/staff/", BookingStaffView.as_view(), name="booking-staff"),
+    path("bookings/availability/", BookingAvailabilityView.as_view(), name="booking-availability"),
+    path("bookings/fix-service/", BookingFixServiceView.as_view(), name="booking-fix-service"),
+    path("bookings/publish/", BookingPublishView.as_view(), name="booking-publish"),
+    path("bookings/test-create/", BookingTestCreateView.as_view(), name="booking-test-create"),
+    path("bookings/diagnostic/", BookingDiagnosticView.as_view(), name="booking-diagnostic"),
 ]

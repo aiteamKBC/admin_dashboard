@@ -7,7 +7,7 @@ from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status
 from rest_framework.parsers import MultiPartParser, FormParser
-from rest_framework.permissions import IsAuthenticated
+from rest_framework.permissions import IsAuthenticated, AllowAny
 from rest_framework_simplejwt.views import TokenObtainPairView
 from .jwt_serializers import EmailOrUsernameTokenObtainPairSerializer
 
@@ -277,6 +277,72 @@ class EvidenceUploadView(APIView):
                 },
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR
             )
+
+
+class TicketFileUploadView(APIView):
+    """
+    POST /tasks-api/tickets/<ticket_id>/upload-file/
+    Learner-facing. Validates X-API-Key header.
+    FormData: file (image or document)
+    Saves to media/tickets/<ticket_id>/ and appends entry to ticket evidence JSON.
+    """
+    permission_classes = [AllowAny]
+    parser_classes = [MultiPartParser, FormParser]
+
+    def post(self, request, ticket_id):
+        api_key = request.headers.get("X-API-Key", "").strip()
+        expected = (os.getenv("API_KEY") or "").strip()
+        if not api_key or api_key != expected:
+            return Response({"detail": "Forbidden"}, status=status.HTTP_403_FORBIDDEN)
+
+        f = request.FILES.get("file")
+        if not f:
+            return Response({"detail": "file is required"}, status=status.HTTP_400_BAD_REQUEST)
+
+        content_type = str(getattr(f, "content_type", "") or "")
+        if content_type not in ALLOWED_EVIDENCE_TYPES:
+            return Response({"detail": "File type not allowed."}, status=status.HTTP_400_BAD_REQUEST)
+
+        ticket = SupportTicket.objects.using("wellbeing").filter(id=ticket_id).first()
+        if not ticket:
+            return Response({"detail": "Ticket not found"}, status=status.HTTP_404_NOT_FOUND)
+
+        try:
+            ticket_dir = os.path.join(str(settings.MEDIA_ROOT), "tickets", str(ticket_id))
+            os.makedirs(ticket_dir, exist_ok=True)
+
+            original_name = get_valid_filename(os.path.basename(getattr(f, "name", "upload")))
+            ext = os.path.splitext(original_name)[1]
+            stored_name = f"{uuid.uuid4().hex}{ext}"
+            relative_path = os.path.join("tickets", str(ticket_id), stored_name).replace("\\", "/")
+
+            fs = FileSystemStorage(location=settings.MEDIA_ROOT, base_url=settings.MEDIA_URL)
+            saved_path = fs.save(relative_path, f)
+            file_url = fs.url(saved_path)
+            file_size = f.size if hasattr(f, "size") else 0
+
+            evidence_entry = {
+                "id": uuid.uuid4().hex,
+                "url": file_url,
+                "filename": stored_name,
+                "original_name": original_name,
+                "mime_type": content_type,
+                "size": file_size,
+                "uploaded_by": "learner",
+                "created_at": timezone.now().isoformat(),
+            }
+
+            evidence_list = _ensure_list(ticket.evidence)
+            evidence_list.append(evidence_entry)
+            ticket.evidence = evidence_list
+            ticket.updated_at = timezone.now()
+            ticket.save(update_fields=["evidence", "updated_at"])
+
+            return Response(evidence_entry, status=status.HTTP_201_CREATED)
+
+        except Exception as e:
+            return Response({"detail": "Upload failed", "error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
 
 # maping for wellbeing 
 def map_urgency_to_priority(value):
