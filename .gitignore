@@ -27,6 +27,8 @@ backend/.venv/
 # Environment variables
 .env
 .env.*
+# Allow production env (contains only public API URL, no secrets)
+!frontend/.env.production
 # Python venv
 backend/.venv/
 .venv/
