@@ -130,13 +130,13 @@ export default function Sidebar({
               onClick={() => !isDesktop && setMobileOpen(false)}
             />
 
-            {/* <SidebarExternalLink
+            <SidebarExternalLink
               href="https://communicationcentre.kentbusinesscollege.net/login"
               collapsed={collapsed && isDesktop}
               icon="fa-comments"
               label="Communication Centre"
               onClick={() => !isDesktop && setMobileOpen(false)}
-            /> */}
+            />
 
             <SidebarExternalLink
               href="https://69d61d0cfa1e73461a9f6dcc--famous-kitten-298c8d.netlify.app/"
