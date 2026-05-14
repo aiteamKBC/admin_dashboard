@@ -60,14 +60,24 @@ export type CoachFollowUpItem = {
   reason?: string;
 };
 
-export type CoachSuggestedActionItem = {
+export type SuggestedActionEntry = {
   id: string;
-  priority: PriorityLevel;
   title: string;
   description: string;
-  learnerName?: string;
+  priority: PriorityLevel;
+  actionType?: string;
+  recommendedOwner?: string;
   timeline?: string;
   category?: string;
+};
+
+export type CoachSuggestedActionItem = {
+  id: string;
+  urgency: string;
+  priority: PriorityLevel;
+  learnerName?: string;
+  learnerEmail?: string;
+  actions: SuggestedActionEntry[];
 };
 
 export type CoachWellbeingResponse = {

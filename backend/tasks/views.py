@@ -1007,52 +1007,102 @@ def coach_wellbeing_dashboard(request):
             })
 
         actions = parse_json_field(suggested.get("actions"), [])
-        for index, action in enumerate(actions):
-            if not isinstance(action, dict):
-                continue
-
-            action_key = f"{student_unique_key}|{action.get('title') or ''}|{action.get('reason') or ''}"
-            if action_key in seen_actions:
-                continue
-
-            seen_actions.add(action_key)
-
+        valid_actions = [a for a in actions if isinstance(a, dict)]
+        if valid_actions and student_unique_key not in seen_actions:
+            seen_actions.add(student_unique_key)
+            top_urgency = (suggested.get("urgency") or follow.get("urgency") or urgency or "").strip().lower()
             suggested_actions.append({
-                "id": f"{row.wellbeing_record_id}-{index}",
-                "priority": map_urgency_to_priority(action.get("urgency")),
-                "title": action.get("title") or "Suggested action",
-                "description": action.get("reason") or "",
+                "id": str(row.wellbeing_record_id),
+                "urgency": top_urgency,
+                "priority": map_urgency_to_priority(top_urgency),
                 "learnerName": learner_name,
                 "learnerEmail": row_student_email,
                 "coachName": row_coach_name,
                 "coachEmail": row_coach_email,
-                "timeline": action.get("suggestedTimeline") or "",
-                "category": action.get("category") or "",
+                "actions": [
+                    {
+                        "id": a.get("id") or f"{row.wellbeing_record_id}-{i}",
+                        "title": a.get("title") or a.get("bulletTitle") or "Action",
+                        "description": a.get("reason") or a.get("bulletText") or "",
+                        "priority": map_urgency_to_priority(a.get("urgency") or a.get("priority") or top_urgency),
+                        "actionType": a.get("actionType") or "",
+                        "recommendedOwner": a.get("recommendedOwner") or "",
+                        "timeline": a.get("suggestedTimeline") or "",
+                        "category": a.get("category") or a.get("actionType") or "",
+                    }
+                    for i, a in enumerate(valid_actions)
+                ],
             })
 
-        if last_survey_date:
-            month_key = last_survey_date[:7]
+        # Build per-month buckets from history_json (one entry per student per month)
+        history_raw = getattr(student_meta, "history_json", None) or []
+        history_entries = history_raw if isinstance(history_raw, list) else []
 
-            if month_key not in trend_buckets:
-                trend_buckets[month_key] = {
-                    "count": 0,
-                    "red_count": 0,
-                    "amber_count": 0,
-                    "green_count": 0,
-                    "risk_total": 0,
-                    "tickets": 0,
+        parsed_history = []
+        for e in history_entries:
+            if isinstance(e, str):
+                try:
+                    e = json.loads(e)
+                except Exception:
+                    continue
+            if isinstance(e, dict):
+                parsed_history.append(e)
+
+        if parsed_history:
+            # Group by month, keep latest entry per month to avoid duplicates
+            month_entries: dict = {}
+            for entry in parsed_history:
+                entry_date = safe_date(
+                    entry.get("submitted_at") or entry.get("date") or entry.get("timestamp")
+                )
+                if not entry_date:
+                    continue
+                mk = entry_date[:7]
+                existing = month_entries.get(mk)
+                existing_date = safe_date(
+                    (existing or {}).get("submitted_at") or
+                    (existing or {}).get("date") or
+                    (existing or {}).get("timestamp")
+                ) if existing else ""
+                if not existing or entry_date > (existing_date or ""):
+                    month_entries[mk] = entry
+
+            for mk, entry in month_entries.items():
+                entry_risk = (
+                    map_db_risk_level(entry.get("risk_level"))
+                    or map_urgency_to_risk(entry.get("urgency") or "", safeguarding_flag=False)
+                    or risk_level
+                )
+
+                if mk not in trend_buckets:
+                    trend_buckets[mk] = {
+                        "count": 0, "red_count": 0,
+                        "amber_count": 0, "green_count": 0,
+                    }
+
+                trend_buckets[mk]["count"] += 1
+                if entry_risk == "red":
+                    trend_buckets[mk]["red_count"] += 1
+                elif entry_risk == "amber":
+                    trend_buckets[mk]["amber_count"] += 1
+                else:
+                    trend_buckets[mk]["green_count"] += 1
+
+        elif last_survey_date:
+            # Fallback: no history — use last known survey date + current risk
+            mk = last_survey_date[:7]
+            if mk not in trend_buckets:
+                trend_buckets[mk] = {
+                    "count": 0, "red_count": 0,
+                    "amber_count": 0, "green_count": 0,
                 }
-
-            trend_buckets[month_key]["count"] += 1
-            trend_buckets[month_key]["risk_total"] += risk_score
-            trend_buckets[month_key]["tickets"] += row_open_tickets
-
+            trend_buckets[mk]["count"] += 1
             if risk_level == "red":
-                trend_buckets[month_key]["red_count"] += 1
+                trend_buckets[mk]["red_count"] += 1
             elif risk_level == "amber":
-                trend_buckets[month_key]["amber_count"] += 1
+                trend_buckets[mk]["amber_count"] += 1
             else:
-                trend_buckets[month_key]["green_count"] += 1
+                trend_buckets[mk]["green_count"] += 1
 
     learners.sort(
         key=lambda item: (

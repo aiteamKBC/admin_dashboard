@@ -877,6 +877,7 @@ export default function AttendancePage({ onOpenSidebar }: { onOpenSidebar?: () =
           setSelectedCoachId(Number.isFinite(id as any) ? (id as any) : null);
         }}
         onOpenSidebar={onOpenSidebar}
+        title="Attendance"
         userName={isQA ? "QA" : coachName}
         rightContent={
           <div className="flex items-center gap-2 min-w-0">

@@ -5410,6 +5410,8 @@ export default function CoachWellbeingPage({ setMobileOpen, isDesktop }: CoachWe
     };
   }, [ticketsData, ticketsSearch, ticketFilters]);
 
+  const HIGH_PRIORITY = new Set(["high", "urgent", "critical"]);
+
   const normalizedFollowUps = useMemo<CoachFollowUpItem[]>(() => {
     const items = (data?.followUps || []).map((item: any, index: number) => ({
       id: item.id ?? `${item.learnerName ?? "followup"}-${index}`,
@@ -5420,22 +5422,35 @@ export default function CoachWellbeingPage({ setMobileOpen, isDesktop }: CoachWe
       reason: item.reason || "",
     }));
 
-    return uniqueBy(items, (item) => `${item.id}-${item.title}-${item.learnerName}`);
-  }, [data]);
+    const deduped = uniqueBy(items, (item) => `${item.id}-${item.title}-${item.learnerName}`);
+    if (role === "qa") return deduped;
+    return deduped.filter((item) => !HIGH_PRIORITY.has(item.priority));
+  }, [data, role]);
 
   const normalizedActions = useMemo<CoachSuggestedActionItem[]>(() => {
-    const items = (data?.suggestedActions || []).map((item: any, index: number) => ({
-      id: item.id ?? `${item.title ?? "action"}-${index}`,
-      priority: formatPriority(item.priority),
-      title: item.title || "Suggested action",
-      description: item.description || "",
+    const items = (data?.suggestedActions || []).map((item: any) => ({
+      id: item.id ?? String(Math.random()),
+      urgency: item.urgency || item.priority || "medium",
+      priority: formatPriority(item.priority || item.urgency),
       learnerName: item.learnerName || "",
-      timeline: item.timeline || "",
-      category: item.category || "",
+      learnerEmail: item.learnerEmail || "",
+      actions: Array.isArray(item.actions)
+        ? item.actions.map((a: any) => ({
+            id: a.id || "",
+            title: a.title || "Action",
+            description: a.description || "",
+            priority: formatPriority(a.priority),
+            actionType: a.actionType || "",
+            recommendedOwner: a.recommendedOwner || "",
+            timeline: a.timeline || "",
+            category: a.category || "",
+          }))
+        : [],
     }));
-
-    return uniqueBy(items, (item) => `${item.id}-${item.title}-${item.learnerName}`);
-  }, [data]);
+    const deduped = uniqueBy(items, (item) => `${item.id}-${item.learnerName}`);
+    if (role === "qa") return deduped;
+    return deduped.filter((item) => !HIGH_PRIORITY.has(item.urgency) && !HIGH_PRIORITY.has(item.priority));
+  }, [data, role]);
 
   const filteredFollowUps = useMemo(() => {
     const q = search.trim().toLowerCase();
@@ -5456,12 +5471,13 @@ export default function CoachWellbeingPage({ setMobileOpen, isDesktop }: CoachWe
     if (!q) return normalizedActions;
 
     return normalizedActions.filter((item) => {
-      return (
-        String(item.title || "").toLowerCase().includes(q) ||
-        String(item.description || "").toLowerCase().includes(q) ||
-        String(item.learnerName || "").toLowerCase().includes(q) ||
-        String(item.timeline || "").toLowerCase().includes(q) ||
-        String(item.category || "").toLowerCase().includes(q)
+      if (String(item.learnerName || "").toLowerCase().includes(q)) return true;
+      if (String(item.urgency || "").toLowerCase().includes(q)) return true;
+      return item.actions.some(
+        (a) =>
+          String(a.title || "").toLowerCase().includes(q) ||
+          String(a.description || "").toLowerCase().includes(q) ||
+          String(a.recommendedOwner || "").toLowerCase().includes(q)
       );
     });
   }, [normalizedActions, search]);
@@ -5821,31 +5837,45 @@ export default function CoachWellbeingPage({ setMobileOpen, isDesktop }: CoachWe
                           key={item.id}
                           className="rounded-2xl border border-[#ECE7F7] bg-[#FCFBFE] p-4"
                         >
-                          <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
-                            <div className="min-w-0 flex-1">
-                              <div className="mb-2 flex flex-wrap items-start gap-2">
-                                <span className={priorityBadgeClass(item.priority)}>
-                                  {item.priority}
-                                </span>
+                          {/* Learner header */}
+                          <div className="mb-3 flex items-center gap-2">
+                            <span className={priorityBadgeClass(item.priority)}>
+                              {item.urgency || item.priority}
+                            </span>
+                            <span className="text-sm font-semibold text-[#241453]">
+                              {item.learnerName || "Learner"}
+                            </span>
+                          </div>
 
-                                <h3 className="min-w-0 flex-1 text-sm font-semibold leading-6 text-[#241453] sm:text-base">
-                                  {item.title}
-                                </h3>
+                          {/* Actions list */}
+                          <div className="space-y-2">
+                            {item.actions.map((action) => (
+                              <div
+                                key={action.id}
+                                className="rounded-xl border border-[#EEE8F8] bg-white p-3"
+                              >
+                                <div className="flex items-start gap-2">
+                                  <span className={`${priorityBadgeClass(action.priority)} shrink-0 mt-0.5`}>
+                                    {action.priority}
+                                  </span>
+                                  <div className="min-w-0 flex-1">
+                                    <p className="text-sm font-medium text-[#241453]">
+                                      {action.title}
+                                    </p>
+                                    {action.description && (
+                                      <p className="mt-0.5 text-xs leading-5 text-slate-500">
+                                        {action.description}
+                                      </p>
+                                    )}
+                                    {action.recommendedOwner && (
+                                      <p className="mt-1 text-[11px] text-[#7B6D9B]">
+                                        Owner: {action.recommendedOwner}
+                                      </p>
+                                    )}
+                                  </div>
+                                </div>
                               </div>
-
-                              <p className="text-sm leading-6 text-slate-500">
-                                {item.description}
-                              </p>
-
-                              <p className="mt-2 text-sm text-[#7B6D9B]">
-                                {item.learnerName ? `${item.learnerName}, ` : ""}
-                                {item.timeline || ""}
-                              </p>
-                            </div>
-
-                            {/* <button className="h-11 shrink-0 self-start rounded-xl border border-[#D9CFF3] px-4 text-sm font-medium text-[#241453] transition hover:bg-[#F8F5FF]">
-                              Convert to action
-                            </button> */}
+                            ))}
                           </div>
                         </div>
                       ))

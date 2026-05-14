@@ -90,8 +90,8 @@ export default function BookingsCalendarPage({ onOpenSidebar }: { onOpenSidebar?
     // hide API rows like "API Do Not Delete"
     if (n.includes("api")) return true;
 
-    // hide Phone1 / Phone2
-    if (/^phone[12]$/.test(n)) return true;
+    // hide Phone 1 / Phone 2 (with or without space)
+    if (/^phone\s*\d+$/.test(n)) return true;
 
     return false;
   };

@@ -28,6 +28,7 @@ type TopHeaderProps = {
 
   userName?: string;
   onLogout?: () => void;
+  title?: string;
 
   canSwitchCoach?: boolean;
 
@@ -46,6 +47,7 @@ export default function TopHeader({
   students = [],
   onSelectStudent,
   userName = "User",
+  title,
   canSwitchCoach = true,
   lockCoachFilter = false,
   stats,
@@ -215,24 +217,26 @@ export default function TopHeader({
           </button>
         )}
 
-        {/* Avatar */}
-        <div
-          className="
-            w-10 h-10 rounded-full
-            bg-[#A88CD9] text-white
-            flex items-center justify-center
-            font-semibold text-sm
-            shrink-0
-          "
-          title={userName}
-        >
-          {initials || "U"}
-        </div>
+        {/* Avatar — hidden when an explicit section title is provided */}
+        {!title && (
+          <div
+            className="
+              w-10 h-10 rounded-full
+              bg-[#A88CD9] text-white
+              flex items-center justify-center
+              font-semibold text-sm
+              shrink-0
+            "
+            title={userName}
+          >
+            {initials || "U"}
+          </div>
+        )}
 
-        {/* Welcome */}
+        {/* Title or Welcome */}
         <div className="min-w-0">
           <h2 className="text-base sm:text-lg font-semibold text-[#241453] truncate">
-            Welcome {userName}!
+            {title ?? `Welcome ${userName}!`}
           </h2>
 
           {!canSwitchCoach && (

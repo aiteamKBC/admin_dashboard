@@ -28,7 +28,7 @@ export default function CoachesList({
       {coaches
         .filter((c) => {
           const name = String((c as any)?.case_owner ?? "").trim();
-          return name.length > 0 && !/^phone[12]$/i.test(name);
+          return name.length > 0 && !/^phone\s*\d+$/i.test(name);
         })
         .map((coach) => {
           const isActive =
