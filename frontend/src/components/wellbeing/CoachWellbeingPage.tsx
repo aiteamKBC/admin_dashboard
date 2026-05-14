@@ -196,12 +196,16 @@ function makeInitialTicketForm(): SupportTicketFormState {
   };
 }
 
-// Resolves relative /media/... URLs to absolute using the backend origin
-const API_ORIGIN = ((import.meta as any).env?.VITE_API_ORIGIN || "").toString().trim();
+// Resolves relative /media/... URLs to absolute using the media base URL
+const MEDIA_BASE = (
+  (import.meta as any).env?.VITE_MEDIA_URL ||
+  (import.meta as any).env?.VITE_API_ORIGIN ||
+  ""
+).toString().trim();
 function resolveMediaUrl(url: string): string {
   if (!url) return "";
   if (url.startsWith("http://") || url.startsWith("https://")) return url;
-  return `${API_ORIGIN}${url}`;
+  return `${MEDIA_BASE}${url}`;
 }
 
 const emptyDashboard: CoachWellbeingResponse = {
