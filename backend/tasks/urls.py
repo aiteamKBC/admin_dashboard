@@ -13,6 +13,7 @@ from .views import (
     update_support_ticket,
     ticket_notes,
     ticket_evidence,
+    onboarding_reports_list,
 )
 from accounts.booking_views import CreateBookingView, BookingDiagnosticView, BookingServicesView, BookingAvailabilityView, BookingFixServiceView, BookingTestCreateView, BookingPublishView, BookingStaffView
 
@@ -38,4 +39,5 @@ path("support-tickets/<int:ticket_id>/", update_support_ticket, name="update-sup
     path("bookings/publish/", BookingPublishView.as_view(), name="booking-publish"),
     path("bookings/test-create/", BookingTestCreateView.as_view(), name="booking-test-create"),
     path("bookings/diagnostic/", BookingDiagnosticView.as_view(), name="booking-diagnostic"),
+    path("onboarding-reports/", onboarding_reports_list, name="onboarding-reports"),
 ]

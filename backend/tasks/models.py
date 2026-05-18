@@ -83,3 +83,31 @@ class SupportTicket(models.Model):
     class Meta:
         managed = False
         db_table = "support_tickets"
+
+
+class LearnerInclusivenessReport(models.Model):
+    id = models.BigAutoField(primary_key=True)
+    learner_id = models.BigIntegerField(null=True, blank=True)
+    learner_email = models.TextField(null=True, blank=True)
+    learner_name = models.TextField(null=True, blank=True)
+    academic_email = models.TextField(null=True, blank=True)
+    previous_emails = models.TextField(null=True, blank=True)
+    programme = models.TextField(null=True, blank=True)
+    organization_name = models.TextField(null=True, blank=True)
+    coach_name = models.TextField(null=True, blank=True)
+    coach_email = models.TextField(null=True, blank=True)
+    manager_name = models.TextField(null=True, blank=True)
+    manager_email = models.TextField(null=True, blank=True)
+    technology_report = models.TextField(null=True, blank=True)
+    visual_hearing_report = models.TextField(null=True, blank=True)
+    dyslexia_report = models.TextField(null=True, blank=True)
+    adhd_report = models.TextField(null=True, blank=True)
+    social_anxiety_report = models.TextField(null=True, blank=True)
+    mood_learning_capacity_report = models.TextField(null=True, blank=True)
+    master_report = models.TextField(null=True, blank=True)
+    created_at = models.DateTimeField(null=True, blank=True)
+    updated_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        managed = False
+        db_table = "learner_inclusiveness_reports"

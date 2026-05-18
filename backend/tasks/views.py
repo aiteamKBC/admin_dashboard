@@ -21,7 +21,7 @@ from rest_framework.decorators import api_view, permission_classes
 import json
 from collections import Counter
 
-from .models import SafeguardingWellbeingAutomation, WellbeingSafeguardingMonitoringSystem, CoachData, SupportTicket
+from .models import SafeguardingWellbeingAutomation, WellbeingSafeguardingMonitoringSystem, CoachData, SupportTicket, LearnerInclusivenessReport
 from .serializers import CoachTaskCreateSerializer, CoachTaskUpdateSerializer
 
 import os
@@ -1545,4 +1545,68 @@ def ticket_evidence(request, ticket_id):
     ticket.save(update_fields=["evidence", "updated_at"])
 
     return Response(new_ev, status=status.HTTP_201_CREATED)
+
+
+def _parse_json_field(value):
+    """Safely parse a JSON field that may be a string, dict, or None."""
+    if value is None:
+        return {}
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, str):
+        try:
+            result = json.loads(value)
+            return result if isinstance(result, dict) else {}
+        except (json.JSONDecodeError, ValueError):
+            return {}
+    return {}
+
+
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+def onboarding_reports_list(request):
+    user = request.user
+    profile = getattr(user, "profile", None)
+    role = (getattr(profile, "role", "") or "").strip().lower()
+
+    if role != "qa":
+        return Response({"detail": "Forbidden"}, status=status.HTTP_403_FORBIDDEN)
+
+    try:
+        qs = LearnerInclusivenessReport.objects.using("wellbeing").all().order_by("-created_at", "-id")
+        rows = []
+
+        for r in qs:
+            master = _parse_json_field(r.master_report)
+            overview = master.get("overview", {}) if isinstance(master, dict) else {}
+            if not isinstance(overview, dict):
+                overview = {}
+
+            rows.append({
+                "id": r.id,
+                "learner_id": r.learner_id,
+                "learner_name": r.learner_name or "",
+                "learner_email": r.learner_email or "",
+                "academic_email": r.academic_email or "",
+                "programme": r.programme or "",
+                "organization_name": r.organization_name or "",
+                "coach_name": r.coach_name or "",
+                "coach_email": r.coach_email or "",
+                "manager_name": r.manager_name or "",
+                "manager_email": r.manager_email or "",
+                "overall_risk_level": (overview.get("overallRiskLevel") or ""),
+                "overall_score": overview.get("overallScore"),
+                "overall_max_score": overview.get("overallMaxScore"),
+                "percentage": overview.get("percentage"),
+                "completed_reports": overview.get("completedReportsCount"),
+                "expected_reports": overview.get("expectedReportsCount"),
+                "master_report": master,
+                "created_at": r.created_at.isoformat() if r.created_at else None,
+                "updated_at": r.updated_at.isoformat() if r.updated_at else None,
+            })
+
+        return Response({"reports": rows, "total": len(rows)})
+
+    except Exception as exc:
+        return Response({"detail": str(exc)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 

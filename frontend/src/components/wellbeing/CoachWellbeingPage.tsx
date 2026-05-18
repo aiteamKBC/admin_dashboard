@@ -57,6 +57,7 @@ import {
 } from "recharts";
 
 import { getCoachWellbeing, getCoachOptions, createSupportTicket, getSupportTickets, updateSupportTicket, deleteTicket, createTicketNote, uploadEvidenceFile, createTicketEvidence, getTicketNotes, getTicketEvidence, createBookingAppointment, getBookingServices, getBookingAvailability, getBookingStaff } from "@/services/coachWellbeing";
+import OnboardingTicketsView from "@/components/wellbeing/OnboardingTicketsView";
 import type { UpdateSupportTicketPayload } from "@/services/coachWellbeing";
 import type {
   CoachLearnerRow,
@@ -4861,7 +4862,7 @@ export default function CoachWellbeingPage({ setMobileOpen, isDesktop }: CoachWe
   const [ticketForm, setTicketForm] = useState<SupportTicketFormState>(makeInitialTicketForm());
 
   // tickets management state
-  const [activeView, setActiveView] = useState<"dashboard" | "tickets">("dashboard");
+  const [activeView, setActiveView] = useState<"dashboard" | "tickets" | "onboarding">("dashboard");
   const [ticketsLoading, setTicketsLoading] = useState(false);
   const [ticketsLoadError, setTicketsLoadError] = useState("");
   const [ticketsData, setTicketsData] = useState<SupportTicketsResponse | null>(null);
@@ -4936,7 +4937,8 @@ export default function CoachWellbeingPage({ setMobileOpen, isDesktop }: CoachWe
     let mounted = true;
 
     async function loadTickets() {
-      if (activeView !== "tickets") return;
+      if (activeView !== "tickets" && activeView !== "onboarding") return;
+      if (activeView === "onboarding") return;
 
       if (role === "qa") {
         if (optionsLoading) return;
@@ -5576,43 +5578,56 @@ export default function CoachWellbeingPage({ setMobileOpen, isDesktop }: CoachWe
               />
             ) : null}
 
-            {role === "qa" && (
+            {role === "qa" && activeView !== "dashboard" && (
               <button
                 type="button"
-                onClick={() => setActiveView((prev) => (prev === "dashboard" ? "tickets" : "dashboard"))}
-                className={`inline-flex h-12 items-center justify-center gap-2 rounded-2xl px-5 text-sm font-medium shadow-sm transition ${activeView === "tickets"
-                  ? "bg-[#241453] text-white hover:bg-[#362063]"
-                  : "border border-[#DED5F3] bg-white text-[#241453] hover:border-[#CFC2EE]"
-                  }`}
+                onClick={() => setActiveView("dashboard")}
+                className="inline-flex h-12 items-center justify-center gap-2 rounded-2xl bg-[#241453] px-5 text-sm font-medium text-white shadow-sm transition hover:bg-[#362063]"
               >
-                {activeView === "tickets" ? (
-                  <>
-                    <ArrowLeft className="h-4 w-4" />
-                    Back to Dashboard
-                  </>
-                ) : (
-                  <>
-                    <Ticket className="h-4 w-4" />
-                    View Tickets
-                  </>
-                )}
+                <ArrowLeft className="h-4 w-4" />
+                Back to Dashboard
               </button>
             )}
 
-            <div className="flex h-12 w-full items-center gap-2 rounded-2xl border border-[#E7E2F3] bg-[#FBFAFE] px-4 lg:min-w-[320px] lg:max-w-[460px]">
-              <Search className="h-4 w-4 shrink-0 text-[#8E82AA]" />
-              <input
-                value={search}
-                onChange={(e) => setSearch(e.target.value)}
-                placeholder="Search learners, programme, action..."
-                className="w-full bg-transparent text-sm outline-none"
-              />
-            </div>
+            {role === "qa" && activeView === "dashboard" && (
+              <>
+                <button
+                  type="button"
+                  onClick={() => setActiveView("tickets")}
+                  className="inline-flex h-12 items-center justify-center gap-2 rounded-2xl border border-[#DED5F3] bg-white px-5 text-sm font-medium text-[#241453] shadow-sm transition hover:border-[#CFC2EE]"
+                >
+                  <Ticket className="h-4 w-4" />
+                  View Tickets
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setActiveView("onboarding")}
+                  className="inline-flex h-12 items-center justify-center gap-2 rounded-2xl border border-[#DED5F3] bg-white px-5 text-sm font-medium text-[#241453] shadow-sm transition hover:border-[#CFC2EE]"
+                >
+                  <ClipboardList className="h-4 w-4" />
+                  Onboarding Tickets
+                </button>
+              </>
+            )}
+
+            {activeView === "dashboard" && (
+              <div className="flex h-12 w-full items-center gap-2 rounded-2xl border border-[#E7E2F3] bg-[#FBFAFE] px-4 lg:min-w-[320px] lg:max-w-[460px]">
+                <Search className="h-4 w-4 shrink-0 text-[#8E82AA]" />
+                <input
+                  value={search}
+                  onChange={(e) => setSearch(e.target.value)}
+                  placeholder="Search learners, programme, action..."
+                  className="w-full bg-transparent text-sm outline-none"
+                />
+              </div>
+            )}
           </div>
         </div>
       </div>
 
-      {activeView === "dashboard" ? (
+      {activeView === "onboarding" ? (
+        <OnboardingTicketsView coachEmail={selectedCoachEmail} />
+      ) : activeView === "dashboard" ? (
         <>
           <div className="mb-6 grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
             <StatCard

@@ -115,3 +115,7 @@ export async function getBookingServices(): Promise<{ id: string; displayName: s
 export async function getBookingAvailability(serviceId: string, date: string): Promise<{ slots: string[]; duration: number; fallback?: boolean }> {
   return await fetchWithAuth(`/bookings/availability/?service_id=${encodeURIComponent(serviceId)}&date=${date}`);
 }
+
+export async function getOnboardingReports() {
+  return await fetchWithAuth("/onboarding-reports/");
+}
