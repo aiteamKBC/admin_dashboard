@@ -86,7 +86,7 @@ class SupportTicket(models.Model):
 
 
 class LearnerInclusivenessReport(models.Model):
-    id = models.BigAutoField(primary_key=True)
+    id = models.TextField(primary_key=True)
     learner_id = models.BigIntegerField(null=True, blank=True)
     learner_email = models.TextField(null=True, blank=True)
     learner_name = models.TextField(null=True, blank=True)
@@ -107,6 +107,10 @@ class LearnerInclusivenessReport(models.Model):
     master_report = models.TextField(null=True, blank=True)
     created_at = models.DateTimeField(null=True, blank=True)
     updated_at = models.DateTimeField(null=True, blank=True)
+
+    notes = models.JSONField(null=True, blank=True, default=list)
+    evidence = models.JSONField(null=True, blank=True, default=list)
+    status = models.TextField(null=True, blank=True, default="active")
 
     class Meta:
         managed = False

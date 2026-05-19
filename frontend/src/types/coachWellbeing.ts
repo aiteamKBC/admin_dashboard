@@ -84,6 +84,7 @@ export type CoachWellbeingResponse = {
   summary: {
     caseload: number;
     atRisk: number;
+    greenRisk: number;
     nonResponders: number;
     openTickets: number;
   };

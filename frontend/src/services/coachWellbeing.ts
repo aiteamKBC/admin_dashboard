@@ -119,3 +119,35 @@ export async function getBookingAvailability(serviceId: string, date: string): P
 export async function getOnboardingReports() {
   return await fetchWithAuth("/onboarding-reports/");
 }
+
+export async function getOnboardingReportNotes(reportId: string) {
+  return await fetchWithAuth(`/onboarding-reports/${reportId}/notes/`);
+}
+
+export async function createOnboardingReportNote(reportId: string, note: string) {
+  return await fetchWithAuth(`/onboarding-reports/${reportId}/notes/`, {
+    method: "POST",
+    body: JSON.stringify({ note }),
+  });
+}
+
+export async function getOnboardingReportEvidence(reportId: string) {
+  return await fetchWithAuth(`/onboarding-reports/${reportId}/evidence/`);
+}
+
+export async function createOnboardingReportEvidence(
+  reportId: string,
+  payload: { description: string; file_url?: string; file_name?: string }
+) {
+  return await fetchWithAuth(`/onboarding-reports/${reportId}/evidence/`, {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function updateOnboardingReport(reportId: string, payload: { status?: string }) {
+  return await fetchWithAuth(`/onboarding-reports/${reportId}/update/`, {
+    method: "PATCH",
+    body: JSON.stringify(payload),
+  });
+}

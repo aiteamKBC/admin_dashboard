@@ -20,19 +20,23 @@ import {
   Shield,
   BookOpen,
   Activity,
+  MessageSquare,
+  Paperclip,
+  ExternalLink,
 } from "lucide-react";
 import { jsPDF } from "jspdf";
 import autoTable from "jspdf-autotable";
 import * as XLSX from "xlsx";
 import kbcLogoSrc from "@/assets/logo-icon.png";
-import { getOnboardingReports } from "@/services/coachWellbeing";
+import { getOnboardingReports, getOnboardingReportNotes, getOnboardingReportEvidence } from "@/services/coachWellbeing";
+import { OnboardingActionsDropdown, resolveMediaUrl } from "@/components/wellbeing/TicketActions";
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
 export type OnboardingRiskLevel = "High" | "Moderate" | "Low" | "medium" | "low" | "";
 
 export type OnboardingReport = {
-  id: number;
+  id: string;
   learner_id: number | null;
   learner_name: string;
   learner_email: string;
@@ -49,7 +53,11 @@ export type OnboardingReport = {
   percentage: number | null;
   completed_reports: number | null;
   expected_reports: number | null;
+  section_progress?: { label: string; badge: string | null; summary: string | null; done: boolean; data: any }[];
   master_report: any;
+  status?: string;
+  notes_count?: number;
+  evidence_count?: number;
   created_at: string | null;
   updated_at: string | null;
 };
@@ -64,6 +72,7 @@ const emptyFilters: OnboardingFilters = { risk: [] };
 
 function normaliseRisk(r: string): string {
   const v = (r || "").trim().toLowerCase();
+  if (v === "very high") return "Very High";
   if (v === "high") return "High";
   if (v === "moderate" || v === "medium") return "Moderate";
   if (v === "low") return "Low";
@@ -72,6 +81,7 @@ function normaliseRisk(r: string): string {
 
 function riskBadgeClass(level: string): string {
   const v = (level || "").toLowerCase();
+  if (v === "very high") return "bg-[#F5E8E8] text-[#8B2020] border border-[#D9AAAA]";
   if (v === "high") return "bg-[#FEF0F0] text-[#B85858] border border-[#EDD5D5]";
   if (v === "moderate" || v === "medium") return "bg-[#FEF9EE] text-[#9A7030] border border-[#EDD8A8]";
   if (v === "low") return "bg-[#F2FAF6] text-[#3D7A55] border border-[#BDDECE]";
@@ -80,7 +90,7 @@ function riskBadgeClass(level: string): string {
 
 function priorityBadgeClass(p: string): string {
   const v = (p || "").toLowerCase();
-  if (v === "high" || v === "urgent") return "bg-[#FEF0F0] text-[#B85858]";
+  if (v === "high" || v === "urgent" || v === "very high") return "bg-[#FEF0F0] text-[#B85858]";
   if (v === "medium" || v === "moderate") return "bg-[#FEF9EE] text-[#9A7030]";
   return "bg-[#F2FAF6] text-[#3D7A55]";
 }
@@ -140,33 +150,42 @@ async function downloadInclusivenessPDF(report: OnboardingReport) {
   const W = doc.internal.pageSize.getWidth();
   const H = doc.internal.pageSize.getHeight();
   const mx = 14;
-  const contentW = W - mx * 2;
+  const contentW = W - mx * 2;   // 182mm
+  const pad = 5;
+  const textW = contentW - pad * 2;  // safe text width inside cards
+  const FOOTER_H = 10;
+  const LH = 4.5;   // line height for 8pt text
 
   const C = {
-    purple: [36, 20, 83] as [number, number, number],
-    purpleLight: [98, 72, 190] as [number, number, number],
-    purpleBg: [248, 246, 252] as [number, number, number],
-    purpleMid: [123, 109, 155] as [number, number, number],
-    border: [230, 221, 248] as [number, number, number],
-    cardBg: [252, 251, 254] as [number, number, number],
-    textBody: [60, 50, 80] as [number, number, number],
-    red: [220, 38, 38] as [number, number, number],
-    redBg: [254, 242, 242] as [number, number, number],
-    amber: [180, 100, 10] as [number, number, number],
-    amberBg: [255, 251, 235] as [number, number, number],
-    green: [4, 120, 87] as [number, number, number],
-    greenBg: [240, 253, 244] as [number, number, number],
-    white: [255, 255, 255] as [number, number, number],
+    purple:      [36,  20,  83]  as [number,number,number],
+    purpleLight: [98,  72,  190] as [number,number,number],
+    purpleBg:    [248, 246, 252] as [number,number,number],
+    purpleMid:   [123, 109, 155] as [number,number,number],
+    border:      [220, 210, 240] as [number,number,number],
+    cardBg:      [252, 251, 254] as [number,number,number],
+    textBody:    [55,  45,  75]  as [number,number,number],
+    textLight:   [110, 100, 130] as [number,number,number],
+    white:       [255, 255, 255] as [number,number,number],
+    vhRed:       [139, 32,  32]  as [number,number,number],
+    vhRedBg:     [245, 237, 237] as [number,number,number],
+    red:         [192, 80,  80]  as [number,number,number],
+    redBg:       [254, 245, 245] as [number,number,number],
+    amber:       [176, 128, 64]  as [number,number,number],
+    amberBg:     [254, 251, 240] as [number,number,number],
+    green:       [60,  130, 90]  as [number,number,number],
+    greenBg:     [244, 252, 248] as [number,number,number],
   };
 
-  const riskColor = (level: string): [number, number, number] => {
-    const v = (level || "").toLowerCase();
+  const riskColor = (l: string): [number,number,number] => {
+    const v = (l || "").toLowerCase();
+    if (v === "very high") return C.vhRed;
     if (v === "high") return C.red;
     if (v === "moderate" || v === "medium") return C.amber;
     return C.green;
   };
-  const riskBgColor = (level: string): [number, number, number] => {
-    const v = (level || "").toLowerCase();
+  const riskBg = (l: string): [number,number,number] => {
+    const v = (l || "").toLowerCase();
+    if (v === "very high") return C.vhRedBg;
     if (v === "high") return C.redBg;
     if (v === "moderate" || v === "medium") return C.amberBg;
     return C.greenBg;
@@ -174,249 +193,245 @@ async function downloadInclusivenessPDF(report: OnboardingReport) {
 
   let curY = 0;
 
-  function addPage() {
-    doc.addPage();
-    curY = 15;
-  }
-
-  function checkSpace(needed: number) {
-    if (curY + needed > H - 20) addPage();
+  function newPage() { doc.addPage(); curY = 15; }
+  function space(n: number) { if (curY + n > H - FOOTER_H - 5) newPage(); }
+  function split(text: string, w: number): string[] {
+    return doc.splitTextToSize(pdfSafe(text), w) as string[];
   }
 
   function sectionHeader(title: string) {
-    checkSpace(14);
+    space(14);
     doc.setFillColor(...C.purple);
-    doc.roundedRect(mx, curY, contentW, 9, 2, 2, "F");
-    doc.setFontSize(9);
+    doc.roundedRect(mx, curY, contentW, 9, 1.5, 1.5, "F");
+    doc.setFontSize(8.5);
     doc.setFont("helvetica", "bold");
     doc.setTextColor(...C.white);
-    doc.text(title.toUpperCase(), mx + 5, curY + 6);
-    curY += 12;
+    doc.text(title.toUpperCase(), mx + pad, curY + 6.3);
+    curY += 13;
   }
 
-  // ── PAGE 1: Header ──────────────────────────────────────────────────────
-
-  // Logo + header bar
+  // ── HEADER ────────────────────────────────────────────────────────────────
   doc.setFillColor(...C.purple);
   doc.rect(0, 0, W, 28, "F");
 
   try {
     const img = new Image();
     img.src = kbcLogoSrc;
-    await new Promise<void>((resolve) => {
-      img.onload = () => resolve();
-      img.onerror = () => resolve();
-      setTimeout(resolve, 500);
-    });
+    await new Promise<void>((r) => { img.onload = () => r(); img.onerror = () => r(); setTimeout(r, 500); });
     doc.addImage(img, "PNG", mx, 5, 18, 18);
-  } catch { /* skip logo if load fails */ }
+  } catch {}
 
-  doc.setFontSize(13);
-  doc.setFont("helvetica", "bold");
-  doc.setTextColor(...C.white);
-  doc.text("Learner Inclusiveness Report", mx + 22, 13);
-  doc.setFontSize(8);
-  doc.setFont("helvetica", "normal");
-  doc.text("Kent Business College — Confidential Assessment", mx + 22, 20);
-
-  // Generated date (top right)
+  doc.setFontSize(14); doc.setFont("helvetica", "bold"); doc.setTextColor(...C.white);
+  doc.text("Learner Inclusiveness Report", mx + 22, 14);
+  doc.setFontSize(8); doc.setFont("helvetica", "normal"); doc.setTextColor(180, 160, 220);
+  doc.text("Kent Business College — Confidential Assessment", mx + 22, 21);
   if (reportHeader.generatedAt) {
     doc.setFontSize(7.5);
-    doc.text(`Generated: ${formatDate(reportHeader.generatedAt)}`, W - mx, 20, { align: "right" });
+    doc.text(`Generated: ${formatDate(reportHeader.generatedAt)}`, W - mx, 21, { align: "right" });
   }
-
   curY = 34;
 
-  // ── Learner Info Card ──────────────────────────────────────────────────
+  // ── LEARNER INFO CARD ─────────────────────────────────────────────────────
   const riskLvl = pdfSafe(overview.overallRiskLevel || reportHeader.overallRiskLevel || report.overall_risk_level);
-  doc.setFillColor(...riskBgColor(riskLvl));
-  doc.setDrawColor(...C.border);
-  doc.setLineWidth(0.4);
-  doc.roundedRect(mx, curY, contentW, 32, 3, 3, "FD");
+  const BADGE_W = 38;
+  const BADGE_X = W - mx - BADGE_W;
 
-  doc.setFontSize(14);
-  doc.setFont("helvetica", "bold");
-  doc.setTextColor(...C.purple);
-  doc.text(pdfSafe(reportHeader.learnerName || report.learner_name), mx + 6, curY + 10);
+  doc.setFillColor(...riskBg(riskLvl));
+  doc.setDrawColor(...C.border); doc.setLineWidth(0.3);
+  doc.roundedRect(mx, curY, contentW, 34, 2.5, 2.5, "FD");
 
-  doc.setFontSize(8.5);
-  doc.setFont("helvetica", "normal");
-  doc.setTextColor(...C.textBody);
+  doc.setFontSize(13); doc.setFont("helvetica", "bold"); doc.setTextColor(...C.purple);
+  doc.text(split(reportHeader.learnerName || report.learner_name, contentW - BADGE_W - 14)[0] || "", mx + 6, curY + 10);
+  doc.setFontSize(8); doc.setFont("helvetica", "normal"); doc.setTextColor(...C.textBody);
   doc.text(`Email: ${pdfSafe(reportHeader.learnerEmail || report.learner_email)}`, mx + 6, curY + 17);
   doc.text(`Programme: ${pdfSafe(reportHeader.programme || report.programme)}`, mx + 6, curY + 23);
   doc.text(`Organisation: ${pdfSafe(reportHeader.organisation || report.organization_name)}`, mx + 6, curY + 29);
 
-  // Risk badge (top-right)
-  const rbx = W - mx - 42;
+  // Risk badge — centered in badge box
   doc.setFillColor(...riskColor(riskLvl));
-  doc.roundedRect(rbx, curY + 6, 38, 12, 3, 3, "F");
-  doc.setFontSize(9);
-  doc.setFont("helvetica", "bold");
-  doc.setTextColor(...C.white);
-  doc.text(`${riskLvl.toUpperCase()} RISK`, rbx + 19, curY + 14, { align: "center" });
+  doc.roundedRect(BADGE_X, curY + 7, BADGE_W, 12, 2.5, 2.5, "F");
+  doc.setFontSize(7.5); doc.setFont("helvetica", "bold"); doc.setTextColor(...C.white);
+  doc.text(`${riskLvl.toUpperCase()} RISK`, BADGE_X + BADGE_W / 2, curY + 14.5, { align: "center" });
+  curY += 40;
 
-  curY += 38;
-
-  // ── Score Overview ─────────────────────────────────────────────────────
+  // ── OVERALL SCORE ─────────────────────────────────────────────────────────
   const score = overview.overallScore ?? report.overall_score;
-  const maxScore = overview.overallMaxScore ?? report.overall_max_score ?? 180;
-  const pct = overview.percentage ?? report.percentage;
+  const maxScore = overview.overallMaxScore ?? report.overall_max_score ?? 600;
+  const rawPct = overview.rawPercentage ?? overview.adjustedPercentage ?? overview.percentage ?? report.percentage;
 
   if (score != null) {
-    doc.setFillColor(...C.purpleBg);
-    doc.setDrawColor(...C.border);
-    doc.roundedRect(mx, curY, contentW, 22, 3, 3, "FD");
+    doc.setFillColor(...C.purpleBg); doc.setDrawColor(...C.border); doc.setLineWidth(0.3);
+    doc.roundedRect(mx, curY, contentW, 24, 2.5, 2.5, "FD");
 
-    doc.setFontSize(8);
-    doc.setFont("helvetica", "bold");
-    doc.setTextColor(...C.purpleMid);
+    doc.setFontSize(7.5); doc.setFont("helvetica", "bold"); doc.setTextColor(...C.purpleMid);
     doc.text("OVERALL SCORE", mx + 6, curY + 7);
 
-    doc.setFontSize(20);
-    doc.setFont("helvetica", "bold");
-    doc.setTextColor(...C.purple);
-    doc.text(`${score}`, mx + 6, curY + 18);
+    // ← measure width BEFORE changing font size
+    doc.setFontSize(18); doc.setFont("helvetica", "bold"); doc.setTextColor(...C.purple);
+    doc.text(`${score}`, mx + 6, curY + 19);
+    const scoreW = doc.getTextWidth(`${score}`);
 
-    doc.setFontSize(9);
-    doc.setFont("helvetica", "normal");
-    doc.setTextColor(...C.purpleMid);
-    doc.text(`/ ${maxScore}`, mx + 6 + doc.getTextWidth(`${score}`) + 2, curY + 18);
+    doc.setFontSize(9); doc.setFont("helvetica", "normal"); doc.setTextColor(...C.purpleMid);
+    doc.text(`/ ${maxScore}`, mx + 8 + scoreW, curY + 19);
 
-    if (pct != null) {
-      doc.setFontSize(8);
-      doc.setTextColor(...C.textBody);
-      doc.text(`${pct}% complete`, mx + 50, curY + 7);
-
-      // Progress bar
-      const barX = mx + 50;
-      const barW = contentW - 56;
-      const barY = curY + 12;
-      doc.setFillColor(220, 215, 240);
-      doc.roundedRect(barX, barY, barW, 4, 2, 2, "F");
+    if (rawPct != null) {
+      const barX = mx + 54; const barW = contentW - 60;
+      doc.setFontSize(7.5); doc.setFont("helvetica", "normal"); doc.setTextColor(...C.textLight);
+      doc.text(`${rawPct}% of total score`, barX, curY + 7);
+      doc.setFillColor(215, 205, 235);
+      doc.roundedRect(barX, curY + 12, barW, 4, 2, 2, "F");
       doc.setFillColor(...riskColor(riskLvl));
-      doc.roundedRect(barX, barY, barW * (pct / 100), 4, 2, 2, "F");
+      doc.roundedRect(barX, curY + 12, Math.min(barW * (rawPct / 100), barW), 4, 2, 2, "F");
     }
-
-    curY += 28;
+    curY += 30;
   }
 
-  // ── Risk Roadmap ───────────────────────────────────────────────────────
+  // ── RISK ROADMAP ──────────────────────────────────────────────────────────
   if (riskRoadmap.length > 0) {
     sectionHeader("Risk Roadmap — Inclusiveness Screening Areas");
+    const colW = (contentW - 5) / 2;
+    const CARD_H = 36;
+    const STRIPE = 4;
+    const BDG_W = 30;
+    const BDG_H = 7;
 
-    const colW = (contentW - 4) / 2;
     for (let i = 0; i < riskRoadmap.length; i += 2) {
-      checkSpace(24);
       const left = riskRoadmap[i];
       const right = riskRoadmap[i + 1];
+      space(CARD_H + 4);
 
       for (let j = 0; j < 2; j++) {
         const item = j === 0 ? left : right;
         if (!item) continue;
-        const x = mx + j * (colW + 4);
+        const x = mx + j * (colW + 5);
         const rl = pdfSafe(item.riskLevel || "");
-        doc.setFillColor(...riskBgColor(rl));
-        doc.setDrawColor(...C.border);
-        doc.roundedRect(x, curY, colW, 20, 2, 2, "FD");
+        const rc = riskColor(rl);
+        const rb = riskBg(rl);
+        const secPct = item.adjustedPercentage ?? item.rawPercentage
+          ?? (item.maxScore ? Math.round((item.score / item.maxScore) * 100) : 0);
+        const labelLines = split(item.label, colW - STRIPE - BDG_W - 10);
+        const TX = x + STRIPE + 4;
 
-        doc.setFontSize(8);
+        // Card background
+        doc.setFillColor(...rb);
+        doc.setDrawColor(...rc);
+        doc.setLineWidth(0.5);
+        doc.roundedRect(x, curY, colW, CARD_H, 2, 2, "FD");
+
+        // Colored left stripe
+        doc.setFillColor(...rc);
+        doc.roundedRect(x, curY, STRIPE, CARD_H, 1.5, 1.5, "F");
+        doc.rect(x + 1.5, curY, STRIPE - 1.5, CARD_H, "F");
+
+        // Risk badge (top right)
+        const bdgX = x + colW - BDG_W - 3;
+        const bdgY = curY + 3.5;
+        doc.setFillColor(...rc);
+        doc.roundedRect(bdgX, bdgY, BDG_W, BDG_H, 1.5, 1.5, "F");
+        doc.setFontSize(5.5);
+        doc.setFont("helvetica", "bold");
+        doc.setTextColor(...C.white);
+        doc.text(rl.toUpperCase(), bdgX + BDG_W / 2, bdgY + 5, { align: "center" });
+
+        // Label
+        doc.setFontSize(7.5);
         doc.setFont("helvetica", "bold");
         doc.setTextColor(...C.purple);
-        const labelLines = doc.splitTextToSize(pdfSafe(item.label), colW - 14) as string[];
-        doc.text(labelLines[0] || "", x + 5, curY + 7);
-        if (labelLines[1]) doc.text(labelLines[1], x + 5, curY + 11);
+        doc.text(labelLines, TX, curY + 6);
 
-        doc.setFontSize(7.5);
-        doc.setFont("helvetica", "normal");
-        doc.setTextColor(...riskColor(rl));
-        doc.text(`${rl}`, x + 5, curY + 16);
-
-        if (item.score != null && item.maxScore) {
-          doc.setTextColor(...C.purpleMid);
-          doc.text(`${item.score}/${item.maxScore}`, x + colW - 5, curY + 7, { align: "right" });
-
-          // Mini bar
-          const bx = x + 5;
-          const bw = colW - 10;
-          const by = curY + 18;
-          doc.setFillColor(220, 215, 240);
-          doc.roundedRect(bx, by, bw, 2, 1, 1, "F");
-          doc.setFillColor(...riskColor(rl));
-          doc.roundedRect(bx, by, bw * (item.score / item.maxScore), 2, 1, 1, "F");
+        // Score (large) + /maxScore
+        const scoreY = curY + CARD_H - 10;
+        const scoreStr = `${item.score ?? "—"}`;
+        doc.setFontSize(12);
+        doc.setFont("helvetica", "bold");
+        doc.setTextColor(...C.purple);
+        doc.text(scoreStr, TX, scoreY);
+        if (item.maxScore) {
+          const scoreW = doc.getTextWidth(scoreStr);
+          doc.setFontSize(6.5);
+          doc.setFont("helvetica", "normal");
+          doc.setTextColor(...C.textLight);
+          doc.text(` / ${item.maxScore}`, TX + scoreW, scoreY);
         }
+
+        // Progress bar
+        const bx = TX;
+        const bw = colW - STRIPE - 8;
+        const by = curY + CARD_H - 4;
+        doc.setFillColor(215, 205, 235);
+        doc.roundedRect(bx, by, bw, 2.5, 1, 1, "F");
+        doc.setFillColor(...rc);
+        doc.roundedRect(bx, by, Math.max(1, Math.min(bw * (secPct / 100), bw)), 2.5, 1, 1, "F");
+
+        // Percentage
+        doc.setFontSize(6.5);
+        doc.setFont("helvetica", "bold");
+        doc.setTextColor(...rc);
+        doc.text(`${secPct}%`, x + colW - 3, by + 2, { align: "right" });
       }
-      curY += 24;
+      curY += CARD_H + 4;
     }
   }
 
-  // ── Executive Summary ─────────────────────────────────────────────────
+  // ── EXECUTIVE SUMMARY ─────────────────────────────────────────────────────
   if (executiveSummary) {
     sectionHeader("Executive Summary");
-    checkSpace(20);
-    doc.setFillColor(...C.cardBg);
-    doc.setDrawColor(...C.border);
-    const summaryLines = doc.splitTextToSize(pdfSafe(executiveSummary), contentW - 10) as string[];
-    const summaryH = summaryLines.length * 4.5 + 8;
-    checkSpace(summaryH);
-    doc.roundedRect(mx, curY, contentW, summaryH, 2, 2, "FD");
-    doc.setFontSize(8.5);
-    doc.setFont("helvetica", "normal");
-    doc.setTextColor(...C.textBody);
-    doc.text(summaryLines, mx + 5, curY + 6);
-    curY += summaryH + 4;
+    const lines = split(executiveSummary, textW);
+    const cardH = lines.length * LH + pad * 2;
+    space(cardH);
+    doc.setFillColor(...C.cardBg); doc.setDrawColor(...C.border); doc.setLineWidth(0.25);
+    doc.roundedRect(mx, curY, contentW, cardH, 2, 2, "FD");
+    doc.setFontSize(8); doc.setFont("helvetica", "normal"); doc.setTextColor(...C.textBody);
+    doc.text(lines, mx + pad, curY + pad + LH * 0.75);
+    curY += cardH + 5;
   }
 
-  // ── Key Findings ──────────────────────────────────────────────────────
+  // ── KEY FINDINGS ──────────────────────────────────────────────────────────
   if (keyFindings.length > 0) {
     sectionHeader("Key Findings & Recommended Responses");
+    const BAR = 3; const BDG = 30;
 
     for (const finding of keyFindings) {
       const rl = pdfSafe(finding.riskLevel || "");
-      const areaLines = doc.splitTextToSize(pdfSafe(finding.area), contentW - 10) as string[];
-      const findingLines = doc.splitTextToSize(`Finding: ${pdfSafe(finding.finding)}`, contentW - 12) as string[];
-      const respLines = doc.splitTextToSize(`Recommended Response: ${pdfSafe(finding.recommendedResponse)}`, contentW - 12) as string[];
-      const totalH = areaLines.length * 4.5 + findingLines.length * 4 + respLines.length * 4 + 14;
+      const areaW = textW - BAR - BDG - 4;
+      const bodyW = textW - BAR - 2;
 
-      checkSpace(totalH);
-      doc.setFillColor(...riskBgColor(rl));
-      doc.setDrawColor(...C.border);
-      doc.roundedRect(mx, curY, contentW, totalH, 2, 2, "FD");
+      const areaLines = split(finding.area, areaW);
+      const findLines = split(`Finding: ${finding.finding}`, bodyW);
+      const respLines = split(`Recommended Response: ${finding.recommendedResponse}`, bodyW);
 
-      // Accent bar
+      const cardH = areaLines.length * LH + findLines.length * LH + respLines.length * LH + pad * 3 + 6;
+      space(cardH);
+
+      doc.setFillColor(...riskBg(rl)); doc.setDrawColor(...C.border); doc.setLineWidth(0.25);
+      doc.roundedRect(mx, curY, contentW, cardH, 2, 2, "FD");
       doc.setFillColor(...riskColor(rl));
-      doc.rect(mx, curY, 3, totalH, "F");
+      doc.rect(mx, curY, BAR, cardH, "F");
 
-      let fy = curY + 6;
-      doc.setFontSize(8.5);
-      doc.setFont("helvetica", "bold");
-      doc.setTextColor(...C.purple);
-      doc.text(areaLines, mx + 8, fy);
-      fy += areaLines.length * 4.5 + 2;
+      // area title
+      let ty = curY + pad;
+      doc.setFontSize(8.5); doc.setFont("helvetica", "bold"); doc.setTextColor(...C.purple);
+      doc.text(areaLines, mx + BAR + 4, ty + LH * 0.75);
 
-      // Risk badge
+      // risk badge
       doc.setFillColor(...riskColor(rl));
-      doc.roundedRect(mx + contentW - 28, curY + 4, 24, 7, 2, 2, "F");
-      doc.setFontSize(7);
-      doc.setFont("helvetica", "bold");
-      doc.setTextColor(...C.white);
-      doc.text(rl.toUpperCase(), mx + contentW - 16, curY + 9, { align: "center" });
+      doc.roundedRect(mx + contentW - BDG - 2, curY + 4, BDG, 8, 2, 2, "F");
+      doc.setFontSize(6.5); doc.setFont("helvetica", "bold"); doc.setTextColor(...C.white);
+      doc.text(rl.toUpperCase(), mx + contentW - BDG / 2 - 2, curY + 9.3, { align: "center" });
 
-      doc.setFontSize(8);
-      doc.setFont("helvetica", "normal");
-      doc.setTextColor(...C.textBody);
-      doc.text(findingLines, mx + 8, fy);
-      fy += findingLines.length * 4 + 3;
+      ty += areaLines.length * LH + 3;
+      doc.setFontSize(8); doc.setFont("helvetica", "normal"); doc.setTextColor(...C.textBody);
+      doc.text(findLines, mx + BAR + 4, ty + LH * 0.75);
 
-      doc.setFontSize(8);
-      doc.setFont("helvetica", "italic");
-      doc.setTextColor(...C.purpleLight);
-      doc.text(respLines, mx + 8, fy);
+      ty += findLines.length * LH + 3;
+      doc.setFontSize(7.5); doc.setFont("helvetica", "italic"); doc.setTextColor(...C.purpleLight);
+      doc.text(respLines, mx + BAR + 4, ty + LH * 0.75);
 
-      curY += totalH + 4;
+      curY += cardH + 4;
     }
   }
 
-  // ── Support Plan ──────────────────────────────────────────────────────
+  // ── SUPPORT PLAN ──────────────────────────────────────────────────────────
   const supportCategories: [string, string][] = [
     ["digitalSupport", "Digital Support"],
     ["learningSupport", "Learning Support"],
@@ -426,200 +441,168 @@ async function downloadInclusivenessPDF(report: OnboardingReport) {
     ["accessibilityAdjustments", "Accessibility Adjustments"],
   ];
 
-  const hasSupportPlan = supportCategories.some(([key]) => (supportPlan[key] || []).length > 0);
-  if (hasSupportPlan) {
+  if (supportCategories.some(([k]) => (supportPlan[k] || []).length > 0)) {
     sectionHeader("Support Plan");
-
     for (const [key, label] of supportCategories) {
       const items: string[] = supportPlan[key] || [];
       if (!items.length) continue;
-
-      const bulletLines: string[][] = items.map((item) =>
-        doc.splitTextToSize(`\xB7  ${pdfSafe(item)}`, contentW - 14) as string[]
-      );
-      const totalLines = bulletLines.reduce((s, l) => s + l.length, 0);
-      const cardH = totalLines * 4 + 14;
-
-      checkSpace(cardH);
-      doc.setFillColor(...C.purpleBg);
-      doc.setDrawColor(...C.border);
+      const bullets = items.map((it) => split(`-  ${it}`, textW - 4));
+      const totalLH = bullets.reduce((s, ls) => s + ls.length * LH, 0);
+      const cardH = totalLH + pad * 2 + LH + 3;
+      space(cardH);
+      doc.setFillColor(...C.purpleBg); doc.setDrawColor(...C.border); doc.setLineWidth(0.25);
       doc.roundedRect(mx, curY, contentW, cardH, 2, 2, "FD");
-
-      doc.setFontSize(8.5);
-      doc.setFont("helvetica", "bold");
-      doc.setTextColor(...C.purple);
-      doc.text(label.toUpperCase(), mx + 5, curY + 7);
-
-      let ly = curY + 12;
-      doc.setFontSize(8);
-      doc.setFont("helvetica", "normal");
-      doc.setTextColor(...C.textBody);
-      for (const lines of bulletLines) {
-        doc.text(lines, mx + 8, ly);
-        ly += lines.length * 4;
-      }
+      doc.setFontSize(8); doc.setFont("helvetica", "bold"); doc.setTextColor(...C.purple);
+      doc.text(label.toUpperCase(), mx + pad, curY + pad + LH * 0.8);
+      let ly = curY + pad + LH + 3;
+      doc.setFont("helvetica", "normal"); doc.setTextColor(...C.textBody);
+      for (const lines of bullets) { doc.text(lines, mx + pad + 3, ly + LH * 0.75); ly += lines.length * LH; }
       curY += cardH + 4;
     }
   }
 
-  // ── Priority Actions ──────────────────────────────────────────────────
+  // ── PRIORITY ACTIONS ──────────────────────────────────────────────────────
   if (priorityActions.length > 0) {
     sectionHeader("Priority Actions");
-    checkSpace(40);
-
+    space(30);
     autoTable(doc, {
       startY: curY,
       head: [["Priority", "Owner", "Action", "Due Date"]],
-      body: priorityActions.map((a) => [
-        pdfSafe(a.priority),
-        pdfSafe(a.owner),
-        pdfSafe(a.action),
-        pdfSafe(a.due),
-      ]),
+      body: priorityActions.map((a) => [pdfSafe(a.priority), pdfSafe(a.owner), pdfSafe(a.action), pdfSafe(a.due)]),
       theme: "plain",
-      styles: { fontSize: 7.5, cellPadding: 3, overflow: "linebreak", valign: "top" },
-      headStyles: {
-        fillColor: C.purpleBg,
-        textColor: C.purpleMid,
-        fontStyle: "bold",
-        fontSize: 7.5,
-      },
-      columnStyles: {
-        0: { cellWidth: 18 },
-        1: { cellWidth: 24 },
-        2: { cellWidth: contentW - 18 - 24 - 28 },
-        3: { cellWidth: 28 },
-      },
+      styles: { fontSize: 7.5, cellPadding: 3, overflow: "linebreak", valign: "top", textColor: C.textBody, lineColor: C.border, lineWidth: 0.25 },
+      headStyles: { fillColor: C.purpleBg, textColor: C.purpleMid, fontStyle: "bold", fontSize: 7.5 },
+      columnStyles: { 0: { cellWidth: 18 }, 1: { cellWidth: 22 }, 2: { cellWidth: contentW - 18 - 22 - 26 }, 3: { cellWidth: 26 } },
       margin: { left: mx, right: mx },
-      tableLineColor: C.border,
-      tableLineWidth: 0.3,
       didParseCell: (data) => {
         if (data.section === "body" && data.column.index === 0) {
           const v = String(data.cell.raw || "").toLowerCase();
-          if (v === "high" || v === "urgent") data.cell.styles.textColor = C.red;
-          else if (v === "medium") data.cell.styles.textColor = C.amber;
-          else data.cell.styles.textColor = C.green;
           data.cell.styles.fontStyle = "bold";
+          if (v === "very high") data.cell.styles.textColor = C.vhRed;
+          else if (v === "high" || v === "urgent") data.cell.styles.textColor = C.red;
+          else if (v === "medium" || v === "moderate") data.cell.styles.textColor = C.amber;
+          else data.cell.styles.textColor = C.green;
         }
       },
     });
     curY = (doc as any).lastAutoTable.finalY + 6;
   }
 
-  // ── Review Timeline ───────────────────────────────────────────────────
-  if (reviewTimeline.initialReview || reviewTimeline.followUpReview || reviewTimeline.nextFormalReview) {
+  // ── REVIEW TIMELINE ───────────────────────────────────────────────────────
+  const timelineItems = [
+    { label: "Initial Review",      value: reviewTimeline.initialReview,      color: C.red   },
+    { label: "Follow-up Review",    value: reviewTimeline.followUpReview,      color: C.amber },
+    { label: "Next Formal Review",  value: reviewTimeline.nextFormalReview,    color: C.green },
+  ].filter((t) => t.value);
+
+  if (timelineItems.length > 0) {
     sectionHeader("Review Timeline");
-    checkSpace(30);
-
-    const milestones = [
-      { label: "Initial Review", value: reviewTimeline.initialReview },
-      { label: "Follow-up Review", value: reviewTimeline.followUpReview },
-      { label: "Next Formal Review", value: reviewTimeline.nextFormalReview },
-    ].filter((m) => m.value);
-
-    const mW = (contentW - (milestones.length - 1) * 4) / milestones.length;
-    for (let i = 0; i < milestones.length; i++) {
-      const m = milestones[i];
-      if (!m) continue;
-      const x = mx + i * (mW + 4);
-      const textLines = doc.splitTextToSize(pdfSafe(m.value), mW - 8) as string[];
-      const cardH = textLines.length * 4 + 16;
-      checkSpace(cardH);
-      doc.setFillColor(...C.purpleBg);
-      doc.setDrawColor(...C.border);
-      doc.roundedRect(x, curY, mW, cardH, 2, 2, "FD");
-      doc.setFontSize(7.5);
-      doc.setFont("helvetica", "bold");
-      doc.setTextColor(...C.purpleLight);
-      doc.text(m.label.toUpperCase(), x + 5, curY + 7);
-      doc.setFont("helvetica", "normal");
-      doc.setTextColor(...C.textBody);
-      doc.text(textLines, x + 5, curY + 13);
+    const colW2 = (contentW - (timelineItems.length - 1) * 4) / timelineItems.length;
+    let maxTH = 20;
+    for (const t of timelineItems) {
+      const h = split(t.value, colW2 - pad * 2).length * LH + 18;
+      if (h > maxTH) maxTH = h;
     }
-    curY += 40;
+    space(maxTH + 4);
+    for (let i = 0; i < timelineItems.length; i++) {
+      const t = timelineItems[i];
+      if (!t) continue;
+      const x = mx + i * (colW2 + 4);
+      const ls = split(t.value, colW2 - pad * 2);
+      doc.setFillColor(...C.purpleBg); doc.setDrawColor(...C.border); doc.setLineWidth(0.25);
+      doc.roundedRect(x, curY, colW2, maxTH, 2, 2, "FD");
+      doc.setFillColor(...t.color);
+      doc.roundedRect(x + pad, curY + 5, 12, 2, 1, 1, "F");
+      doc.setFontSize(7); doc.setFont("helvetica", "bold"); doc.setTextColor(...C.purpleMid);
+      doc.text(t.label.toUpperCase(), x + pad, curY + 12);
+      doc.setFontSize(7.5); doc.setFont("helvetica", "normal"); doc.setTextColor(...C.textBody);
+      doc.text(ls, x + pad, curY + 17);
+    }
+    curY += maxTH + 5;
   }
 
-  // ── Manager Brief ─────────────────────────────────────────────────────
-  if (managerBrief.oneLineStatus || managerBrief.recommendedNextStep) {
+  // ── MANAGER BRIEF ─────────────────────────────────────────────────────────
+  if (managerBrief.oneLineStatus || managerBrief.recommendedNextStep
+    || (managerBrief.whatNeedsAttention || []).length > 0
+    || (managerBrief.whatIsAlreadyInPlace || []).length > 0) {
     sectionHeader("Manager Brief");
-    checkSpace(20);
 
     if (managerBrief.oneLineStatus) {
-      const statusLines = doc.splitTextToSize(pdfSafe(managerBrief.oneLineStatus), contentW - 10) as string[];
-      const sh = statusLines.length * 4.5 + 8;
-      checkSpace(sh);
-      doc.setFillColor(...C.redBg);
-      doc.setDrawColor(255, 200, 200);
-      doc.roundedRect(mx, curY, contentW, sh, 2, 2, "FD");
-      doc.setFontSize(8.5);
-      doc.setFont("helvetica", "bold");
-      doc.setTextColor(...C.red);
-      doc.text(statusLines, mx + 5, curY + 6);
-      curY += sh + 4;
+      const ls = split(managerBrief.oneLineStatus, textW);
+      const h = ls.length * LH + pad * 2;
+      space(h);
+      doc.setFillColor(...C.redBg); doc.setDrawColor(220, 190, 190); doc.setLineWidth(0.25);
+      doc.roundedRect(mx, curY, contentW, h, 2, 2, "FD");
+      doc.setFontSize(8); doc.setFont("helvetica", "bold"); doc.setTextColor(...C.red);
+      doc.text(ls, mx + pad, curY + pad + LH * 0.75);
+      curY += h + 4;
     }
 
     if ((managerBrief.whatNeedsAttention || []).length > 0) {
-      const items: string[] = managerBrief.whatNeedsAttention;
-      const bulletLines: string[][] = items.map((i) =>
-        doc.splitTextToSize(`\xB7  ${pdfSafe(i)}`, contentW - 12) as string[]
-      );
-      const totalH = bulletLines.reduce((s, l) => s + l.length * 4, 0) + 14;
-      checkSpace(totalH);
-      doc.setFillColor(...C.cardBg);
-      doc.setDrawColor(...C.border);
-      doc.roundedRect(mx, curY, contentW, totalH, 2, 2, "FD");
-      doc.setFontSize(8);
-      doc.setFont("helvetica", "bold");
-      doc.setTextColor(...C.purple);
-      doc.text("What Needs Attention:", mx + 5, curY + 7);
-      let ly = curY + 12;
-      doc.setFont("helvetica", "normal");
-      doc.setTextColor(...C.textBody);
-      for (const lines of bulletLines) { doc.text(lines, mx + 8, ly); ly += lines.length * 4; }
-      curY += totalH + 4;
+      const bullets = (managerBrief.whatNeedsAttention as string[]).map((it) => split(`-  ${it}`, textW - 4));
+      const totalLH = bullets.reduce((s, ls) => s + ls.length * LH, 0);
+      const h = totalLH + pad * 2 + LH + 3;
+      space(h);
+      doc.setFillColor(...C.cardBg); doc.setDrawColor(...C.border); doc.setLineWidth(0.25);
+      doc.roundedRect(mx, curY, contentW, h, 2, 2, "FD");
+      doc.setFontSize(8); doc.setFont("helvetica", "bold"); doc.setTextColor(...C.purple);
+      doc.text("What Needs Attention:", mx + pad, curY + pad + LH * 0.8);
+      let ly = curY + pad + LH + 3;
+      doc.setFont("helvetica", "normal"); doc.setTextColor(...C.textBody);
+      for (const ls of bullets) { doc.text(ls, mx + pad + 3, ly + LH * 0.75); ly += ls.length * LH; }
+      curY += h + 4;
+    }
+
+    if ((managerBrief.whatIsAlreadyInPlace || []).length > 0) {
+      const bullets = (managerBrief.whatIsAlreadyInPlace as string[]).map((it) => split(`-  ${it}`, textW - 4));
+      const totalLH = bullets.reduce((s, ls) => s + ls.length * LH, 0);
+      const h = totalLH + pad * 2 + LH + 3;
+      space(h);
+      doc.setFillColor(...C.greenBg); doc.setDrawColor(185, 220, 200); doc.setLineWidth(0.25);
+      doc.roundedRect(mx, curY, contentW, h, 2, 2, "FD");
+      doc.setFontSize(8); doc.setFont("helvetica", "bold"); doc.setTextColor(...C.green);
+      doc.text("What Is Already in Place:", mx + pad, curY + pad + LH * 0.8);
+      let ly = curY + pad + LH + 3;
+      doc.setFont("helvetica", "normal"); doc.setTextColor(40, 100, 65);
+      for (const ls of bullets) { doc.text(ls, mx + pad + 3, ly + LH * 0.75); ly += ls.length * LH; }
+      curY += h + 4;
     }
 
     if (managerBrief.recommendedNextStep) {
-      const nsLines = doc.splitTextToSize(`Recommended Next Step: ${pdfSafe(managerBrief.recommendedNextStep)}`, contentW - 10) as string[];
-      const nh = nsLines.length * 4.5 + 8;
-      checkSpace(nh);
-      doc.setFillColor(240, 253, 244);
-      doc.setDrawColor(200, 240, 220);
-      doc.roundedRect(mx, curY, contentW, nh, 2, 2, "FD");
-      doc.setFontSize(8.5);
-      doc.setFont("helvetica", "bold");
-      doc.setTextColor(...C.green);
-      doc.text(nsLines, mx + 5, curY + 6);
-      curY += nh + 4;
+      const ls = split(`Recommended Next Step: ${managerBrief.recommendedNextStep}`, textW);
+      const h = ls.length * LH + pad * 2;
+      space(h);
+      doc.setFillColor(...C.greenBg); doc.setDrawColor(185, 220, 200); doc.setLineWidth(0.25);
+      doc.roundedRect(mx, curY, contentW, h, 2, 2, "FD");
+      doc.setFontSize(8); doc.setFont("helvetica", "bold"); doc.setTextColor(...C.green);
+      doc.text(ls, mx + pad, curY + pad + LH * 0.75);
+      curY += h + 4;
     }
   }
 
-  // ── Professional Note ─────────────────────────────────────────────────
+  // ── PROFESSIONAL NOTE ─────────────────────────────────────────────────────
   if (professionalNote) {
-    checkSpace(20);
-    doc.setFontSize(7.5);
-    doc.setFont("helvetica", "italic");
-    doc.setTextColor(...C.purpleMid);
-    const noteLines = doc.splitTextToSize(`Note: ${pdfSafe(professionalNote)}`, contentW) as string[];
-    doc.text(noteLines, mx, curY + 5);
-    curY += noteLines.length * 4 + 10;
+    const ls = split(`Note: ${professionalNote}`, textW);
+    const h = ls.length * 4 + 4;
+    space(h);
+    doc.setFontSize(7.5); doc.setFont("helvetica", "italic"); doc.setTextColor(...C.purpleMid);
+    doc.text(ls, mx, curY + 4 * 0.75);
+    curY += h + 6;
   }
 
-  // ── Footer on all pages ───────────────────────────────────────────────
+  // ── FOOTER ────────────────────────────────────────────────────────────────
   const pageCount = (doc.internal as any).getNumberOfPages?.() ?? 1;
   for (let i = 1; i <= pageCount; i++) {
     doc.setPage(i);
     doc.setFillColor(...C.purple);
-    doc.rect(0, H - 8, W, 8, "F");
-    doc.setFontSize(7);
-    doc.setFont("helvetica", "normal");
-    doc.setTextColor(...C.white);
-    doc.text("Kent Business College — Learner Inclusiveness Report — Confidential", mx, H - 3);
-    doc.text(`Page ${i} of ${pageCount}`, W - mx, H - 3, { align: "right" });
+    doc.rect(0, H - FOOTER_H, W, FOOTER_H, "F");
+    doc.setFontSize(7); doc.setFont("helvetica", "normal"); doc.setTextColor(...C.white);
+    doc.text("Kent Business College — Learner Inclusiveness Report — Confidential", mx, H - 3.5);
+    doc.text(`Page ${i} of ${pageCount}`, W - mx, H - 3.5, { align: "right" });
   }
 
-  const learnerSlug = (report.learner_name || "learner").toLowerCase().replace(/\s+/g, "-");
-  doc.save(`inclusiveness-report-${learnerSlug}-${new Date().toISOString().split("T")[0]}.pdf`);
+  const slug = (report.learner_name || "learner").toLowerCase().replace(/\s+/g, "-");
+  doc.save(`inclusiveness-report-${slug}-${new Date().toISOString().split("T")[0]}.pdf`);
 }
 
 // ── Filters Panel ──────────────────────────────────────────────────────────
@@ -692,7 +675,7 @@ function TabBtn({ active, onClick, children }: { active: boolean; onClick: () =>
 
 function ScoreRing({ score, maxScore, pct, riskLevel }: { score: number; maxScore: number; pct: number; riskLevel: string }) {
   const v = riskLevel.toLowerCase();
-  const stroke = v === "high" ? "#D97070" : v === "moderate" || v === "medium" ? "#D4A060" : "#5AAA7A";
+  const stroke = v === "very high" ? "#A84040" : v === "high" ? "#D97070" : v === "moderate" || v === "medium" ? "#D4A060" : "#5AAA7A";
   const r = 52;
   const circ = 2 * Math.PI * r;
   const dash = (pct / 100) * circ;
@@ -717,6 +700,265 @@ function ScoreRing({ score, maxScore, pct, riskLevel }: { score: number; maxScor
   );
 }
 
+// ── Section Report Modal ───────────────────────────────────────────────────
+
+type SectionView = {
+  label: string;
+  badge: string | null;
+  data: any;
+  learnerName: string;
+};
+
+function SectionReportModal({ section, onClose }: { section: SectionView | null; onClose: () => void }) {
+  const [secTab, setSecTab] = useState<"summary" | "findings" | "answers">("summary");
+
+  useEffect(() => {
+    setSecTab("summary");
+  }, [section?.label]);
+
+  useEffect(() => {
+    if (!section) return;
+    const prev = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    return () => { document.body.style.overflow = prev; };
+  }, [section]);
+
+  if (!section) return null;
+
+  const d = section.data || {};
+  const badge = section.badge || d.ui?.badge || d.score?.riskLevel || "";
+  const sectionTitle = d.section?.title || section.label;
+
+  // Score
+  const score = d.score || {};
+  const scoreTotal = score.total ?? d.ui?.scoreDisplay?.split("/")?.[0];
+  const scoreMax = score.max ?? null;
+  const scorePct = score.adjustedPercentage ?? score.rawPercentage ?? null;
+
+  // Summaries
+  const summaries = d.summaries || {};
+  const coachSummary: string = summaries.coach || d.raw?.aiOutput?.coachSummary || "";
+  const learnerSummary: string = summaries.learner || d.raw?.aiOutput?.learnerFriendlySummary || "";
+  const screeningNote: string = summaries.screeningOnlyNote || "";
+
+  // Findings
+  const findings = d.findings || {};
+  const mainIndicators: string[] = Array.isArray(findings.mainIndicators)
+    ? findings.mainIndicators
+    : Array.isArray(d.raw?.aiOutput?.mainIndicators) ? d.raw.aiOutput.mainIndicators : [];
+  const recommendedActions: any[] = Array.isArray(findings.recommendedActions)
+    ? findings.recommendedActions
+    : Array.isArray(d.raw?.aiOutput?.recommendedActions) ? d.raw.aiOutput.recommendedActions : [];
+  const recommendedAdjustments: string[] = Array.isArray(findings.recommendedAdjustments)
+    ? findings.recommendedAdjustments
+    : Array.isArray(d.raw?.aiOutput?.recommendedAdjustments) ? d.raw.aiOutput.recommendedAdjustments : [];
+
+  // Flags
+  const flags = d.flags || {};
+  const activeFlags = Object.entries(flags).filter(([, v]) => v === true).map(([k]) =>
+    k.replace(/([A-Z])/g, " $1").replace(/^./, s => s.toUpperCase()).replace("Required", "⚠").trim()
+  );
+
+  // Answers
+  const answers: any[] = Array.isArray(d.answers) ? d.answers : [];
+
+  const badgeCls: Record<string, string> = {
+    Low: "bg-emerald-100 text-emerald-700 border-emerald-200",
+    Medium: "bg-amber-100 text-amber-700 border-amber-200",
+    Moderate: "bg-amber-100 text-amber-700 border-amber-200",
+    High: "bg-red-100 text-red-700 border-red-200",
+    "Very High": "bg-red-200 text-red-800 border-red-300",
+  };
+
+  const priorityCls: Record<string, string> = {
+    Low: "bg-emerald-50 text-emerald-700",
+    Medium: "bg-amber-50 text-amber-700",
+    High: "bg-red-50 text-red-700",
+  };
+
+  const modal = (
+    <div className="fixed inset-0 z-[300] flex items-center justify-center p-4"
+      style={{ backdropFilter: "blur(2px)", background: "rgba(20,10,50,0.45)" }}>
+      <div className="relative w-full max-w-2xl rounded-3xl bg-white shadow-2xl flex flex-col max-h-[90vh]">
+
+        {/* ── Header ── */}
+        <div className="flex items-start justify-between gap-4 px-6 pt-6 pb-4 border-b border-slate-100">
+          <div className="min-w-0">
+            <p className="text-xs font-semibold uppercase tracking-widest text-[#7B6D9B] mb-0.5">{section.learnerName}</p>
+            <h2 className="text-lg font-bold text-[#241453] leading-tight">{sectionTitle}</h2>
+          </div>
+          <div className="flex items-center gap-2 shrink-0">
+            {badge && (
+              <span className={`inline-flex items-center rounded-xl border px-3 py-1 text-xs font-bold uppercase tracking-wide ${badgeCls[badge] || "bg-slate-100 text-slate-600 border-slate-200"}`}>
+                {badge}
+              </span>
+            )}
+            {scoreTotal != null && scoreMax != null && (
+              <span className="inline-flex items-center rounded-xl bg-[#F0EBF9] px-3 py-1 text-xs font-bold text-[#241453]">
+                {scoreTotal}/{scoreMax}
+                {scorePct != null && <span className="ml-1 text-[#7B6D9B]">({scorePct}%)</span>}
+              </span>
+            )}
+            <button type="button" onClick={onClose}
+              className="flex h-8 w-8 items-center justify-center rounded-xl bg-slate-100 text-slate-500 hover:bg-slate-200 transition">
+              <X className="h-4 w-4" />
+            </button>
+          </div>
+        </div>
+
+        {/* ── Tabs ── */}
+        <div className="flex gap-1 px-6 pt-3 pb-0 border-b border-slate-100">
+          {(["summary", "findings", "answers"] as const).map((t) => (
+            <button key={t} type="button" onClick={() => setSecTab(t)}
+              className={`px-4 py-2 text-sm font-medium rounded-t-xl transition ${
+                secTab === t
+                  ? "bg-[#241453] text-white"
+                  : "text-[#7B6D9B] hover:bg-[#F0EBF9] hover:text-[#241453]"
+              }`}>
+              {t === "summary" ? "Summary" : t === "findings" ? `Findings (${mainIndicators.length})` : `Answers (${answers.length})`}
+            </button>
+          ))}
+        </div>
+
+        {/* ── Body ── */}
+        <div className="overflow-y-auto px-6 py-5 space-y-5">
+
+          {/* SUMMARY TAB */}
+          {secTab === "summary" && (
+            <>
+              {activeFlags.length > 0 && (
+                <div className="flex flex-wrap gap-2">
+                  {activeFlags.map((f) => (
+                    <span key={f} className="rounded-xl bg-red-50 border border-red-200 px-3 py-1 text-xs font-semibold text-red-700">{f}</span>
+                  ))}
+                </div>
+              )}
+
+              {coachSummary && (
+                <div className="rounded-2xl bg-[#F8F5FF] border border-[#E6DDF8] p-4">
+                  <p className="text-[10px] font-semibold uppercase tracking-wide text-[#7B6D9B] mb-2">Coach Summary</p>
+                  <p className="text-sm text-[#241453] leading-relaxed">{coachSummary}</p>
+                </div>
+              )}
+
+              {learnerSummary && (
+                <div className="rounded-2xl bg-[#F4FCF8] border border-[#C0E0D0] p-4">
+                  <p className="text-[10px] font-semibold uppercase tracking-wide text-[#4A9068] mb-2">Learner Summary</p>
+                  <p className="text-sm text-[#241453] leading-relaxed">{learnerSummary}</p>
+                </div>
+              )}
+
+              {screeningNote && (
+                <p className="text-xs text-slate-400 italic">{screeningNote}</p>
+              )}
+
+              {!coachSummary && !learnerSummary && (
+                <p className="text-sm text-slate-400 text-center py-6">No summary available.</p>
+              )}
+            </>
+          )}
+
+          {/* FINDINGS TAB */}
+          {secTab === "findings" && (
+            <>
+              {mainIndicators.length > 0 && (
+                <div>
+                  <p className="text-[10px] font-semibold uppercase tracking-wide text-[#7B6D9B] mb-3">Main Indicators</p>
+                  <ul className="space-y-2">
+                    {mainIndicators.map((ind, i) => (
+                      <li key={i} className="flex items-start gap-2 text-sm text-[#241453]">
+                        <span className="mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full bg-[#7A5FD0]" />
+                        {ind}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+
+              {recommendedAdjustments.length > 0 && (
+                <div className="rounded-2xl bg-[#F8F5FF] border border-[#E6DDF8] p-4">
+                  <p className="text-[10px] font-semibold uppercase tracking-wide text-[#7B6D9B] mb-3">Recommended Adjustments</p>
+                  <ul className="space-y-2">
+                    {recommendedAdjustments.map((adj, i) => (
+                      <li key={i} className="flex items-start gap-2 text-sm text-[#241453]">
+                        <CheckCircle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-emerald-500" />
+                        {adj}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+
+              {recommendedActions.length > 0 && (
+                <div>
+                  <p className="text-[10px] font-semibold uppercase tracking-wide text-[#7B6D9B] mb-3">Recommended Actions</p>
+                  <div className="space-y-2">
+                    {recommendedActions.map((act, i) => (
+                      <div key={i} className="rounded-xl border border-[#E7E2F3] bg-white p-3">
+                        <div className="flex items-center justify-between gap-2 mb-1.5">
+                          <span className="text-xs font-semibold text-[#241453]">{act.owner}</span>
+                          <div className="flex gap-1.5">
+                            {act.priority && (
+                              <span className={`rounded-lg px-2 py-0.5 text-[10px] font-bold uppercase ${priorityCls[act.priority] || "bg-slate-50 text-slate-500"}`}>
+                                {act.priority}
+                              </span>
+                            )}
+                            {act.due && (
+                              <span className="rounded-lg bg-slate-50 px-2 py-0.5 text-[10px] text-slate-500">{act.due}</span>
+                            )}
+                          </div>
+                        </div>
+                        <p className="text-sm text-[#241453]">{act.action}</p>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {mainIndicators.length === 0 && recommendedActions.length === 0 && (
+                <p className="text-sm text-slate-400 text-center py-6">No findings available.</p>
+              )}
+            </>
+          )}
+
+          {/* ANSWERS TAB */}
+          {secTab === "answers" && (
+            <>
+              {answers.length === 0 ? (
+                <p className="text-sm text-slate-400 text-center py-6">No answers recorded.</p>
+              ) : (
+                <div className="space-y-2">
+                  {answers.map((ans, i) => {
+                    const val = ans.selectedValue ?? ans.selected_value;
+                    const label = ans.selectedLabel ?? ans.selected_label ?? "";
+                    const max = ans.scoreMax ?? ans.score_max ?? 10;
+                    const pctW = max > 0 ? Math.round((val / max) * 100) : 0;
+                    const barCol = val <= 2 ? "bg-emerald-400" : val <= 5 ? "bg-amber-400" : "bg-red-400";
+                    return (
+                      <div key={ans.questionId || i} className="rounded-xl border border-[#E7E2F3] p-3">
+                        <p className="text-sm text-[#241453] mb-2">{ans.questionText ?? ans.question_text}</p>
+                        <div className="flex items-center gap-3">
+                          <div className="flex-1 h-1.5 rounded-full bg-slate-100 overflow-hidden">
+                            <div className={`h-full rounded-full ${barCol}`} style={{ width: `${pctW}%` }} />
+                          </div>
+                          <span className="text-xs font-semibold text-[#241453] shrink-0">{label} ({val}/{max})</span>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </>
+          )}
+
+        </div>
+      </div>
+    </div>
+  );
+
+  return createPortal(modal, document.body);
+}
+
 // ── Detail Modal (Report Viewer) ───────────────────────────────────────────
 
 function OnboardingReportDetailPanel({
@@ -729,6 +971,7 @@ function OnboardingReportDetailPanel({
   const [downloading, setDownloading] = useState(false);
   const [activeTab, setActiveTab] = useState("overview");
   const [expandedFindings, setExpandedFindings] = useState<Set<number>>(new Set());
+  const [panelSection, setPanelSection] = useState<SectionView | null>(null);
   const bodyRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -762,8 +1005,8 @@ function OnboardingReportDetailPanel({
     overview.overallRiskLevel || reportHeader.overallRiskLevel || report.overall_risk_level || ""
   );
   const score = overview.overallScore ?? report.overall_score ?? 0;
-  const maxScore = overview.overallMaxScore ?? report.overall_max_score ?? 180;
-  const pct = overview.percentage ?? report.percentage ?? 0;
+  const maxScore = overview.overallMaxScore ?? report.overall_max_score ?? 600;
+  const pct = overview.rawPercentage ?? overview.adjustedPercentage ?? overview.percentage ?? report.percentage ?? 0;
 
   const supportCategories: [string, string, React.ReactNode][] = [
     ["digitalSupport", "Digital Support", <Laptop className="h-4 w-4" />],
@@ -776,6 +1019,10 @@ function OnboardingReportDetailPanel({
 
   const riskColorCls = (level: string) => {
     const v = (level || "").toLowerCase();
+    if (v === "very high") return {
+      bg: "bg-[#F5EDED]", border: "border-[#D9AAAA]", text: "text-[#8B2020]",
+      barColor: "#A84040", badge: "bg-[#F5E8E8] text-[#8B2020] border-[#D9AAAA]",
+    };
     if (v === "high") return {
       bg: "bg-[#FEF5F5]", border: "border-[#EDD5D5]", text: "text-[#C06060]",
       barColor: "#D97070", badge: "bg-[#FEF0F0] text-[#B85858] border-[#EDD5D5]",
@@ -945,9 +1192,14 @@ function OnboardingReportDetailPanel({
                   <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
                     {riskRoadmap.map((section: any, i: number) => {
                       const secRc = riskColorCls(section.riskLevel || "");
-                      const secPct = section.maxScore ? Math.round((section.score / section.maxScore) * 100) : 0;
-                      return (
-                        <div key={i} className={`rounded-2xl border ${secRc.border} ${secRc.bg} p-4`}>
+                      const secPct = section.adjustedPercentage ?? section.rawPercentage ?? (section.maxScore ? Math.round((section.score / section.maxScore) * 100) : 0);
+                      // Match riskRoadmap label to section_progress by first keyword
+                      const keyword = (section.label || "").split(/[\s,]/)[0].toLowerCase();
+                      const matched = (report.section_progress || []).find(
+                        (sp) => sp.done && sp.label.toLowerCase().split(" ")[0] === keyword
+                      );
+                      const cardContent = (
+                        <>
                           <div className="flex items-center gap-3 mb-3">
                             <div className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-white/80 ${secRc.text}`}>
                               {sectionIcon(section.sectionIcon || "")}
@@ -956,6 +1208,11 @@ function OnboardingReportDetailPanel({
                               <p className="text-xs font-semibold text-[#241453] leading-tight">{section.label}</p>
                               <p className={`text-[11px] font-bold mt-0.5 ${secRc.text}`}>{section.riskLevel}</p>
                             </div>
+                            {matched && (
+                              <span className="shrink-0 rounded-lg border border-[#DED5F3] bg-white/70 px-2 py-0.5 text-[9px] font-semibold text-[#644D93]">
+                                View Report
+                              </span>
+                            )}
                           </div>
                           <div className="flex items-center justify-between mb-1.5">
                             <span className="text-lg font-bold text-[#241453]">{section.score}</span>
@@ -965,6 +1222,20 @@ function OnboardingReportDetailPanel({
                             <div className="h-2.5 rounded-full transition-all" style={{ width: `${secPct}%`, backgroundColor: secRc.barColor }} />
                           </div>
                           <p className={`mt-1.5 text-right text-[10px] font-semibold ${secRc.text}`}>{secPct}%</p>
+                        </>
+                      );
+                      return matched ? (
+                        <button
+                          key={i}
+                          type="button"
+                          onClick={() => setPanelSection({ label: matched.label, badge: matched.badge, data: matched.data, learnerName: report.learner_name })}
+                          className={`rounded-2xl border ${secRc.border} ${secRc.bg} p-4 text-left w-full transition hover:brightness-95 hover:shadow-md cursor-pointer`}
+                        >
+                          {cardContent}
+                        </button>
+                      ) : (
+                        <div key={i} className={`rounded-2xl border ${secRc.border} ${secRc.bg} p-4`}>
+                          {cardContent}
                         </div>
                       );
                     })}
@@ -1190,7 +1461,116 @@ function OnboardingReportDetailPanel({
     </div>
   );
 
-  return createPortal(modal, document.body);
+  return createPortal(
+    <>
+      {modal}
+      <SectionReportModal section={panelSection} onClose={() => setPanelSection(null)} />
+    </>,
+    document.body
+  );
+}
+
+// ── NotesEvidenceModal ────────────────────────────────────────────────────
+
+type NoteItem = { id: string; note: string; created_by: string; created_at: string | null };
+type EvidenceItem = { id: string; description: string; file_url: string; file_name: string; created_by: string; created_at: string | null };
+
+function NotesEvidenceModal({
+  mode,
+  reportId,
+  learnerName,
+  onClose,
+}: {
+  mode: "notes" | "evidence";
+  reportId: string;
+  learnerName: string;
+  onClose: () => void;
+}) {
+  const [items, setItems] = useState<any[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    let mounted = true;
+    async function load() {
+      setLoading(true);
+      try {
+        const res = mode === "notes"
+          ? await getOnboardingReportNotes(reportId)
+          : await getOnboardingReportEvidence(reportId);
+        if (!mounted) return;
+        setItems(mode === "notes" ? (res?.notes || []) : (res?.evidence || []));
+      } catch { /* silent */ } finally {
+        if (mounted) setLoading(false);
+      }
+    }
+    load();
+    return () => { mounted = false; };
+  }, [reportId, mode]);
+
+  const isNotes = mode === "notes";
+  const title = isNotes ? "Case Notes" : "Evidence Files";
+  const Icon = isNotes ? MessageSquare : Paperclip;
+
+  return createPortal(
+    <div className="fixed inset-0 z-[130] flex items-center justify-center bg-black/40 p-4">
+      <div className="w-full max-w-md rounded-3xl bg-white shadow-2xl overflow-hidden">
+        {/* Header */}
+        <div className="flex items-center justify-between bg-[#241453] px-5 py-4">
+          <div className="flex items-center gap-2">
+            <Icon className="h-4 w-4 text-white/70" />
+            <h3 className="text-sm font-semibold text-white">{title}</h3>
+            <span className="text-xs text-white/60">· {learnerName}</span>
+          </div>
+          <button type="button" onClick={onClose} className="rounded-lg p-1 text-white/70 hover:text-white">
+            <X className="h-4 w-4" />
+          </button>
+        </div>
+
+        {/* Body */}
+        <div className="custom-scroll max-h-[60vh] overflow-y-auto p-5 space-y-3">
+          {loading ? (
+            <p className="py-8 text-center text-sm text-[#7B6D9B]">Loading…</p>
+          ) : items.length === 0 ? (
+            <p className="py-8 text-center text-sm text-slate-400">No {isNotes ? "notes" : "files"} yet.</p>
+          ) : isNotes ? (
+            (items as NoteItem[]).map((n) => (
+              <div key={n.id} className="rounded-2xl border border-[#EEE8F8] bg-[#FDFCFF] p-4">
+                <p className="text-sm text-[#241453] leading-relaxed whitespace-pre-wrap">{n.note}</p>
+                <div className="mt-2 flex items-center gap-2 text-[10px] text-[#9D8EC7]">
+                  <span>{n.created_by || "—"}</span>
+                  {n.created_at && <><span>·</span><span>{formatDate(n.created_at)}</span></>}
+                </div>
+              </div>
+            ))
+          ) : (
+            (items as EvidenceItem[]).map((e) => (
+              <div key={e.id} className="rounded-2xl border border-[#F0E8D8] bg-[#FEFBF5] p-4">
+                {e.description && <p className="text-sm font-medium text-[#241453] mb-1">{e.description}</p>}
+                {e.file_url ? (
+                  <a
+                    href={resolveMediaUrl(e.file_url)}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="inline-flex items-center gap-1.5 text-xs text-[#9D6912] hover:underline"
+                  >
+                    <ExternalLink className="h-3 w-3" />
+                    {e.file_name || "View file"}
+                  </a>
+                ) : e.file_name ? (
+                  <p className="text-xs text-slate-500">{e.file_name}</p>
+                ) : null}
+                <div className="mt-2 flex items-center gap-2 text-[10px] text-[#9D8EC7]">
+                  <span>{e.created_by || "—"}</span>
+                  {e.created_at && <><span>·</span><span>{formatDate(e.created_at)}</span></>}
+                </div>
+              </div>
+            ))
+          )}
+        </div>
+      </div>
+    </div>,
+    document.body
+  );
 }
 
 // ── Main OnboardingTicketsView ─────────────────────────────────────────────
@@ -1204,6 +1584,10 @@ export default function OnboardingTicketsView({ coachEmail }: { coachEmail?: str
   const [filtersOpen, setFiltersOpen] = useState(false);
   const [exportOpen, setExportOpen] = useState(false);
   const [viewReport, setViewReport] = useState<OnboardingReport | null>(null);
+  const [viewSection, setViewSection] = useState<SectionView | null>(null);
+  const [reportStatuses, setReportStatuses] = useState<Map<string, string>>(new Map());
+  const [notesModal, setNotesModal] = useState<{ reportId: string; learnerName: string } | null>(null);
+  const [evidenceModal, setEvidenceModal] = useState<{ reportId: string; learnerName: string } | null>(null);
 
   useEffect(() => {
     let mounted = true;
@@ -1213,7 +1597,11 @@ export default function OnboardingTicketsView({ coachEmail }: { coachEmail?: str
       try {
         const res = await getOnboardingReports();
         if (!mounted) return;
-        setReports(res?.reports || []);
+        const rows: OnboardingReport[] = res?.reports || [];
+        setReports(rows);
+        const statusMap = new Map<string, string>();
+        rows.forEach((r) => statusMap.set(r.id, r.status || "active"));
+        setReportStatuses(statusMap);
       } catch (err: any) {
         if (!mounted) return;
         setError(err?.message || "Failed to load onboarding reports");
@@ -1248,11 +1636,12 @@ export default function OnboardingTicketsView({ coachEmail }: { coachEmail?: str
   }, [reports, search, filters, coachEmail]);
 
   const stats = useMemo(() => ({
-    total: reports.length,
-    high: reports.filter((r) => normaliseRisk(r.overall_risk_level) === "High").length,
-    moderate: reports.filter((r) => normaliseRisk(r.overall_risk_level) === "Moderate").length,
-    low: reports.filter((r) => normaliseRisk(r.overall_risk_level) === "Low").length,
-  }), [reports]);
+    total: filtered.length,
+    veryHigh: filtered.filter((r) => normaliseRisk(r.overall_risk_level) === "Very High").length,
+    high: filtered.filter((r) => normaliseRisk(r.overall_risk_level) === "High").length,
+    moderate: filtered.filter((r) => normaliseRisk(r.overall_risk_level) === "Moderate").length,
+    low: filtered.filter((r) => normaliseRisk(r.overall_risk_level) === "Low").length,
+  }), [filtered]);
 
   const activeFilterCount = filters.risk.length;
 
@@ -1296,8 +1685,9 @@ export default function OnboardingTicketsView({ coachEmail }: { coachEmail?: str
 
     const riskColor = (level: string): [number,number,number] => {
       const v = (level || "").toLowerCase();
+      if (v === "very high") return [139, 32, 32];
       if (v === "high") return [192, 80, 80];
-      if (v === "moderate" || v === "medium") return [178, 119, 21]; // gold #b27715
+      if (v === "moderate" || v === "medium") return [178, 119, 21];
       if (v === "low") return [60, 130, 90];
       return [120, 120, 120];
     };
@@ -1495,12 +1885,13 @@ export default function OnboardingTicketsView({ coachEmail }: { coachEmail?: str
         </div>
 
         {/* Stat Cards */}
-        <div className="mt-6 grid grid-cols-2 gap-4 sm:grid-cols-4">
+        <div className="mt-6 grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-5">
           {[
-            { title: "Total Reports", value: stats.total, icon: <FileText className="h-4 w-4" />, color: "text-[#0F9B8E]", bg: "bg-[#E6F7F6]" },
-            { title: "High Risk", value: stats.high, icon: <AlertTriangle className="h-4 w-4" />, color: "text-red-500", bg: "bg-red-50" },
-            { title: "Moderate Risk", value: stats.moderate, icon: <Users className="h-4 w-4" />, color: "text-amber-500", bg: "bg-amber-50" },
-            { title: "Low Risk", value: stats.low, icon: <CheckCircle className="h-4 w-4" />, color: "text-emerald-500", bg: "bg-emerald-50" },
+            { title: "Total Reports",   value: stats.total,    icon: <FileText className="h-4 w-4" />,       color: "text-[#0F9B8E]",    bg: "bg-[#E6F7F6]" },
+            { title: "Very High Risk",  value: stats.veryHigh, icon: <AlertTriangle className="h-4 w-4" />,  color: "text-[#8B2020]",    bg: "bg-[#F5E8E8]" },
+            { title: "High Risk",       value: stats.high,     icon: <AlertTriangle className="h-4 w-4" />,  color: "text-[#C06060]",    bg: "bg-[#FEF0F0]" },
+            { title: "Moderate Risk",   value: stats.moderate, icon: <Users className="h-4 w-4" />,          color: "text-[#B08040]",    bg: "bg-[#FEF9EE]" },
+            { title: "Low Risk",        value: stats.low,      icon: <CheckCircle className="h-4 w-4" />,    color: "text-[#4A9068]",    bg: "bg-[#F2FAF6]" },
           ].map((s) => (
             <div key={s.title} className="rounded-3xl border border-[#ECE7F7] bg-[#F8F6FC] p-5">
               <div className="mb-3 flex items-center justify-between">
@@ -1526,21 +1917,24 @@ export default function OnboardingTicketsView({ coachEmail }: { coachEmail?: str
                   <th className="px-5 py-4 font-medium">Score</th>
                   <th className="px-5 py-4 font-medium">Reports</th>
                   <th className="px-5 py-4 font-medium">Date</th>
-                  <th className="px-5 py-4 font-medium">View</th>
+                  <th className="px-5 py-4 font-medium">Notes</th>
+                  <th className="px-5 py-4 font-medium">Evidence</th>
+                  <th className="px-5 py-4 font-medium">Status</th>
+                  <th className="px-5 py-4 font-medium">View Report</th>
                 </tr>
               </thead>
               <tbody>
                 {loading ? (
                   <tr>
-                    <td colSpan={9} className="px-5 py-10 text-center text-slate-500">Loading reports...</td>
+                    <td colSpan={12} className="px-5 py-10 text-center text-slate-500">Loading reports...</td>
                   </tr>
                 ) : error ? (
                   <tr>
-                    <td colSpan={9} className="px-5 py-10 text-center text-red-500">{error}</td>
+                    <td colSpan={12} className="px-5 py-10 text-center text-red-500">{error}</td>
                   </tr>
                 ) : filtered.length === 0 ? (
                   <tr>
-                    <td colSpan={9} className="px-5 py-10 text-center text-slate-500">No reports found</td>
+                    <td colSpan={12} className="px-5 py-10 text-center text-slate-500">No reports found</td>
                   </tr>
                 ) : (
                   filtered.map((r) => {
@@ -1572,18 +1966,158 @@ export default function OnboardingTicketsView({ coachEmail }: { coachEmail?: str
                             </div>
                           ) : "—"}
                         </td>
-                        <td className="px-5 py-4 text-[#241453]">
-                          {r.completed_reports != null ? `${r.completed_reports}/${r.expected_reports}` : "—"}
+                        <td className="px-5 py-4">
+                          {(() => {
+                            const done = r.completed_reports ?? 0;
+                            const total = r.expected_reports ?? 6;
+                            const pct = total > 0 ? Math.round((done / total) * 100) : 0;
+                            const complete = done >= total && total > 0;
+                            const sections = r.section_progress ?? [];
+                            const badgeColor: Record<string, string> = {
+                              Low: "bg-emerald-100 text-emerald-700",
+                              Medium: "bg-amber-100 text-amber-700",
+                              Moderate: "bg-amber-100 text-amber-700",
+                              High: "bg-red-100 text-red-700",
+                              "Very High": "bg-red-200 text-red-800",
+                            };
+                            return (
+                              <div className="flex flex-col gap-1.5 min-w-[120px]">
+                                {/* fraction + bar */}
+                                <div className="flex items-center gap-1.5">
+                                  <span className={`text-sm font-semibold ${complete ? "text-emerald-600" : done > 0 ? "text-[#241453]" : "text-slate-400"}`}>
+                                    {done}/{total}
+                                  </span>
+                                  {complete ? (
+                                    <span className="text-[10px] font-bold text-emerald-600">✓ Done</span>
+                                  ) : done > 0 ? (
+                                    <span className="text-[10px] font-semibold text-amber-500">In progress</span>
+                                  ) : (
+                                    <span className="text-[10px] text-slate-400">Not started</span>
+                                  )}
+                                </div>
+                                <div className="h-1.5 w-full rounded-full bg-slate-100 overflow-hidden">
+                                  <div
+                                    className={`h-full rounded-full transition-all ${complete ? "bg-emerald-500" : done > 0 ? "bg-amber-400" : "bg-slate-200"}`}
+                                    style={{ width: `${pct}%` }}
+                                  />
+                                </div>
+                                {/* section badges — only when partially done */}
+                                {!complete && sections.length > 0 && (
+                                  <div className="flex flex-wrap gap-1 mt-0.5">
+                                    {sections.map((s) => (
+                                      <span
+                                        key={s.label}
+                                        title={s.label}
+                                        className={`inline-flex items-center gap-0.5 rounded-md px-1.5 py-0.5 text-[9px] font-semibold leading-none border ${
+                                          s.done
+                                            ? `${badgeColor[s.badge ?? ""] || "bg-slate-100 text-slate-600"} border-transparent`
+                                            : "bg-white border-slate-200 text-slate-300"
+                                        }`}
+                                      >
+                                        {s.done ? "✓" : "○"} {s.label.split(" ")[0]}
+                                      </span>
+                                    ))}
+                                  </div>
+                                )}
+                              </div>
+                            );
+                          })()}
                         </td>
                         <td className="px-5 py-4 text-xs text-slate-500">{formatDate(r.created_at)}</td>
+
+                        {/* Notes */}
                         <td className="px-5 py-4">
-                          <button
-                            type="button"
-                            onClick={() => setViewReport(r)}
-                            className="inline-flex h-8 items-center gap-1.5 rounded-xl bg-[#241453] px-3 text-xs font-semibold text-white hover:bg-[#362063] transition"
-                          >
-                            View Report
-                          </button>
+                          {(r.notes_count ?? 0) > 0 ? (
+                            <button
+                              type="button"
+                              onClick={() => setNotesModal({ reportId: r.id, learnerName: r.learner_name })}
+                              className="inline-flex items-center gap-1 rounded-full bg-[#EEE8F8] px-2.5 py-1 text-xs font-semibold text-[#4B3B8C] hover:bg-[#DDD0F5] transition"
+                            >
+                              <MessageSquare className="h-3 w-3" />
+                              {r.notes_count} note{(r.notes_count ?? 0) !== 1 ? "s" : ""}
+                            </button>
+                          ) : (
+                            <span className="text-xs text-slate-300">—</span>
+                          )}
+                        </td>
+
+                        {/* Evidence */}
+                        <td className="px-5 py-4">
+                          {(r.evidence_count ?? 0) > 0 ? (
+                            <button
+                              type="button"
+                              onClick={() => setEvidenceModal({ reportId: r.id, learnerName: r.learner_name })}
+                              className="inline-flex items-center gap-1 rounded-full bg-[#F9F4EC] px-2.5 py-1 text-xs font-semibold text-[#9D6912] hover:bg-[#F0E5D0] transition"
+                            >
+                              <Paperclip className="h-3 w-3" />
+                              {r.evidence_count} file{(r.evidence_count ?? 0) !== 1 ? "s" : ""}
+                            </button>
+                          ) : (
+                            <span className="text-xs text-slate-300">—</span>
+                          )}
+                        </td>
+
+                        {/* Status + Actions */}
+                        <td className="px-5 py-4">
+                          <OnboardingActionsDropdown
+                            reportId={r.id}
+                            reportStatus={reportStatuses.get(r.id) || "active"}
+                            learnerName={r.learner_name}
+                            learnerEmail={r.learner_email}
+                            onStatusChange={(rid: string, newStatus: string) => {
+                              setReportStatuses((prev) => new Map(prev).set(rid, newStatus));
+                            }}
+                          />
+                        </td>
+
+                        {/* View Report — last column */}
+                        <td className="px-5 py-4">
+                          {(() => {
+                            const done = r.completed_reports ?? 0;
+                            const total = r.expected_reports ?? 6;
+                            const complete = done >= total && total > 0;
+                            const sections = r.section_progress ?? [];
+
+                            if (complete) {
+                              return (
+                                <button
+                                  type="button"
+                                  onClick={() => setViewReport(r)}
+                                  className="inline-flex h-8 items-center gap-1.5 rounded-xl bg-[#241453] px-3 text-xs font-semibold text-white hover:bg-[#362063] transition whitespace-nowrap"
+                                >
+                                  View Report
+                                </button>
+                              );
+                            }
+
+                            const completedSections = sections.filter((s) => s.done);
+                            if (completedSections.length === 0) {
+                              return <span className="text-xs text-slate-400">No reports yet</span>;
+                            }
+
+                            return (
+                              <div className="flex flex-wrap gap-1.5">
+                                {completedSections.map((s) => (
+                                  <button
+                                    key={s.label}
+                                    type="button"
+                                    onClick={() => setViewSection({ label: s.label, badge: s.badge, data: s.data, learnerName: r.learner_name })}
+                                    className="inline-flex h-7 items-center gap-1 rounded-xl border border-[#DED5F3] bg-[#F4F0FC] px-2.5 text-[11px] font-semibold text-[#241453] hover:bg-[#EAE3F8] transition"
+                                    title={`View ${s.label} report`}
+                                  >
+                                    {s.badge && (
+                                      <span className={`h-1.5 w-1.5 rounded-full ${
+                                        s.badge === "Low" ? "bg-emerald-500" :
+                                        s.badge === "High" || s.badge === "Very High" ? "bg-red-500" :
+                                        "bg-amber-500"
+                                      }`} />
+                                    )}
+                                    {s.label.split(" ")[0]}
+                                  </button>
+                                ))}
+                              </div>
+                            );
+                          })()}
                         </td>
                       </tr>
                     );
@@ -1597,6 +2131,29 @@ export default function OnboardingTicketsView({ coachEmail }: { coachEmail?: str
 
       {/* Report Detail Panel */}
       <OnboardingReportDetailPanel report={viewReport} onClose={() => setViewReport(null)} />
+
+      {/* Section Report Modal */}
+      <SectionReportModal section={viewSection} onClose={() => setViewSection(null)} />
+
+      {/* Notes Modal */}
+      {notesModal && (
+        <NotesEvidenceModal
+          mode="notes"
+          reportId={notesModal.reportId}
+          learnerName={notesModal.learnerName}
+          onClose={() => setNotesModal(null)}
+        />
+      )}
+
+      {/* Evidence Modal */}
+      {evidenceModal && (
+        <NotesEvidenceModal
+          mode="evidence"
+          reportId={evidenceModal.reportId}
+          learnerName={evidenceModal.learnerName}
+          onClose={() => setEvidenceModal(null)}
+        />
+      )}
     </div>
   );
 }

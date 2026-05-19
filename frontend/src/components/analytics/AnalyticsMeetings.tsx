@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState, useCallback } from "react";
+import { createPortal } from "react-dom";
 
 import TopHeader from "../header/TopHeader";
 import StatsOverview from "./StatsOverview";
@@ -1403,8 +1404,8 @@ export default function AnalyticsMeetings({ onOpenSidebar }: { onOpenSidebar?: (
       )}
 
       {/* Students Modal */}
-      {studentsModal.open && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm">
+      {studentsModal.open && createPortal(
+        <div className="fixed inset-0 z-[200] flex items-center justify-center bg-black/40 backdrop-blur-sm">
           <div className="bg-[#F9F5FF]/50 w-full max-w-5xl h-[80vh] rounded-2xl shadow-xl flex flex-col">
             {/* Header */}
             <div className="flex items-center justify-between px-5 py-4 border-b">
@@ -1827,12 +1828,13 @@ export default function AnalyticsMeetings({ onOpenSidebar }: { onOpenSidebar?: (
               )}
             </div>
           </div>
-        </div>
+        </div>,
+        document.body
       )}
 
       {/* Evidence Modal */}
-      {evidenceModal.open && (
-        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/45 backdrop-blur-sm px-3">
+      {evidenceModal.open && createPortal(
+        <div className="fixed inset-0 z-[210] flex items-center justify-center bg-black/45 backdrop-blur-sm px-3">
           <div className="bg-white w-full max-w-5xl h-[80vh] rounded-2xl shadow-xl flex flex-col overflow-hidden">
             <div className="flex items-center justify-between px-5 py-4 border-b">
               <div>
@@ -1933,12 +1935,13 @@ export default function AnalyticsMeetings({ onOpenSidebar }: { onOpenSidebar?: (
               )}
             </div>
           </div>
-        </div>
+        </div>,
+        document.body
       )}
 
       {/* Marking Result Modal */}
-      {resultModal.open && (
-        <div className="fixed inset-0 z-[70] flex items-center justify-center bg-black/50 backdrop-blur-sm px-3">
+      {resultModal.open && createPortal(
+        <div className="fixed inset-0 z-[220] flex items-center justify-center bg-black/50 backdrop-blur-sm px-3">
           <div className="bg-white w-full max-w-3xl max-h-[80vh] rounded-2xl shadow-xl flex flex-col overflow-hidden">
             <div className="flex items-center justify-between px-5 py-4 border-b">
               <h3 className="text-lg font-semibold text-[#442F73]">Marking Report</h3>
@@ -1994,7 +1997,8 @@ export default function AnalyticsMeetings({ onOpenSidebar }: { onOpenSidebar?: (
               )}
             </div>
           </div>
-        </div>
+        </div>,
+        document.body
       )}
 
     </div >

@@ -787,8 +787,6 @@ def coach_wellbeing_dashboard(request):
 
     elif role == "qa":
         requested_coach_email = (request.query_params.get("coach_email") or "").strip().lower()
-        if not requested_coach_email:
-            return Response(empty_coach_wellbeing_response())
 
     else:
         return Response({"detail": "Forbidden"}, status=status.HTTP_403_FORBIDDEN)
@@ -851,6 +849,7 @@ def coach_wellbeing_dashboard(request):
 
     caseload = 0
     at_risk = 0
+    green_risk = 0
     non_responders = 0
     open_tickets_total = 0
 
@@ -956,6 +955,8 @@ def coach_wellbeing_dashboard(request):
 
         if risk_level == "red":
             at_risk += 1
+        elif risk_level == "green":
+            green_risk += 1
 
         if last_survey_date is None:
             non_responders += 1
@@ -1126,6 +1127,7 @@ def coach_wellbeing_dashboard(request):
         "summary": {
             "caseload": caseload,
             "atRisk": at_risk,
+            "greenRisk": green_risk,
             "nonResponders": non_responders,
             "openTickets": open_tickets_total,
         },
@@ -1572,6 +1574,16 @@ def onboarding_reports_list(request):
     if role != "qa":
         return Response({"detail": "Forbidden"}, status=status.HTTP_403_FORBIDDEN)
 
+    SECTION_COLS = [
+        ("technology_report",          "Technology"),
+        ("visual_hearing_report",      "Visual & Hearing"),
+        ("dyslexia_report",            "Dyslexia"),
+        ("adhd_report",                "ADHD"),
+        ("social_anxiety_report",      "Social Anxiety"),
+        ("mood_learning_capacity_report", "Mood & Learning"),
+    ]
+    EXPECTED = len(SECTION_COLS)
+
     try:
         qs = LearnerInclusivenessReport.objects.using("wellbeing").all().order_by("-created_at", "-id")
         rows = []
@@ -1581,6 +1593,33 @@ def onboarding_reports_list(request):
             overview = master.get("overview", {}) if isinstance(master, dict) else {}
             if not isinstance(overview, dict):
                 overview = {}
+
+            # Count completed sections directly from DB columns
+            section_progress = []
+            completed_count = 0
+            for col, label in SECTION_COLS:
+                raw = getattr(r, col, None)
+                if raw:
+                    completed_count += 1
+                    parsed = _parse_json_field(raw)
+                    ui = parsed.get("ui", {}) if isinstance(parsed, dict) else {}
+                    badge = ui.get("badge", "") if isinstance(ui, dict) else ""
+                    summary_text = ui.get("summary", "") or ui.get("shortSummary", "") if isinstance(ui, dict) else ""
+                    section_progress.append({
+                        "label": label,
+                        "badge": badge,
+                        "summary": summary_text,
+                        "done": True,
+                        "data": parsed,
+                    })
+                else:
+                    section_progress.append({
+                        "label": label,
+                        "badge": None,
+                        "summary": None,
+                        "done": False,
+                        "data": None,
+                    })
 
             rows.append({
                 "id": r.id,
@@ -1597,10 +1636,18 @@ def onboarding_reports_list(request):
                 "overall_risk_level": (overview.get("overallRiskLevel") or ""),
                 "overall_score": overview.get("overallScore"),
                 "overall_max_score": overview.get("overallMaxScore"),
-                "percentage": overview.get("percentage"),
-                "completed_reports": overview.get("completedReportsCount"),
-                "expected_reports": overview.get("expectedReportsCount"),
+                "percentage": (
+                    overview.get("rawPercentage")
+                    or overview.get("adjustedPercentage")
+                    or overview.get("percentage")
+                ),
+                "completed_reports": completed_count,
+                "expected_reports": EXPECTED,
+                "section_progress": section_progress,
                 "master_report": master,
+                "status": r.status or "active",
+                "notes_count": len(r.notes) if isinstance(r.notes, list) else 0,
+                "evidence_count": len(r.evidence) if isinstance(r.evidence, list) else 0,
                 "created_at": r.created_at.isoformat() if r.created_at else None,
                 "updated_at": r.updated_at.isoformat() if r.updated_at else None,
             })
@@ -1609,4 +1656,74 @@ def onboarding_reports_list(request):
 
     except Exception as exc:
         return Response({"detail": str(exc)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+@api_view(["GET", "POST"])
+@permission_classes([IsAuthenticated])
+def onboarding_report_notes(request, report_id: str):
+    try:
+        report = LearnerInclusivenessReport.objects.using("wellbeing").get(id=report_id)
+    except LearnerInclusivenessReport.DoesNotExist:
+        return Response({"detail": "Not found"}, status=status.HTTP_404_NOT_FOUND)
+
+    if request.method == "GET":
+        return Response({"notes": list(report.notes or [])})
+
+    note_text = (request.data.get("note") or "").strip()
+    if not note_text:
+        return Response({"detail": "Note is required"}, status=status.HTTP_400_BAD_REQUEST)
+
+    notes = list(report.notes or [])
+    new_note = {
+        "id": str(uuid.uuid4()),
+        "note": note_text,
+        "created_by": getattr(request.user, "email", "") or request.user.username,
+        "created_at": timezone.now().isoformat(),
+    }
+    notes.append(new_note)
+    LearnerInclusivenessReport.objects.using("wellbeing").filter(id=report_id).update(notes=notes)
+    return Response(new_note, status=status.HTTP_201_CREATED)
+
+
+@api_view(["GET", "POST"])
+@permission_classes([IsAuthenticated])
+def onboarding_report_evidence(request, report_id: str):
+    try:
+        report = LearnerInclusivenessReport.objects.using("wellbeing").get(id=report_id)
+    except LearnerInclusivenessReport.DoesNotExist:
+        return Response({"detail": "Not found"}, status=status.HTTP_404_NOT_FOUND)
+
+    if request.method == "GET":
+        return Response({"evidence": list(report.evidence or [])})
+
+    evidence_list = list(report.evidence or [])
+    new_entry = {
+        "id": str(uuid.uuid4()),
+        "description": (request.data.get("description") or "").strip(),
+        "file_url": request.data.get("file_url") or "",
+        "file_name": request.data.get("file_name") or "",
+        "created_by": getattr(request.user, "email", "") or request.user.username,
+        "created_at": timezone.now().isoformat(),
+    }
+    evidence_list.append(new_entry)
+    LearnerInclusivenessReport.objects.using("wellbeing").filter(id=report_id).update(evidence=evidence_list)
+    return Response(new_entry, status=status.HTTP_201_CREATED)
+
+
+@api_view(["PATCH"])
+@permission_classes([IsAuthenticated])
+def update_onboarding_report(request, report_id: str):
+    try:
+        LearnerInclusivenessReport.objects.using("wellbeing").get(id=report_id)
+    except LearnerInclusivenessReport.DoesNotExist:
+        return Response({"detail": "Not found"}, status=status.HTTP_404_NOT_FOUND)
+
+    update_kwargs = {}
+    if "status" in request.data:
+        update_kwargs["status"] = request.data["status"]
+
+    if update_kwargs:
+        LearnerInclusivenessReport.objects.using("wellbeing").filter(id=report_id).update(**update_kwargs)
+
+    return Response({"id": report_id, **update_kwargs})
 
