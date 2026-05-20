@@ -1761,82 +1761,31 @@ function CoachSelect({
   placeholder?: string;
   onChange: (value: string) => void;
 }) {
-  const [open, setOpen] = React.useState(false);
-
   const selected = options.find((opt) => opt.value === value);
 
   return (
-    <div className="relative w-full sm:w-[300px]">
-      <button
-        type="button"
-        onClick={() => setOpen((prev) => !prev)}
-        className="flex h-12 w-full items-center justify-between rounded-2xl border border-[#DED5F3] bg-white px-4 text-left text-sm font-medium text-[#241453] shadow-sm transition hover:border-[#CFC2EE] focus:outline-none focus:ring-2 focus:ring-[#E7DFFD]"
+    <label className="relative block w-full sm:w-[300px]">
+      <span className="sr-only">{placeholder}</span>
+      <select
+        value={selected?.value ?? ""}
+        onChange={(event) => onChange(event.target.value)}
+        className="h-12 w-full appearance-none rounded-2xl border border-[#DED5F3] bg-white px-4 pr-10 text-sm font-medium text-[#241453] shadow-sm transition hover:border-[#CFC2EE] focus:outline-none focus:ring-2 focus:ring-[#E7DFFD]"
       >
-        <span className={selected ? "truncate text-[#241453]" : "truncate text-[#8E82AE]"}>
-          {selected?.label || placeholder}
-        </span>
-
-        <ChevronDown
-          className={`h-4 w-4 shrink-0 text-[#7B6D9B] transition ${open ? "rotate-180" : ""}`}
-        />
-      </button>
-
-      {open && (
-        <>
-          <button
-            type="button"
-            className="fixed inset-0 z-40 cursor-default"
-            onClick={() => setOpen(false)}
-          />
-
-          <div className="absolute right-0 z-50 mt-2 w-full overflow-hidden rounded-2xl border border-[#E6DDF8] bg-white shadow-[0_12px_30px_rgba(36,20,83,0.12)]">
-            <div className="border-b border-[#F0EAFB] px-4 py-3">
-              <p className="text-sm font-semibold text-[#241453]">Select coach</p>
-            </div>
-
-            <div className="custom-scroll max-h-[320px] overflow-y-auto py-2">
-              {options.length === 0 ? (
-                <div className="px-4 py-3 text-sm text-[#8E82AE]">No coaches found</div>
-              ) : (
-                options.map((item) => {
-                  const active = item.value === value;
-
-                  return (
-                    <button
-                      key={item.value}
-                      type="button"
-                      onClick={() => {
-                        onChange(item.value);
-                        setOpen(false);
-                      }}
-                      className={`flex w-full items-center justify-between px-4 py-3 text-left text-sm transition ${active
-                        ? "bg-[#F4F0FC] text-[#241453]"
-                        : "text-[#3D2A73] hover:bg-[#FAF8FE]"
-                        }`}
-                    >
-                      <span className="truncate">{item.label}</span>
-                      {active ? <span className="text-[#7A5FD0]">✓</span> : null}
-                    </button>
-                  );
-                })
-              )}
-            </div>
-
-            <div className="flex items-center justify-between border-t border-[#F0EAFB] px-4 py-2.5">
-              <span className="text-xs text-[#8E82AE]">{options.length} results</span>
-
-              <button
-                type="button"
-                onClick={() => setOpen(false)}
-                className="text-xs font-medium text-[#7A5FD0] hover:text-[#6248BE]"
-              >
-                Close
-              </button>
-            </div>
-          </div>
-        </>
-      )}
-    </div>
+        {!selected && (
+          <option value="" disabled>
+            {placeholder}
+          </option>
+        )}
+        {options.map((item) => (
+          <option key={item.value} value={item.value}>
+            {item.label}
+          </option>
+        ))}
+      </select>
+      <ChevronDown
+        className="pointer-events-none absolute right-4 top-1/2 h-4 w-4 -translate-y-1/2 text-[#7B6D9B]"
+      />
+    </label>
   );
 }
 
@@ -5998,34 +5947,39 @@ export default function CoachWellbeingPage({ setMobileOpen, isDesktop }: CoachWe
             ) : null}
 
             {activeView !== "dashboard" && (
-              <button
-                type="button"
-                onClick={goBackWellbeingView}
+              <a
+                href={wellbeingPathForView(wellbeingBackTarget || "dashboard")}
+                onClick={() => {
+                  setActiveViewHistory([]);
+                }}
                 className="inline-flex h-12 items-center justify-center gap-2 rounded-2xl bg-[#241453] px-5 text-sm font-medium text-white shadow-sm transition hover:bg-[#362063]"
               >
                 <ArrowLeft className="h-4 w-4" />
                 {wellbeingBackLabel}
-              </button>
+              </a>
             )}
 
             {role === "qa" && activeView === "dashboard" && (
               <>
-                <button
-                  type="button"
-                  onClick={openSafeguardingTicketsView}
+                <a
+                  href={wellbeingPathForView("tickets")}
+                  onClick={() => {
+                    setTicketsSearch("");
+                    setTicketFilters(emptyFilters);
+                    setTicketsLoading(true);
+                  }}
                   className="inline-flex h-12 items-center justify-center gap-2 rounded-2xl border border-[#a88cd9] bg-[#f9f5ff] px-5 text-sm font-medium text-[#442F73] shadow-sm transition hover:bg-[#F3EBFF] hover:border-[#866cb6]"
                 >
                   <Ticket className="h-4 w-4" />
                   Safeguarding Tickets
-                </button>
-                <button
-                  type="button"
-                  onClick={openOnboardingTicketsView}
+                </a>
+                <a
+                  href={wellbeingPathForView("onboarding")}
                   className="inline-flex h-12 items-center justify-center gap-2 rounded-2xl border border-[#DDC398] bg-[#F9F4EC] px-5 text-sm font-medium text-[#9D6912] shadow-sm transition hover:bg-[#F3E9DA] hover:border-[#CEA869]"
                 >
                   <ClipboardList className="h-4 w-4" />
                   Onboarding Tickets
-                </button>
+                </a>
               </>
             )}
 
