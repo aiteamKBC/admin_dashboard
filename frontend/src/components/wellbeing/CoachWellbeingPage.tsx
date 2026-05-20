@@ -5055,12 +5055,21 @@ const WELLBEING_VIEW_LABELS: Record<WellbeingActiveView, string> = {
 };
 
 function wellbeingPathForView(view: WellbeingActiveView) {
-  if (view === "tickets") return "/coach-wellbeing/tickets";
-  if (view === "onboarding") return "/coach-wellbeing/onboarding";
+  if (view === "tickets") return "/coach-wellbeing?view=tickets";
+  if (view === "onboarding") return "/coach-wellbeing?view=onboarding";
   return "/coach-wellbeing";
 }
 
-function wellbeingViewFromPath(pathname: string): WellbeingActiveView {
+function wellbeingViewFromPath(pathname: string, search = "", hash = ""): WellbeingActiveView {
+  const params = new URLSearchParams(search);
+  const queryView = String(params.get("view") || params.get("wb_view") || "").toLowerCase();
+  if (queryView === "tickets" || queryView === "safeguarding-tickets") return "tickets";
+  if (queryView === "onboarding" || queryView === "onboarding-tickets") return "onboarding";
+
+  const hashView = hash.replace(/^#/, "").toLowerCase();
+  if (hashView === "tickets" || hashView === "safeguarding-tickets") return "tickets";
+  if (hashView === "onboarding" || hashView === "onboarding-tickets") return "onboarding";
+
   const cleanPath = pathname.replace(/\/+$/, "").toLowerCase();
   if (cleanPath.endsWith("/tickets") || cleanPath.endsWith("/safeguarding-tickets")) return "tickets";
   if (cleanPath.endsWith("/onboarding") || cleanPath.endsWith("/onboarding-tickets")) return "onboarding";
@@ -5091,7 +5100,10 @@ export default function CoachWellbeingPage({ setMobileOpen, isDesktop }: CoachWe
   const [ticketForm, setTicketForm] = useState<SupportTicketFormState>(makeInitialTicketForm());
 
   // tickets management state
-  const activeView = useMemo(() => wellbeingViewFromPath(location.pathname), [location.pathname]);
+  const activeView = useMemo(
+    () => wellbeingViewFromPath(location.pathname, location.search, location.hash),
+    [location.pathname, location.search, location.hash],
+  );
   const [activeViewHistory, setActiveViewHistory] = useState<WellbeingActiveView[]>([]);
   const [ticketsLoading, setTicketsLoading] = useState(false);
   const [ticketsLoadError, setTicketsLoadError] = useState("");
