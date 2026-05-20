@@ -715,6 +715,24 @@ def _trigger_reason_for_label(label):
 
 
 def _risk_score_from_answer(answer, question):
+    raw_score = _number_or_none(answer.get("raw_answer"))
+    if raw_score is None:
+        raw_score = _number_or_none(answer.get("score"))
+    if raw_score is None:
+        raw_score = _number_or_none(answer.get("answer"))
+
+    if raw_score is not None and question is not None:
+        min_score = _number_or_none(getattr(question, "min_score", None))
+        max_score = _number_or_none(getattr(question, "max_score", None))
+        if min_score is None:
+            min_score = 1
+        if max_score is None:
+            max_score = 10
+
+        if getattr(question, "is_reverse_scored", False):
+            return max_score + min_score - raw_score
+        return raw_score
+
     normalised_score = _number_or_none(
         answer.get("normalized_score")
         if answer.get("normalized_score") is not None
@@ -723,23 +741,6 @@ def _risk_score_from_answer(answer, question):
     if normalised_score is not None:
         return normalised_score
 
-    raw_score = _number_or_none(answer.get("raw_answer"))
-    if raw_score is None:
-        raw_score = _number_or_none(answer.get("score"))
-    if raw_score is None:
-        raw_score = _number_or_none(answer.get("answer"))
-    if raw_score is None:
-        return None
-
-    min_score = _number_or_none(getattr(question, "min_score", None))
-    max_score = _number_or_none(getattr(question, "max_score", None))
-    if min_score is None:
-        min_score = 1
-    if max_score is None:
-        max_score = 10
-
-    if getattr(question, "is_reverse_scored", False):
-        return max_score + min_score - raw_score
     return raw_score
 
 
@@ -825,7 +826,7 @@ def compute_true_triggered_questions_from_submission(submission_json, question_m
     return result
 
 
-def extract_survey_responses_for_report(submission_json):
+def extract_survey_responses_for_report(submission_json, question_map=None):
     if not submission_json:
         return []
 
@@ -848,6 +849,9 @@ def extract_survey_responses_for_report(submission_json):
     if not isinstance(answers, list):
         return []
 
+    if question_map is None:
+        question_map = _active_question_map()
+
     responses = []
 
     for answer in answers:
@@ -865,14 +869,14 @@ def extract_survey_responses_for_report(submission_json):
             if answer.get("raw_answer") is not None
             else answer.get("score")
         )
-        risk_score = _number_or_none(
-            answer.get("normalized_score")
-            if answer.get("normalized_score") is not None
-            else answer.get("risk_score")
-        )
+        question = None
+        try:
+            question_id = int(answer.get("question_id"))
+            question = question_map.get(question_id)
+        except (TypeError, ValueError):
+            question = None
 
-        if risk_score is None:
-            risk_score = _number_or_none(raw_score)
+        risk_score = _risk_score_from_answer(answer, question)
 
         if risk_score is None:
             concern_level = ""
@@ -1289,7 +1293,7 @@ def coach_wellbeing_dashboard(request):
         safeguarding_score = getattr(student_meta, "safeguarding_vulnerability_score", None)
         total_score = getattr(student_meta, "total_score", None)
         submission_json_raw = getattr(student_meta, "submission_json", None)
-        survey_responses = extract_survey_responses_for_report(submission_json_raw)
+        survey_responses = extract_survey_responses_for_report(submission_json_raw, question_map)
         triggered_questions = compute_true_triggered_questions_from_submission(
             submission_json_raw,
             question_map,
