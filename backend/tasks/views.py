@@ -721,15 +721,22 @@ def _risk_score_from_answer(answer, question):
     if raw_score is None:
         raw_score = _number_or_none(answer.get("answer"))
 
-    if raw_score is not None and question is not None:
-        min_score = _number_or_none(getattr(question, "min_score", None))
-        max_score = _number_or_none(getattr(question, "max_score", None))
+    if raw_score is not None:
+        if question is not None:
+            min_score = _number_or_none(getattr(question, "min_score", None))
+            max_score = _number_or_none(getattr(question, "max_score", None))
+            is_reverse_scored = getattr(question, "is_reverse_scored", False)
+        else:
+            min_score = _number_or_none(answer.get("min_score"))
+            max_score = _number_or_none(answer.get("max_score"))
+            is_reverse_scored = answer.get("is_reverse_scored") is True
+
         if min_score is None:
             min_score = 1
         if max_score is None:
             max_score = 10
 
-        if getattr(question, "is_reverse_scored", False):
+        if is_reverse_scored:
             return max_score + min_score - raw_score
         return raw_score
 
