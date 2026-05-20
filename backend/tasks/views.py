@@ -16,12 +16,13 @@ import uuid
 # wellbeing
 from datetime import datetime
 from rest_framework.decorators import api_view, permission_classes
+from django.db.models import Q
 
 # to read the json 
 import json
 from collections import Counter
 
-from .models import SafeguardingWellbeingAutomation, WellbeingSafeguardingMonitoringSystem, CoachData, SupportTicket, LearnerInclusivenessReport
+from .models import SafeguardingWellbeingAutomation, WellbeingSafeguardingMonitoringSystem, CoachData, SupportTicket, LearnerInclusivenessReport, SafeguardingQuestion
 from .serializers import CoachTaskCreateSerializer, CoachTaskUpdateSerializer
 
 import os
@@ -367,6 +368,14 @@ def map_urgency_to_risk(value, safeguarding_flag=False):
     return "green"
 
 
+CLOSED_TICKET_STATUSES = {"closed", "outcome recorded"}
+
+
+def is_active_ticket_status(value):
+    value = (value or "").strip().lower()
+    return value not in CLOSED_TICKET_STATUSES
+
+
 def safe_date(value):
     if not value:
         return None
@@ -544,6 +553,17 @@ def safe_dt_iso(value):
         return str(value)
 
 
+def _email_lookup_values(emails):
+    values = set()
+    for email in emails or []:
+        cleaned = (email or "").strip()
+        if not cleaned:
+            continue
+        values.add(cleaned)
+        values.add(cleaned.lower())
+    return sorted(values)
+
+
 def map_db_risk_level(db_value):
     """Maps DB risk_level (High/Medium/Low) to frontend RiskLevel (red/amber/green)."""
     v = (db_value or "").strip().lower()
@@ -556,10 +576,44 @@ def map_db_risk_level(db_value):
     return None
 
 
-def compute_trend(history_json):
-    """Returns dict with trend ('up'/'down'/'stable'), delta, and last 2 overall scores."""
-    if not history_json:
-        return {"trend": None, "delta": None}
+def derive_frontend_risk_level(total_score, safeguarding_score, trigger_count):
+    total = _number_or_none(total_score) or 0
+    safeguarding = _number_or_none(safeguarding_score) or 0
+    triggers = int(trigger_count or 0)
+    max_score = max(total, safeguarding)
+
+    if triggers >= 5 or max_score >= 8:
+        return "red"
+    if triggers >= 1 or max_score >= 6:
+        return "amber"
+    return "green"
+
+
+def derive_ticket_urgency(total_score, safeguarding_score, trigger_count):
+    total = _number_or_none(total_score) or 0
+    safeguarding = _number_or_none(safeguarding_score) or 0
+    triggers = int(trigger_count or 0)
+    max_score = max(total, safeguarding)
+
+    if triggers >= 8 or max_score >= 8:
+        return "urgent"
+    if triggers >= 5:
+        return "high"
+    if triggers >= 1 or max_score >= 6:
+        return "medium"
+    return "low"
+
+
+def risk_label_from_frontend(value):
+    if value == "red":
+        return "High"
+    if value == "amber":
+        return "Medium"
+    return "Low"
+
+
+def compute_trend(history_json, current_overall_score=None):
+    """Returns dict with trend ('up'/'down'/'stable') and delta for overall risk score."""
 
     entries = history_json if isinstance(history_json, list) else []
 
@@ -585,6 +639,12 @@ def compute_trend(history_json):
             except Exception:
                 pass
 
+    current_score = _number_or_none(current_overall_score)
+    if current_score is not None and scores:
+        # Some feeds keep the latest score in columns and previous scores in history_json.
+        if abs(scores[-1] - current_score) > 0.001:
+            scores.append(round(float(current_score), 2))
+
     if len(scores) < 2:
         # First survey — no previous data to compare against
         return {"trend": None, "delta": None}
@@ -598,6 +658,302 @@ def compute_trend(history_json):
         trend = "stable"
 
     return {"trend": trend, "delta": delta}
+
+
+def latest_history_date(history_json):
+    entries = history_json if isinstance(history_json, list) else []
+    latest = None
+
+    for entry in entries:
+        if isinstance(entry, str):
+            try:
+                entry = json.loads(entry)
+            except Exception:
+                continue
+
+        if not isinstance(entry, dict):
+            continue
+
+        item_date = safe_date(
+            entry.get("submitted_at") or entry.get("date") or entry.get("timestamp")
+        )
+        if item_date and (latest is None or item_date > latest):
+            latest = item_date
+
+    return latest
+
+
+def _number_or_none(value):
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _compact_number(value):
+    number = _number_or_none(value)
+    if number is None:
+        return value
+    if number.is_integer():
+        return int(number)
+    return round(number, 2)
+
+
+def _question_trigger_label(question):
+    rule = (getattr(question, "trigger_rule", "") or "").strip().lower()
+    if "low" in rule:
+        return "low"
+    if "high" in rule:
+        return "high"
+    return "low" if getattr(question, "is_reverse_scored", False) else "high"
+
+
+def _trigger_reason_for_label(label):
+    if label == "low":
+        return "low answer on a positive question"
+    return "high answer on a risk question"
+
+
+def _risk_score_from_answer(answer, question):
+    normalised_score = _number_or_none(
+        answer.get("normalized_score")
+        if answer.get("normalized_score") is not None
+        else answer.get("risk_score")
+    )
+    if normalised_score is not None:
+        return normalised_score
+
+    raw_score = _number_or_none(answer.get("raw_answer"))
+    if raw_score is None:
+        raw_score = _number_or_none(answer.get("score"))
+    if raw_score is None:
+        raw_score = _number_or_none(answer.get("answer"))
+    if raw_score is None:
+        return None
+
+    min_score = _number_or_none(getattr(question, "min_score", None))
+    max_score = _number_or_none(getattr(question, "max_score", None))
+    if min_score is None:
+        min_score = 1
+    if max_score is None:
+        max_score = 10
+
+    if getattr(question, "is_reverse_scored", False):
+        return max_score + min_score - raw_score
+    return raw_score
+
+
+def _active_question_map():
+    questions = SafeguardingQuestion.objects.using("wellbeing").exclude(is_active=False)
+    return {int(q.id): q for q in questions}
+
+
+def compute_true_triggered_questions_from_submission(submission_json, question_map=None):
+    if not submission_json:
+        return []
+
+    data = submission_json
+    if isinstance(data, str):
+        try:
+            data = json.loads(data)
+        except Exception:
+            return []
+
+    if not isinstance(data, dict):
+        return []
+
+    answers = data.get("answers")
+    if not isinstance(answers, list):
+        return []
+
+    if question_map is None:
+        question_map = _active_question_map()
+
+    result = []
+    for answer in answers:
+        if not isinstance(answer, dict):
+            continue
+
+        try:
+            question_id = int(answer.get("question_id"))
+        except (TypeError, ValueError):
+            continue
+
+        question = question_map.get(question_id)
+        if not question or not getattr(question, "is_trigger", False):
+            continue
+
+        risk_score = _risk_score_from_answer(answer, question)
+        if risk_score is None or risk_score < 6:
+            continue
+
+        raw_score = (
+            answer.get("raw_answer")
+            if answer.get("raw_answer") is not None
+            else answer.get("score")
+        )
+        text = (
+            answer.get("question_text")
+            or getattr(question, "question_text", "")
+            or answer.get("question")
+            or answer.get("text")
+            or ""
+        ).strip()
+        if not text:
+            continue
+
+        label = _question_trigger_label(question)
+        reason = _trigger_reason_for_label(label)
+        result.append({
+            "questionId": question_id,
+            "text": text,
+            "score": _compact_number(raw_score),
+            "answer": _compact_number(raw_score),
+            "riskScore": _compact_number(risk_score),
+            "level": label,
+            "note": (answer.get("trigger_note") or "").strip() or reason,
+            "sortKey": (
+                getattr(question, "category_no", None) or 999,
+                getattr(question, "question_order", None) or 999,
+                question_id,
+            ),
+        })
+
+    result.sort(key=lambda item: item["sortKey"])
+    for item in result:
+        item.pop("sortKey", None)
+    return result
+
+
+def extract_survey_responses_for_report(submission_json):
+    if not submission_json:
+        return []
+
+    data = submission_json
+    if isinstance(data, str):
+        try:
+            data = json.loads(data)
+        except Exception:
+            return []
+
+    if not isinstance(data, dict):
+        return []
+
+    answers = data.get("answers")
+    if not isinstance(answers, list):
+        current_result = data.get("current_result")
+        if isinstance(current_result, dict):
+            answers = current_result.get("responses")
+
+    if not isinstance(answers, list):
+        return []
+
+    responses = []
+
+    for answer in answers:
+        if isinstance(answer, str):
+            try:
+                answer = json.loads(answer)
+            except Exception:
+                continue
+
+        if not isinstance(answer, dict):
+            continue
+
+        raw_score = (
+            answer.get("raw_answer")
+            if answer.get("raw_answer") is not None
+            else answer.get("score")
+        )
+        risk_score = _number_or_none(
+            answer.get("normalized_score")
+            if answer.get("normalized_score") is not None
+            else answer.get("risk_score")
+        )
+
+        if risk_score is None:
+            risk_score = _number_or_none(raw_score)
+
+        if risk_score is None:
+            concern_level = ""
+        elif risk_score >= 8:
+            concern_level = "High"
+        elif risk_score >= 6:
+            concern_level = "Follow-up"
+        else:
+            concern_level = "Low"
+
+        question_text = (
+            answer.get("question_text")
+            or answer.get("question")
+            or answer.get("text")
+            or answer.get("question_code")
+            or ""
+        ).strip()
+
+        if not question_text and raw_score is None and risk_score is None:
+            continue
+
+        responses.append({
+            "questionCode": answer.get("question_code") or answer.get("questionCode") or "",
+            "questionText": question_text,
+            "categoryName": answer.get("category_name") or answer.get("categoryName") or "",
+            "constructType": answer.get("construct_type") or answer.get("constructType") or "",
+            "answer": _compact_number(raw_score),
+            "concernLevel": concern_level,
+        })
+
+    return responses
+
+
+def format_trigger_detail_line(item):
+    answer = item.get("answer", item.get("score"))
+    risk_score = item.get("riskScore")
+    level = item.get("level") or "high"
+    reason = (item.get("note") or _trigger_reason_for_label(level)).strip()
+
+    if level == "low" and answer is not None and risk_score is not None and answer != risk_score:
+        score_text = f"(Answer: {_compact_number(answer)} -> Risk: {_compact_number(risk_score)} - {reason})"
+    elif answer is not None and risk_score is not None:
+        score_text = f"(Answer: {_compact_number(answer)}, Risk: {_compact_number(risk_score)} - {reason})"
+    elif answer is not None:
+        score_text = f"(Answer: {_compact_number(answer)} - {reason})"
+    else:
+        score_text = ""
+
+    return f"{item.get('text', '').strip()} {score_text} [{level}]".strip()
+
+
+def build_auto_ticket_details_from_monitoring(learner, triggered_questions):
+    trigger_count = len(triggered_questions)
+    risk_label = risk_label_from_frontend(
+        derive_frontend_risk_level(
+            getattr(learner, "total_score", None),
+            getattr(learner, "safeguarding_vulnerability_score", None),
+            trigger_count,
+        )
+    )
+    programme = (getattr(learner, "programme", "") or "").strip() or "-"
+    coach = (getattr(learner, "coach_name", "") or "").strip() or "-"
+    total_score = _compact_number(getattr(learner, "total_score", None))
+    if total_score is None:
+        total_score = "-"
+
+    lines = [
+        "Auto-generated ticket from wellbeing survey.",
+        "",
+        f"Risk Level:    {risk_label}",
+        f"Total Score:   {total_score}",
+        f"Trigger Count: {trigger_count}",
+        f"Programme:     {programme}",
+        f"Coach:         {coach}",
+    ]
+
+    if triggered_questions:
+        lines.extend(["", "Triggered Questions:"])
+        lines.extend(format_trigger_detail_line(item) for item in triggered_questions)
+
+    return "\n".join(lines)
 
 
 def extract_triggered_questions(triggered_questions_json):
@@ -791,30 +1147,69 @@ def coach_wellbeing_dashboard(request):
     else:
         return Response({"detail": "Forbidden"}, status=status.HTTP_403_FORBIDDEN)
 
-    monitoring_qs = WellbeingSafeguardingMonitoringSystem.objects.using("wellbeing").all()
+    monitoring_qs = WellbeingSafeguardingMonitoringSystem.objects.using("wellbeing").only(
+        "id",
+        "learner_name",
+        "learner_email",
+        "coach_name",
+        "coach_email",
+        "programme",
+        "risk_level",
+        "history_json",
+        "total_score",
+        "emotional_stress_resilience_score",
+        "personal_wellbeing_protective_factors_score",
+        "provider_culture_support_score",
+        "safeguarding_vulnerability_score",
+        "submission_json",
+        "triggered_questions",
+        "trigger_count",
+    )
 
     if requested_coach_email:
         monitoring_qs = monitoring_qs.filter(coach_email__iexact=requested_coach_email)
 
     monitoring_rows = list(monitoring_qs.order_by("learner_name", "id"))
+    monitoring_ids = [row.id for row in monitoring_rows]
+    monitoring_emails = [
+        (getattr(row, "learner_email", "") or "").strip()
+        for row in monitoring_rows
+        if (getattr(row, "learner_email", "") or "").strip()
+    ]
 
-    automation_rows = list(
-        SafeguardingWellbeingAutomation.objects.using("wellbeing")
-        .all()
-        .order_by("-updated_at", "-wellbeing_record_id")
+    automation_qs = SafeguardingWellbeingAutomation.objects.using("wellbeing").only(
+        "wellbeing_record_id",
+        "follow_up_by_coach",
+        "suggested_coach_actions",
+        "apprentice_dashboard",
+        "updated_at",
     )
+    if monitoring_ids:
+        automation_qs = automation_qs.filter(wellbeing_record_id__in=monitoring_ids)
+    else:
+        automation_qs = automation_qs.none()
+
+    automation_rows = list(automation_qs.order_by("-updated_at", "-wellbeing_record_id"))
 
     latest_automation_by_learner_id = {}
 
-    open_ticket_rows = list(
-        SupportTicket.objects.using("wellbeing")
-        .filter(status__iexact="open")
-        .values("wellbeing_record_id", "email")
-    )
+    ticket_qs = SupportTicket.objects.using("wellbeing").all()
+    ticket_filter = Q()
+    if monitoring_ids:
+        ticket_filter |= Q(wellbeing_record_id__in=monitoring_ids)
+    monitoring_email_values = _email_lookup_values(monitoring_emails)
+    if monitoring_email_values:
+        ticket_filter |= Q(email__in=monitoring_email_values)
+    ticket_qs = ticket_qs.filter(ticket_filter) if ticket_filter else ticket_qs.none()
+
+    open_ticket_rows = list(ticket_qs.values("wellbeing_record_id", "email", "status"))
 
     open_ticket_counts = Counter()
 
     for ticket in open_ticket_rows:
+        if not is_active_ticket_status(ticket.get("status")):
+            continue
+
         record_id = str(ticket.get("wellbeing_record_id") or "").strip()
         if record_id:
             open_ticket_counts[record_id] += 1
@@ -829,7 +1224,9 @@ def coach_wellbeing_dashboard(request):
         suggested = parse_json_field(row.suggested_coach_actions, {})
         apprentice = parse_json_field(row.apprentice_dashboard, {})
 
-        learner_id = extract_learner_id(follow, suggested, apprentice)
+        learner_id = extract_learner_id(follow, suggested, apprentice) or str(
+            getattr(row, "wellbeing_record_id", "") or ""
+        ).strip()
         if not learner_id:
             continue
 
@@ -842,6 +1239,8 @@ def coach_wellbeing_dashboard(request):
             "suggested": suggested,
             "apprentice": apprentice,
         }
+
+    question_map = _active_question_map()
 
     learners = []
     follow_ups = []
@@ -880,9 +1279,50 @@ def coach_wellbeing_dashboard(request):
         open_tickets_total += row_open_tickets
 
         matched = latest_automation_by_learner_id.get(student_unique_key)
+        stored_risk = map_db_risk_level(getattr(student_meta, "risk_level", None))
+        history_raw = getattr(student_meta, "history_json", None) or []
+        last_monitoring_survey_date = latest_history_date(history_raw)
+        trend_data = compute_trend(history_raw, getattr(student_meta, "total_score", None))
+        wellbeing_score = getattr(student_meta, "emotional_stress_resilience_score", None)
+        engagement_score = getattr(student_meta, "personal_wellbeing_protective_factors_score", None)
+        provider_support_score = getattr(student_meta, "provider_culture_support_score", None)
+        safeguarding_score = getattr(student_meta, "safeguarding_vulnerability_score", None)
+        total_score = getattr(student_meta, "total_score", None)
+        submission_json_raw = getattr(student_meta, "submission_json", None)
+        survey_responses = extract_survey_responses_for_report(submission_json_raw)
+        triggered_questions = compute_true_triggered_questions_from_submission(
+            submission_json_raw,
+            question_map,
+        )
+        if submission_json_raw:
+            trigger_count = len(triggered_questions)
+        else:
+            triggered_questions = extract_triggered_questions(getattr(student_meta, "triggered_questions", None))
+            trigger_count = getattr(student_meta, "trigger_count", None) or len(triggered_questions)
+        has_score_data = any(
+            value is not None
+            for value in [
+                total_score,
+                wellbeing_score,
+                engagement_score,
+                provider_support_score,
+                safeguarding_score,
+            ]
+        ) or trigger_count > 0 or bool(triggered_questions)
+        db_risk = derive_frontend_risk_level(total_score, safeguarding_score, trigger_count) if has_score_data else stored_risk
+        has_monitoring_data = has_score_data or db_risk is not None or bool(history_raw)
+
+        caseload += 1
+
+        if db_risk == "red":
+            at_risk += 1
+        elif db_risk == "green":
+            green_risk += 1
 
         if not matched:
-            db_risk = map_db_risk_level(getattr(student_meta, "risk_level", None))
+            if last_monitoring_survey_date is None:
+                non_responders += 1
+
             learners.append({
                 "studentId": int(student_meta.id),
                 "studentName": row_student_name,
@@ -890,28 +1330,51 @@ def coach_wellbeing_dashboard(request):
                 "coachName": row_coach_name,
                 "coachEmail": row_coach_email,
                 "programme": row_programme,
-                "lastSurveyDate": None,
-                "wellbeingScore": None,
-                "engagementScore": None,
-                "providerSupportScore": None,
-                "totalScore": getattr(student_meta, "total_score", None),
-                "safeguardingScore": getattr(student_meta, "safeguarding_vulnerability_score", None),
+                "lastSurveyDate": last_monitoring_survey_date,
+                "wellbeingScore": wellbeing_score,
+                "engagementScore": engagement_score,
+                "providerSupportScore": provider_support_score,
+                "totalScore": total_score,
+                "safeguardingScore": safeguarding_score,
                 "riskLevel": db_risk or "green",
-                "trend": None,
-                "trendDelta": None,
-                "recommendedAction": "No wellbeing data yet",
+                "trend": trend_data["trend"],
+                "trendDelta": trend_data["delta"],
+                "recommendedAction": (
+                    "Immediate safeguarding review required" if db_risk == "red"
+                    else "Wellbeing follow-up recommended" if db_risk == "amber"
+                    else "Routine monitoring" if has_monitoring_data
+                    else "No wellbeing data yet"
+                ),
                 "hasOpenTicket": row_open_tickets > 0,
                 "openTicketCount": row_open_tickets,
-                "nonResponder": False,
+                "nonResponder": last_monitoring_survey_date is None,
                 "followUpReason": "",
                 "safeguardingFlag": False,
                 "flaggedDomains": [],
-                "hasWellbeingData": False,
-                "countedInSummary": False,
-                "triggerCount": getattr(student_meta, "trigger_count", None) or 0,
-                "triggeredQuestions": extract_triggered_questions(getattr(student_meta, "triggered_questions", None)),
+                "hasWellbeingData": has_monitoring_data,
+                "countedInSummary": has_monitoring_data,
+                "triggerCount": trigger_count,
+                "triggeredQuestions": triggered_questions,
+                "surveyResponses": survey_responses,
                 "apprenticeDashboard": {},
             })
+
+            if last_monitoring_survey_date:
+                mk = last_monitoring_survey_date[:7]
+                if mk not in trend_buckets:
+                    trend_buckets[mk] = {
+                        "count": 0, "red_count": 0,
+                        "amber_count": 0, "green_count": 0,
+                    }
+
+                trend_buckets[mk]["count"] += 1
+                if db_risk == "red":
+                    trend_buckets[mk]["red_count"] += 1
+                elif db_risk == "amber":
+                    trend_buckets[mk]["amber_count"] += 1
+                elif db_risk == "green":
+                    trend_buckets[mk]["green_count"] += 1
+
             continue
 
         row = matched["row"]
@@ -941,22 +1404,17 @@ def coach_wellbeing_dashboard(request):
         risk_score = safe_int(follow.get("riskScore"), 0)
 
         # Prefer DB risk_level; fall back to computed value from urgency
-        db_risk = map_db_risk_level(getattr(student_meta, "risk_level", None))
         risk_level = db_risk or map_urgency_to_risk(urgency, safeguarding_flag=safeguarding_flag)
 
-        wellbeing_score = getattr(student_meta, "emotional_stress_resilience_score", None)
-        engagement_score = getattr(student_meta, "personal_wellbeing_protective_factors_score", None)
-        provider_support_score = getattr(student_meta, "provider_culture_support_score", None)
-        safeguarding_score = getattr(student_meta, "safeguarding_vulnerability_score", None)
-
-        trend_data = compute_trend(getattr(student_meta, "history_json", None))
-
-        caseload += 1
-
         if risk_level == "red":
-            at_risk += 1
+            if db_risk is None:
+                at_risk += 1
         elif risk_level == "green":
-            green_risk += 1
+            if db_risk is None:
+                green_risk += 1
+
+        if last_survey_date is None and last_monitoring_survey_date is not None:
+            last_survey_date = last_monitoring_survey_date
 
         if last_survey_date is None:
             non_responders += 1
@@ -972,7 +1430,7 @@ def coach_wellbeing_dashboard(request):
             "wellbeingScore": wellbeing_score,
             "engagementScore": engagement_score,
             "providerSupportScore": provider_support_score,
-            "totalScore": getattr(student_meta, "total_score", None),
+            "totalScore": total_score,
             "safeguardingScore": safeguarding_score,
             "trend": trend_data["trend"],
             "trendDelta": trend_data["delta"],
@@ -986,8 +1444,9 @@ def coach_wellbeing_dashboard(request):
             "flaggedDomains": issues.get("flaggedDomains") or [],
             "hasWellbeingData": True,
             "countedInSummary": True,
-            "triggerCount": getattr(student_meta, "trigger_count", None) or 0,
-            "triggeredQuestions": extract_triggered_questions(getattr(student_meta, "triggered_questions", None)),
+            "triggerCount": trigger_count,
+            "triggeredQuestions": triggered_questions,
+            "surveyResponses": survey_responses,
             "apprenticeDashboard": apprentice or {},
         })
 
@@ -1265,24 +1724,76 @@ def support_tickets_list(request):
         # Coaches only see tickets for their own learners
         coach_email = (getattr(user, "email", "") or "").strip().lower()
         if coach_email:
-            learner_ids = list(
-                WellbeingSafeguardingMonitoringSystem.objects.using("wellbeing")
-                .filter(coach_email__iexact=coach_email)
-                .values_list("id", flat=True)
+            learner_qs = WellbeingSafeguardingMonitoringSystem.objects.using("wellbeing").filter(
+                coach_email__iexact=coach_email
             )
-            qs = qs.filter(wellbeing_record_id__in=learner_ids)
+            learner_ids = list(learner_qs.values_list("id", flat=True))
+            learner_emails = [
+                (email or "").strip()
+                for email in learner_qs.values_list("learner_email", flat=True)
+                if (email or "").strip()
+            ]
+            ticket_filter = Q()
+            if learner_ids:
+                ticket_filter |= Q(wellbeing_record_id__in=learner_ids)
+            learner_email_values = _email_lookup_values(learner_emails)
+            if learner_email_values:
+                ticket_filter |= Q(email__in=learner_email_values)
+            qs = qs.filter(ticket_filter) if ticket_filter else qs.none()
     else:
         # QA sees all tickets (admin-level). Optional filter by coach_email from query params.
         coach_email_filter = (request.query_params.get("coach_email") or "").strip().lower()
         if coach_email_filter:
-            learner_ids = list(
-                WellbeingSafeguardingMonitoringSystem.objects.using("wellbeing")
-                .filter(coach_email__iexact=coach_email_filter)
-                .values_list("id", flat=True)
+            learner_qs = WellbeingSafeguardingMonitoringSystem.objects.using("wellbeing").filter(
+                coach_email__iexact=coach_email_filter
             )
-            qs = qs.filter(wellbeing_record_id__in=learner_ids)
+            learner_ids = list(learner_qs.values_list("id", flat=True))
+            learner_emails = [
+                (email or "").strip()
+                for email in learner_qs.values_list("learner_email", flat=True)
+                if (email or "").strip()
+            ]
+            ticket_filter = Q()
+            if learner_ids:
+                ticket_filter |= Q(wellbeing_record_id__in=learner_ids)
+            learner_email_values = _email_lookup_values(learner_emails)
+            if learner_email_values:
+                ticket_filter |= Q(email__in=learner_email_values)
+            qs = qs.filter(ticket_filter) if ticket_filter else qs.none()
 
     rows = list(qs)
+    ticket_record_ids = [
+        row.wellbeing_record_id
+        for row in rows
+        if getattr(row, "wellbeing_record_id", None)
+    ]
+    ticket_emails = [
+        (getattr(row, "email", "") or "").strip()
+        for row in rows
+        if (getattr(row, "email", "") or "").strip()
+    ]
+    monitoring_filter = Q()
+    if ticket_record_ids:
+        monitoring_filter |= Q(id__in=ticket_record_ids)
+    ticket_email_values = _email_lookup_values(ticket_emails)
+    if ticket_email_values:
+        monitoring_filter |= Q(learner_email__in=ticket_email_values)
+    monitoring_records = (
+        list(
+            WellbeingSafeguardingMonitoringSystem.objects.using("wellbeing")
+            .filter(monitoring_filter)
+            .order_by("-id")
+        )
+        if monitoring_filter
+        else []
+    )
+    monitoring_by_id = {item.id: item for item in monitoring_records}
+    monitoring_by_email = {}
+    for item in monitoring_records:
+        email = (getattr(item, "learner_email", "") or "").strip().lower()
+        if email and email not in monitoring_by_email:
+            monitoring_by_email[email] = item
+    question_map = _active_question_map() if monitoring_records else {}
 
     tickets = []
     total = 0
@@ -1290,9 +1801,31 @@ def support_tickets_list(request):
     red_risk = 0
     escalated = 0
     closed = 0
+    computed_triggers_by_record_id = {}
 
     for row in rows:
+        learner_record = monitoring_by_id.get(getattr(row, "wellbeing_record_id", None))
+        if not learner_record:
+            learner_record = monitoring_by_email.get((getattr(row, "email", "") or "").strip().lower())
+        computed_triggered_questions = []
+        if learner_record:
+            learner_cache_key = getattr(learner_record, "id", None)
+            if learner_cache_key in computed_triggers_by_record_id:
+                computed_triggered_questions = computed_triggers_by_record_id[learner_cache_key]
+            else:
+                computed_triggered_questions = compute_true_triggered_questions_from_submission(
+                    getattr(learner_record, "submission_json", None),
+                    question_map,
+                )
+                computed_triggers_by_record_id[learner_cache_key] = computed_triggered_questions
+
         urgency = (getattr(row, "urgency", "") or "").strip().lower()
+        if learner_record and (getattr(row, "details", "") or "").strip().startswith("Auto-generated ticket from wellbeing survey."):
+            urgency = derive_ticket_urgency(
+                getattr(learner_record, "total_score", None),
+                getattr(learner_record, "safeguarding_vulnerability_score", None),
+                len(computed_triggered_questions),
+            )
         status_value = (getattr(row, "status", "") or "").strip().lower()
         ticket_type = (getattr(row, "ticket_type", "") or "").strip()
 
@@ -1302,11 +1835,11 @@ def support_tickets_list(request):
         elif urgency in ["medium", "moderate"]:
             risk = "amber"
 
-        if status_value == "open":
+        if is_active_ticket_status(status_value):
             open_count += 1
         if status_value == "escalated":
             escalated += 1
-        if status_value == "closed":
+        if status_value in CLOSED_TICKET_STATUSES:
             closed += 1
         if risk == "red":
             red_risk += 1
@@ -1341,6 +1874,13 @@ def support_tickets_list(request):
             display_created_by = name_part or "-"
             display_source = "Coach" if name_part else "-"
 
+        details = (getattr(row, "details", "") or "").strip()
+        if learner_record and details.startswith("Auto-generated ticket from wellbeing survey."):
+            details = build_auto_ticket_details_from_monitoring(
+                learner_record,
+                computed_triggered_questions,
+            )
+
         tickets.append({
             "id": row.id,
             "ticketCode": f"TKT-{row.id:03d}",
@@ -1356,7 +1896,7 @@ def support_tickets_list(request):
             "daysToClose": getattr(row, "days_to_close", None),
             "closedAt": safe_dt_iso(getattr(row, "updated_at", None)) if status_value in {"closed", "outcome recorded"} else None,
             "subject": (getattr(row, "subject", "") or "").strip(),
-            "details": (getattr(row, "details", "") or "").strip(),
+            "details": details,
             "urgency": urgency or "medium",
             "preferredContact": (getattr(row, "preferred_contact", "") or "").strip(),
             "notes": _ensure_list(getattr(row, "notes", None)),
@@ -1564,6 +2104,200 @@ def _parse_json_field(value):
     return {}
 
 
+def _first_present(*values):
+    for value in values:
+        if value is not None and value != "":
+            return value
+    return None
+
+
+def _normalise_onboarding_risk(value):
+    v = (str(value or "").strip().lower()).replace("_", " ")
+    if v == "very high":
+        return "Very High"
+    if v in {"high", "red"}:
+        return "High"
+    if v in {"moderate", "medium", "amber"}:
+        return "Moderate"
+    if v in {"low", "green"}:
+        return "Low"
+    return ""
+
+
+def _onboarding_risk_rank(level):
+    v = _normalise_onboarding_risk(level)
+    if v == "Very High":
+        return 4
+    if v == "High":
+        return 3
+    if v == "Moderate":
+        return 2
+    if v == "Low":
+        return 1
+    return 0
+
+
+def _onboarding_risk_from_percentage(value):
+    pct = _number_or_none(value)
+    if pct is None:
+        return ""
+    if pct >= 75:
+        return "Very High"
+    if pct >= 50:
+        return "High"
+    if pct >= 25:
+        return "Moderate"
+    return "Low"
+
+
+def _score_display_parts(value):
+    text = str(value or "").strip()
+    if "/" not in text:
+        return None, None
+    left, right = text.split("/", 1)
+    return _number_or_none(left.strip()), _number_or_none(right.strip())
+
+
+def _onboarding_section_metrics(section):
+    data = section.get("data") if isinstance(section, dict) else {}
+    if not isinstance(data, dict):
+        data = {}
+    score = data.get("score") if isinstance(data.get("score"), dict) else {}
+    ui = data.get("ui") if isinstance(data.get("ui"), dict) else {}
+    raw = data.get("raw") if isinstance(data.get("raw"), dict) else {}
+    raw_ai = raw.get("aiOutput") if isinstance(raw.get("aiOutput"), dict) else {}
+    display_score, display_max = _score_display_parts(
+        _first_present(ui.get("scoreDisplay"), data.get("scoreDisplay"), raw_ai.get("scoreDisplay"))
+    )
+
+    total = _number_or_none(_first_present(
+        score.get("total"),
+        score.get("score"),
+        score.get("overallScore"),
+        score.get("overall_score"),
+        data.get("total"),
+        data.get("score"),
+        data.get("overallScore"),
+        data.get("overall_score"),
+        raw_ai.get("total"),
+        raw_ai.get("score"),
+        raw_ai.get("overallScore"),
+        raw_ai.get("overall_score"),
+        display_score,
+    ))
+    max_score = _number_or_none(_first_present(
+        score.get("max"),
+        score.get("maxScore"),
+        score.get("max_score"),
+        score.get("overallMaxScore"),
+        score.get("overall_max_score"),
+        data.get("max"),
+        data.get("maxScore"),
+        data.get("max_score"),
+        data.get("overallMaxScore"),
+        data.get("overall_max_score"),
+        raw_ai.get("max"),
+        raw_ai.get("maxScore"),
+        raw_ai.get("max_score"),
+        raw_ai.get("overallMaxScore"),
+        raw_ai.get("overall_max_score"),
+        display_max,
+    ))
+    pct = _number_or_none(_first_present(
+        score.get("adjustedPercentage"),
+        score.get("adjusted_percentage"),
+        score.get("rawPercentage"),
+        score.get("raw_percentage"),
+        score.get("percentage"),
+        data.get("adjustedPercentage"),
+        data.get("adjusted_percentage"),
+        data.get("rawPercentage"),
+        data.get("raw_percentage"),
+        data.get("percentage"),
+        raw_ai.get("adjustedPercentage"),
+        raw_ai.get("adjusted_percentage"),
+        raw_ai.get("rawPercentage"),
+        raw_ai.get("raw_percentage"),
+        raw_ai.get("percentage"),
+    ))
+    if pct is None and total is not None and max_score:
+        pct = round((total / max_score) * 100)
+
+    risk = _normalise_onboarding_risk(_first_present(
+        score.get("riskLevel"),
+        score.get("risk_level"),
+        score.get("overallRiskLevel"),
+        score.get("overall_risk_level"),
+        score.get("risk"),
+        data.get("riskLevel"),
+        data.get("risk_level"),
+        data.get("overallRiskLevel"),
+        data.get("overall_risk_level"),
+        ui.get("badge"),
+        ui.get("riskBadge"),
+        ui.get("riskLevel"),
+        raw_ai.get("riskLevel"),
+        raw_ai.get("risk_level"),
+        raw_ai.get("overallRiskLevel"),
+        raw_ai.get("overall_risk_level"),
+        raw_ai.get("risk"),
+        data.get("badge"),
+        section.get("badge") if isinstance(section, dict) else None,
+    )) or _onboarding_risk_from_percentage(pct)
+
+    return {
+        "score": total,
+        "max": max_score,
+        "percentage": pct,
+        "risk": risk,
+    }
+
+
+def _derive_onboarding_overview(overview, section_progress):
+    done_sections = [
+        section for section in section_progress
+        if isinstance(section, dict) and section.get("done") and section.get("data")
+    ]
+    metrics = [_onboarding_section_metrics(section) for section in done_sections]
+    scored = [
+        item for item in metrics
+        if item.get("score") is not None and item.get("max")
+    ]
+
+    total_score = None
+    max_score = None
+    percentage = None
+    if scored:
+        total_score = sum(float(item["score"]) for item in scored)
+        max_score = sum(float(item["max"]) for item in scored)
+        percentage = round((total_score / max_score) * 100) if max_score else None
+
+    highest_risk = ""
+    for item in metrics:
+        risk = item.get("risk") or ""
+        if _onboarding_risk_rank(risk) > _onboarding_risk_rank(highest_risk):
+            highest_risk = risk
+
+    overview = overview if isinstance(overview, dict) else {}
+    risk = _normalise_onboarding_risk(_first_present(
+        overview.get("overallRiskLevel"),
+        overview.get("riskLevel"),
+        highest_risk,
+    ))
+
+    return {
+        "overallRiskLevel": risk,
+        "overallScore": _compact_number(_first_present(overview.get("overallScore"), total_score)),
+        "overallMaxScore": _compact_number(_first_present(overview.get("overallMaxScore"), max_score)),
+        "percentage": _compact_number(_first_present(
+            overview.get("rawPercentage"),
+            overview.get("adjustedPercentage"),
+            overview.get("percentage"),
+            percentage,
+        )),
+    }
+
+
 @api_view(["GET"])
 @permission_classes([IsAuthenticated])
 def onboarding_reports_list(request):
@@ -1585,7 +2319,35 @@ def onboarding_reports_list(request):
     EXPECTED = len(SECTION_COLS)
 
     try:
-        qs = LearnerInclusivenessReport.objects.using("wellbeing").all().order_by("-created_at", "-id")
+        coach_email_filter = (request.query_params.get("coach_email") or "").strip().lower()
+        qs = LearnerInclusivenessReport.objects.using("wellbeing").only(
+            "id",
+            "learner_id",
+            "learner_name",
+            "learner_email",
+            "academic_email",
+            "programme",
+            "organization_name",
+            "coach_name",
+            "coach_email",
+            "manager_name",
+            "manager_email",
+            "master_report",
+            "technology_report",
+            "visual_hearing_report",
+            "dyslexia_report",
+            "adhd_report",
+            "social_anxiety_report",
+            "mood_learning_capacity_report",
+            "status",
+            "notes",
+            "evidence",
+            "created_at",
+            "updated_at",
+        )
+        if coach_email_filter:
+            qs = qs.filter(coach_email__iexact=coach_email_filter)
+        qs = qs.order_by("-created_at", "-id")
         rows = []
 
         for r in qs:
@@ -1621,6 +2383,8 @@ def onboarding_reports_list(request):
                         "data": None,
                     })
 
+            derived_overview = _derive_onboarding_overview(overview, section_progress)
+
             rows.append({
                 "id": r.id,
                 "learner_id": r.learner_id,
@@ -1633,14 +2397,10 @@ def onboarding_reports_list(request):
                 "coach_email": r.coach_email or "",
                 "manager_name": r.manager_name or "",
                 "manager_email": r.manager_email or "",
-                "overall_risk_level": (overview.get("overallRiskLevel") or ""),
-                "overall_score": overview.get("overallScore"),
-                "overall_max_score": overview.get("overallMaxScore"),
-                "percentage": (
-                    overview.get("rawPercentage")
-                    or overview.get("adjustedPercentage")
-                    or overview.get("percentage")
-                ),
+                "overall_risk_level": derived_overview.get("overallRiskLevel") or "",
+                "overall_score": derived_overview.get("overallScore"),
+                "overall_max_score": derived_overview.get("overallMaxScore"),
+                "percentage": derived_overview.get("percentage"),
                 "completed_reports": completed_count,
                 "expected_reports": EXPECTED,
                 "section_progress": section_progress,

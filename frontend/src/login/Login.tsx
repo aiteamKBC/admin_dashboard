@@ -16,6 +16,7 @@ type AuthResponse = {
   role: "qa" | "coach";
   coach_id?: string | null;
   username?: string;
+  email?: string;
 };
 
 
@@ -54,11 +55,17 @@ export default function Login() {
     localStorage.setItem("role", data.role);
     localStorage.setItem("coach_id", data.coach_id ?? "");
     localStorage.setItem("username", data.username ?? fallbackUsername);
+    if (data.email) {
+      localStorage.setItem("email", data.email);
+    } else {
+      localStorage.removeItem("email");
+    }
 
     auth?.setUser?.({
       username: data.username ?? fallbackUsername,
       role: data.role,
       coach_id: data.coach_id ?? null,
+      email: data.email ?? null,
     });
   }
 

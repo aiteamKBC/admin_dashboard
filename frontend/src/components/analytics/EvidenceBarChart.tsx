@@ -106,8 +106,8 @@ export default function EvidencePieChart({ data }: Props) {
                 <SegmentLabel
                   cx={props.cx}
                   cy={props.cy}
-                  midAngle={props.midAngle}
-                  outerRadius={props.outerRadius}
+                  midAngle={Number(props.midAngle ?? 0)}
+                  outerRadius={Number(props.outerRadius ?? 0)}
                   name={String(props.name ?? "")}
                   value={Number(props.value ?? 0)}
                 />

@@ -116,8 +116,9 @@ export async function getBookingAvailability(serviceId: string, date: string): P
   return await fetchWithAuth(`/bookings/availability/?service_id=${encodeURIComponent(serviceId)}&date=${date}`);
 }
 
-export async function getOnboardingReports() {
-  return await fetchWithAuth("/onboarding-reports/");
+export async function getOnboardingReports(coachEmail?: string) {
+  const query = coachEmail ? `?coach_email=${encodeURIComponent(coachEmail)}` : "";
+  return await fetchWithAuth(`/onboarding-reports/${query}`);
 }
 
 export async function getOnboardingReportNotes(reportId: string) {

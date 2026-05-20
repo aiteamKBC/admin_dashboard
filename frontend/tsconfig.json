@@ -10,8 +10,10 @@
     "noUncheckedIndexedAccess": true,
     "skipLibCheck": true,
     "isolatedModules": true,
+    "noEmit": true,
+    "tsBuildInfoFile": "./node_modules/.tmp/tsconfig.tsbuildinfo",
     "baseUrl": ".",
-    "ignoreDeprecations": "6.0",
+    "ignoreDeprecations": "5.0",
     "paths": {
       "@/*": ["src/*"]
     }

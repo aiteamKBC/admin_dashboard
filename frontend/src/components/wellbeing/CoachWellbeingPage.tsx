@@ -1,5 +1,6 @@
 ﻿import React, { useEffect, useMemo, useState } from "react";
 import { createPortal } from "react-dom";
+import { useLocation, useNavigate } from "react-router-dom";
 import {
   Menu,
   AlertTriangle,
@@ -107,6 +108,108 @@ type SupportTicketsResponse = {
   tickets: SupportTicketRow[];
 };
 
+function calculateTicketSummaryFromRows(
+  tickets: SupportTicketRow[],
+  avgCloseDelta: number | null = null,
+): SupportTicketsResponse["summary"] {
+  const closedVals = tickets
+    .filter((ticket) => CLOSED_TICKET_STATUSES.has(String(ticket.status).toLowerCase()))
+    .map((ticket) => Number(ticket.daysToClose ?? ticket.daysOpen ?? 0))
+    .filter((days) => Number.isFinite(days) && days >= 0);
+
+  const avgCloseDays = closedVals.length > 0
+    ? Math.round((closedVals.reduce((total, days) => total + days, 0) / closedVals.length) * 10) / 10
+    : null;
+
+  return {
+    total: tickets.length,
+    open: tickets.filter((ticket) => isActiveTicketStatus(ticket.status)).length,
+    redRisk: tickets.filter((ticket) => String(ticket.risk).toLowerCase() === "red").length,
+    escalated: tickets.filter((ticket) => String(ticket.status).toLowerCase() === "escalated").length,
+    closed: closedVals.length,
+    avgCloseDays,
+    avgCloseDelta,
+  };
+}
+
+
+const CLOSED_TICKET_STATUSES = new Set(["closed", "outcome recorded"]);
+
+function isActiveTicketStatus(status: string | undefined | null) {
+  return !CLOSED_TICKET_STATUSES.has(String(status || "").trim().toLowerCase());
+}
+
+function ticketMatchesTextSearch(ticket: SupportTicketRow, query: string) {
+  if (!query) return true;
+  return (
+    String(ticket.ticketCode || "").toLowerCase().includes(query) ||
+    String(ticket.learnerName || "").toLowerCase().includes(query) ||
+    String(ticket.learnerEmail || "").toLowerCase().includes(query) ||
+    String(ticket.type || "").toLowerCase().includes(query) ||
+    String(ticket.status || "").toLowerCase().includes(query) ||
+    String(ticket.subject || "").toLowerCase().includes(query) ||
+    String(ticket.details || "").toLowerCase().includes(query)
+  );
+}
+
+function ticketMatchesLearner(ticket: SupportTicketRow, learner: TicketableLearnerRow) {
+  const ticketEmail = String(ticket.learnerEmail || "").trim().toLowerCase();
+  const learnerEmail = String(learner.studentEmail || "").trim().toLowerCase();
+  if (ticketEmail && learnerEmail && ticketEmail === learnerEmail) return true;
+
+  const ticketName = String(ticket.learnerName || "").trim().toLowerCase();
+  const learnerName = String(learner.studentName || "").trim().toLowerCase();
+  return Boolean(ticketName && learnerName && ticketName === learnerName);
+}
+
+function normaliseCoachIdentity(value: string | null | undefined) {
+  const localPart = String(value || "").split("@")[0] || "";
+  return localPart
+    .replace(/[^a-z0-9]/gi, "")
+    .toLowerCase();
+}
+
+function storedUserCoachScope() {
+  const explicitEmail = String(localStorage.getItem("email") || "").trim().toLowerCase();
+  const username = String(localStorage.getItem("username") || "").trim().toLowerCase();
+  const email = explicitEmail.includes("@") ? explicitEmail : username.includes("@") ? username : "";
+  const keys = Array.from(new Set([
+    normaliseCoachIdentity(email),
+    normaliseCoachIdentity(username),
+    normaliseCoachIdentity(explicitEmail),
+  ].filter(Boolean)));
+
+  return { email, keys };
+}
+
+function learnerMatchesCoachScope(
+  learner: TicketableLearnerRow,
+  scope: { email: string; keys: string[] },
+) {
+  const learnerCoachEmail = String(learner.coachEmail || "").trim().toLowerCase();
+  if (scope.email && learnerCoachEmail === scope.email) return true;
+
+  const learnerKeys = [
+    normaliseCoachIdentity(learner.coachEmail),
+    normaliseCoachIdentity(learner.coachName),
+  ].filter(Boolean);
+
+  return scope.keys.some((key) => learnerKeys.includes(key));
+}
+
+function hasLearnerWellbeingData(row: TicketableLearnerRow) {
+  return Boolean(
+    row.lastSurveyDate ||
+    row.totalScore != null ||
+    row.wellbeingScore != null ||
+    row.engagementScore != null ||
+    row.providerSupportScore != null ||
+    row.safeguardingScore != null ||
+    (row.triggerCount ?? 0) > 0 ||
+    (row.triggeredQuestions?.length ?? 0) > 0
+  );
+}
+
 
 function isLearnerEvidence(ev: TicketEvidenceRow) { return ev.uploaded_by === "learner"; }
 function evFileUrl(ev: TicketEvidenceRow) { return resolveMediaUrl(ev.file_url || ev.url || ""); }
@@ -154,6 +257,62 @@ function riskBadgeClass(risk: RiskLevel) {
   return "bg-red-500 text-white";
 }
 
+type RiskQuickValue = "all" | RiskLevel;
+
+const RISK_QUICK_FILTERS: Array<{
+  value: RiskQuickValue;
+  label: string;
+  activeClass: string;
+}> = [
+  { value: "all", label: "All", activeClass: "border-[#241453] bg-[#241453] text-white" },
+  { value: "red", label: "Red", activeClass: "border-red-500 bg-red-500 text-white" },
+  { value: "amber", label: "Amber", activeClass: "border-amber-500 bg-amber-500 text-white" },
+  { value: "green", label: "Green", activeClass: "border-emerald-500 bg-emerald-500 text-white" },
+];
+
+function RiskQuickFilter({
+  value,
+  onChange,
+  allLabel = "All",
+  counts,
+}: {
+  value?: RiskQuickValue;
+  onChange: (value: RiskQuickValue) => void;
+  allLabel?: string;
+  counts?: Partial<Record<RiskQuickValue, number>>;
+}) {
+  return (
+    <div className="flex flex-wrap gap-2">
+      {RISK_QUICK_FILTERS.map((item) => {
+        const isActive = value === item.value;
+        const label = item.value === "all" ? allLabel : item.label;
+        const count = counts?.[item.value];
+        return (
+          <button
+            key={item.value}
+            type="button"
+            onClick={() => onChange(item.value)}
+            className={`inline-flex h-9 items-center gap-2 rounded-xl border px-3 text-xs font-semibold transition ${
+              isActive
+                ? item.activeClass
+                : "border-[#E7E2F3] bg-white text-[#241453] hover:bg-[#F8F5FF]"
+            }`}
+          >
+            <span>{label}</span>
+            {count != null && (
+              <span className={`rounded-full px-1.5 py-0.5 text-[10px] ${
+                isActive ? "bg-white/20 text-current" : "bg-[#F4F0FC] text-[#644D93]"
+              }`}>
+                {count}
+              </span>
+            )}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
 function priorityBadgeClass(priority: PriorityLevel) {
   if (priority === "urgent") {
     return "inline-flex h-7 shrink-0 items-center rounded-lg bg-[#FDE7E7] px-2.5 text-[11px] font-semibold uppercase tracking-wide text-[#D92D20]";
@@ -170,21 +329,6 @@ function priorityBadgeClass(priority: PriorityLevel) {
   return "inline-flex h-7 shrink-0 items-center rounded-lg bg-[#EEF2F7] px-2.5 text-[11px] font-semibold uppercase tracking-wide text-[#667085]";
 }
 
-function formatPriority(priority?: string) {
-  return (priority || "low").toLowerCase() as PriorityLevel;
-}
-
-function uniqueBy<T>(items: T[], getKey: (item: T) => string) {
-  const seen = new Set<string>();
-
-  return items.filter((item) => {
-    const key = getKey(item);
-    if (!key || seen.has(key)) return false;
-    seen.add(key);
-    return true;
-  });
-}
-
 function StatCard({
   title,
   value,
@@ -196,6 +340,7 @@ function StatCard({
   iconColor,
   trendLabel,
   trendPositiveIsGood = true,
+  source,
 }: {
   title: string;
   value: number | string;
@@ -207,6 +352,7 @@ function StatCard({
   iconColor?: string;
   trendLabel?: string;
   trendPositiveIsGood?: boolean;
+  source?: string;
 }) {
   const trendColor = delta == null
     ? "text-slate-400"
@@ -215,7 +361,7 @@ function StatCard({
       : delta > 0 ? "text-red-500" : delta < 0 ? "text-emerald-600" : "text-slate-400";
 
   return (
-    <div className="rounded-2xl border border-[#E7E2F3] bg-white p-5 shadow-sm">
+    <div className="rounded-2xl border border-[#E7E2F3] bg-white p-5 shadow-sm" title={source}>
       <div className="flex items-start justify-between gap-4">
         <div className="min-w-0">
           <div className="text-xs font-medium uppercase tracking-[0.08em] text-[#7B6D9B]">
@@ -240,15 +386,41 @@ function StatCard({
   );
 }
 
+function LoadingBadge({ label = "Loading data..." }: { label?: string }) {
+  return (
+    <div className="inline-flex items-center gap-2 rounded-full border border-[#E7E2F3] bg-white px-3 py-1.5 text-xs font-semibold text-[#644D93] shadow-sm">
+      <span className="h-2 w-2 animate-pulse rounded-full bg-[#8B6BC8]" />
+      {label}
+    </div>
+  );
+}
+
+function InlineLoadingNotice({ label }: { label: string }) {
+  return (
+    <div className="flex items-center justify-between rounded-2xl border border-[#E7E2F3] bg-[#FBFAFE] px-4 py-3">
+      <LoadingBadge label={label} />
+      <span className="text-xs text-[#8E82AA]">Keeping the current data visible while refreshing.</span>
+    </div>
+  );
+}
+
 function TrendBadge({ trend, delta }: { trend?: string | null; delta?: number | null }) {
   if (!trend) {
     return (
-      <span className="text-xs text-slate-300" title="First survey — no previous data">—</span>
+      <span
+        className="inline-flex items-center rounded-md bg-slate-50 px-2 py-1 text-xs font-medium text-slate-400"
+        title="Needs at least two wellbeing surveys to calculate trend"
+      >
+        New
+      </span>
     );
   }
   if (trend === "stable") {
     return (
-      <span className="inline-flex items-center gap-1 rounded-md bg-slate-100 px-2 py-1 text-xs font-medium text-slate-500">
+      <span
+        className="inline-flex items-center gap-1 rounded-md bg-slate-100 px-2 py-1 text-xs font-medium text-slate-500"
+        title="Overall risk score is broadly unchanged"
+      >
         <Minus className="h-3 w-3" />
         Stable
       </span>
@@ -256,16 +428,22 @@ function TrendBadge({ trend, delta }: { trend?: string | null; delta?: number | 
   }
   if (trend === "up") {
     return (
-      <span className="inline-flex items-center gap-1 rounded-md bg-emerald-50 px-2 py-1 text-xs font-medium text-emerald-700">
+      <span
+        className="inline-flex items-center gap-1 rounded-md bg-red-50 px-2 py-1 text-xs font-medium text-red-600"
+        title="Overall risk score has increased"
+      >
         <TrendingUp className="h-3 w-3" />
-        {delta != null ? `+${delta.toFixed(1)}` : "Improving"}
+        {delta != null ? `+${delta.toFixed(1)}` : "Increased"}
       </span>
     );
   }
   return (
-    <span className="inline-flex items-center gap-1 rounded-md bg-red-50 px-2 py-1 text-xs font-medium text-red-600">
+    <span
+      className="inline-flex items-center gap-1 rounded-md bg-emerald-50 px-2 py-1 text-xs font-medium text-emerald-700"
+      title="Overall risk score has decreased"
+    >
       <TrendingDown className="h-3 w-3" />
-      {delta != null ? delta.toFixed(1) : "Declining"}
+      {delta != null ? delta.toFixed(1) : "Reduced"}
     </span>
   );
 }
@@ -280,20 +458,20 @@ function SafeguardingCell({ score }: { score: number | null | undefined }) {
   let arrowColor: string;
 
   if (val >= 7) {
-    dotClass = "bg-emerald-400";
-    label = "Safe";
-    tipColor = "#065f46";
-    arrowColor = "#065f46";
-  } else if (val >= 4) {
+    dotClass = "bg-red-500";
+    label = "High concern";
+    tipColor = "#991b1b";
+    arrowColor = "#991b1b";
+  } else if (val === 6) {
     dotClass = "bg-amber-400";
-    label = "Moderate risk";
+    label = "Follow-up";
     tipColor = "#92400e";
     arrowColor = "#92400e";
   } else {
-    dotClass = "bg-red-500";
-    label = "High risk";
-    tipColor = "#991b1b";
-    arrowColor = "#991b1b";
+    dotClass = "bg-emerald-400";
+    label = "Low concern";
+    tipColor = "#065f46";
+    arrowColor = "#065f46";
   }
 
   return (
@@ -307,7 +485,7 @@ function SafeguardingCell({ score }: { score: number | null | undefined }) {
           style={{ backgroundColor: tipColor }}
         >
           <p className="font-semibold">{label}</p>
-          <p className="mt-0.5 opacity-80">Higher score = safer · Lower = higher risk</p>
+          <p className="mt-0.5 opacity-80">Higher risk score = more concern</p>
           <div
             className="absolute left-1/2 top-full -translate-x-1/2 border-4 border-transparent"
             style={{ borderTopColor: arrowColor }}
@@ -318,13 +496,34 @@ function SafeguardingCell({ score }: { score: number | null | undefined }) {
   );
 }
 
-type TriggeredQuestion = { text: string; score?: number | null; level?: string; note?: string };
+type TriggeredQuestion = {
+  text: string;
+  score?: number | null;
+  answer?: number | null;
+  riskScore?: number | null;
+  level?: string;
+  note?: string;
+};
 
 function scoreBadgeClass(score?: number | null) {
   if (score == null) return "bg-slate-100 text-slate-500";
-  if (score >= 7) return "bg-red-100 text-red-700";
-  if (score >= 4) return "bg-amber-100 text-amber-700";
+  if (score >= 8) return "bg-red-100 text-red-700";
+  if (score >= 6) return "bg-amber-100 text-amber-700";
   return "bg-green-100 text-green-700";
+}
+
+function wellbeingRiskTextColor(score?: number | null) {
+  if (score == null) return "text-[#241453]";
+  if (score >= 8) return "text-red-500";
+  if (score >= 6) return "text-amber-500";
+  return "text-[#0F9B8E]";
+}
+
+function wellbeingScoreDescription(score?: number | null) {
+  if (score == null) return "No wellbeing score is available for this learner.";
+  if (score >= 8) return "High concern range based on the current survey data.";
+  if (score >= 6) return "Follow-up range based on the current survey data.";
+  return "Low concern range based on the current survey data.";
 }
 
 function TriggeredQuestionsPopover({ questions, count }: { questions: TriggeredQuestion[]; count: number }) {
@@ -381,7 +580,7 @@ function TriggeredQuestionsPopover({ questions, count }: { questions: TriggeredQ
             {/* panel — invisible until useLayoutEffect positions it */}
             <div
               ref={panelRef}
-              className="fixed z-[91] w-96 max-w-[calc(100vw-16px)] overflow-hidden rounded-2xl border border-[#E9E3F5] bg-white shadow-xl"
+              className="fixed z-[91] w-[520px] max-w-[calc(100vw-16px)] overflow-hidden rounded-2xl border border-[#E9E3F5] bg-white shadow-xl"
               style={{ top: 0, left: 0, visibility: "hidden" }}
               onClick={(e) => e.stopPropagation()}
             >
@@ -399,33 +598,58 @@ function TriggeredQuestionsPopover({ questions, count }: { questions: TriggeredQ
 
               {/* scrollable list — fixed 380px max, scrollbar appears when content overflows */}
               <div className="custom-scroll overflow-y-auto p-3" style={{ maxHeight: "380px" }}>
-                <ol className="space-y-2">
-                  {questions.map((q, i) => (
-                    <li key={i} className="rounded-xl border border-[#F1EDF8] bg-[#FFF8F8] px-3 py-2.5">
-                      <div className="flex items-start gap-2.5">
-                        <span className="mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-[#FDE7E7] text-[10px] font-bold text-[#D92D20]">
-                          {i + 1}
-                        </span>
-                        <span className="text-sm leading-snug text-[#241453]">{q.text}</span>
-                      </div>
-                      <div className="mt-2 flex flex-wrap items-center gap-2 pl-7">
-                        {q.score != null && (
-                          <span className={`inline-flex items-center rounded-md px-2 py-0.5 text-[11px] font-semibold ${scoreBadgeClass(q.score)}`}>
-                            Score: {q.score}
+                <ol className="space-y-3">
+                  {questions.map((q, i) => {
+                    const parsed = parseWellbeingTriggerLine(q.text);
+                    const parsedRisk = numericRiskValue(parsed?.risk);
+                    const answer = q.answer ?? q.score ?? parsed?.answer ?? null;
+                    const riskScore = q.riskScore ?? parsedRisk;
+                    const concernLabel = concernLabelFromScore(riskScore, q.level || parsed?.level);
+                    const visuals = concernVisuals(concernLabel);
+                    const reason = triggerReasonLabel(q.note || parsed?.reason, q.level || parsed?.level);
+                    const questionText = parsed?.text || q.text;
+                    return (
+                      <li key={i} className={`overflow-hidden rounded-2xl border ${visuals.card}`}>
+                        <div className="flex items-start gap-3 p-3.5">
+                          <span className={`mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-xl text-[11px] font-black ${visuals.icon}`}>
+                            {i + 1}
                           </span>
-                        )}
-                        {q.level && (
-                          <span className={`inline-flex items-center rounded-md px-2 py-0.5 text-[11px] font-semibold capitalize ${q.level === "high" ? "bg-red-50 text-red-600" :
-                              q.level === "medium" ? "bg-amber-50 text-amber-600" :
-                                "bg-green-50 text-green-600"
-                            }`}>
-                            {q.level} Risk
-                          </span>
-                        )}
-                        {q.note && <span className="text-[11px] italic text-slate-400">{q.note}</span>}
-                      </div>
-                    </li>
-                  ))}
+                          <div className="min-w-0 flex-1">
+                            <div className="flex flex-wrap items-center gap-2">
+                              <span className={`rounded-full px-2.5 py-1 text-[11px] font-bold ring-1 ${visuals.badge}`}>
+                                {concernLabel}
+                              </span>
+                              {riskScore != null && (
+                                <span className="rounded-full bg-white px-2.5 py-1 text-[11px] font-semibold text-[#241453] ring-1 ring-white">
+                                  Risk score {riskScore}/10
+                                </span>
+                              )}
+                            </div>
+                            <p className="mt-2 text-sm font-semibold leading-5 text-[#241453]">
+                              {questionText}
+                            </p>
+                            <div className="mt-3 grid gap-2 sm:grid-cols-3">
+                              <div className="rounded-xl bg-white/85 px-3 py-2 ring-1 ring-white">
+                                <div className="text-[9px] font-bold uppercase tracking-[0.12em] text-[#8B7AAF]">Answer</div>
+                                <div className="mt-1 text-lg font-black text-[#241453]">{answer ?? "-"}</div>
+                              </div>
+                              <div className="rounded-xl bg-white/85 px-3 py-2 ring-1 ring-white">
+                                <div className="text-[9px] font-bold uppercase tracking-[0.12em] text-[#8B7AAF]">Risk</div>
+                                <div className="mt-1 text-lg font-black text-[#241453]">{riskScore ?? "-"}</div>
+                                <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-slate-100">
+                                  <div className={`h-full rounded-full ${visuals.bar}`} style={{ width: `${scoreWidth(riskScore)}%` }} />
+                                </div>
+                              </div>
+                              <div className="rounded-xl bg-white/85 px-3 py-2 ring-1 ring-white">
+                                <div className="text-[9px] font-bold uppercase tracking-[0.12em] text-[#8B7AAF]">Reason</div>
+                                <div className="mt-1 text-[11px] font-semibold leading-4 text-slate-700">{reason}</div>
+                              </div>
+                            </div>
+                          </div>
+                        </div>
+                      </li>
+                    );
+                  })}
                 </ol>
               </div>
             </div>
@@ -438,11 +662,134 @@ function TriggeredQuestionsPopover({ questions, count }: { questions: TriggeredQ
 
 // ── Apprentice Report Modal ───────────────────────────────────────────────────
 function isUrl(s: string) {
-  return /^https?:\/\//i.test(s.trim());
+  return /^(https?:\/\/|mailto:)/i.test(s.trim());
 }
 
 // Keys whose values should be rendered as a prominent bold title line
 const TITLE_KEYS = new Set(["title", "name", "heading", "label"]);
+
+function reportLabel(key: string) {
+  return key.replace(/([A-Z])/g, " $1").replace(/_/g, " ").trim();
+}
+
+function asReportRecord(value: unknown): Record<string, unknown> | null {
+  if (value && typeof value === "object" && !Array.isArray(value)) {
+    return value as Record<string, unknown>;
+  }
+  return null;
+}
+
+function asReportRecords(value: unknown): Record<string, unknown>[] {
+  return Array.isArray(value)
+    ? value.filter((item): item is Record<string, unknown> => Boolean(asReportRecord(item)))
+    : [];
+}
+
+function asReportStrings(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return value
+    .map((item) => String(item ?? "").trim())
+    .filter(Boolean);
+}
+
+function reportString(value: unknown) {
+  return typeof value === "string" ? value.trim() : "";
+}
+
+function reportLevelClass(value?: string | null) {
+  const v = String(value || "").toLowerCase();
+  if (v.includes("high") || v.includes("red") || v.includes("concern")) return "bg-red-50 text-red-700 ring-red-100";
+  if (v.includes("follow") || v.includes("medium") || v.includes("amber") || v.includes("observation")) return "bg-amber-50 text-amber-700 ring-amber-100";
+  if (v.includes("today")) return "bg-red-50 text-red-700 ring-red-100";
+  if (v.includes("week")) return "bg-amber-50 text-amber-700 ring-amber-100";
+  if (v.includes("support")) return "bg-[#F4F0FC] text-[#644D93] ring-[#E7E2F3]";
+  return "bg-emerald-50 text-emerald-700 ring-emerald-100";
+}
+
+function questionLookupKey(value?: string | null) {
+  return String(value || "").trim().toLowerCase().replace(/\s+/g, " ");
+}
+
+function triggerReasonLabel(note?: string | null, level?: string | null) {
+  const raw = String(note || "").trim();
+  const lowered = raw.toLowerCase();
+  if (lowered.includes("low answer on a positive question")) return "Low answer on a positive question";
+  if (lowered.includes("high answer on a risk question")) return "High answer on a risk question";
+  if (raw) return raw;
+  return String(level || "").toLowerCase() === "low"
+    ? "Low answer on a positive question"
+    : "High answer on a risk question";
+}
+
+function concernLabelFromScore(score?: number | null, fallback?: string | null) {
+  if (score != null && Number.isFinite(Number(score))) {
+    const n = Number(score);
+    if (n >= 8) return "High concern";
+    if (n >= 6) return "Follow-up";
+    return "Low concern";
+  }
+  const v = String(fallback || "").toLowerCase();
+  if (v.includes("high") || v.includes("red")) return "High concern";
+  if (v.includes("follow") || v.includes("medium") || v.includes("amber")) return "Follow-up";
+  if (v.includes("low") || v.includes("green")) return "Low concern";
+  return "Not scored";
+}
+
+function concernVisuals(label: string) {
+  const v = label.toLowerCase();
+  if (v.includes("high")) {
+    return {
+      badge: "bg-red-50 text-red-700 ring-red-100",
+      card: "border-red-100 bg-red-50/35",
+      bar: "bg-red-500",
+      icon: "bg-red-100 text-red-700",
+    };
+  }
+  if (v.includes("follow")) {
+    return {
+      badge: "bg-amber-50 text-amber-700 ring-amber-100",
+      card: "border-amber-100 bg-amber-50/35",
+      bar: "bg-amber-500",
+      icon: "bg-amber-100 text-amber-700",
+    };
+  }
+  return {
+    badge: "bg-emerald-50 text-emerald-700 ring-emerald-100",
+    card: "border-emerald-100 bg-emerald-50/35",
+    bar: "bg-emerald-500",
+    icon: "bg-emerald-100 text-emerald-700",
+  };
+}
+
+function scoreWidth(score?: number | null) {
+  if (score == null || !Number.isFinite(Number(score))) return 0;
+  return Math.max(0, Math.min(100, Number(score) * 10));
+}
+
+function ReportSection({
+  title,
+  eyebrow,
+  right,
+  children,
+}: {
+  title: string;
+  eyebrow?: string;
+  right?: React.ReactNode;
+  children: React.ReactNode;
+}) {
+  return (
+    <section className="rounded-2xl border border-[#E7E2F3] bg-white shadow-sm">
+      <div className="flex flex-wrap items-center justify-between gap-3 border-b border-[#F1EDF8] px-5 py-4">
+        <div>
+          {eyebrow && <div className="text-[10px] font-bold uppercase tracking-[0.14em] text-[#8B7AAF]">{eyebrow}</div>}
+          <h3 className="text-sm font-bold text-[#241453]">{title}</h3>
+        </div>
+        {right}
+      </div>
+      <div className="p-5">{children}</div>
+    </section>
+  );
+}
 
 function renderReportValue(value: unknown, depth = 0, parentKey = ""): React.ReactNode {
   if (value === null || value === undefined) return <span className="text-slate-300">—</span>;
@@ -471,6 +818,17 @@ function renderReportValue(value: unknown, depth = 0, parentKey = ""): React.Rea
   }
   if (Array.isArray(value)) {
     if (value.length === 0) return <span className="text-slate-300">—</span>;
+    if (value.every((item) => asReportRecord(item))) {
+      return (
+        <div className="grid gap-3">
+          {asReportRecords(value).map((item, i) => (
+            <div key={i} className="rounded-xl border border-[#E7E2F3] bg-white p-3">
+              {renderReportValue(item, depth + 1)}
+            </div>
+          ))}
+        </div>
+      );
+    }
     return (
       <ul className="mt-1 space-y-1">
         {value.map((item, i) => (
@@ -492,7 +850,7 @@ function renderReportValue(value: unknown, depth = 0, parentKey = ""): React.Rea
       <div className={depth > 0 ? "mt-1 pl-3 border-l-2 border-[#E7E2F3] space-y-1.5" : "space-y-2"}>
         {entries.map(([k, v]) => {
           const isTitleKey = TITLE_KEYS.has(k.toLowerCase());
-          const label = k.replace(/([A-Z])/g, " $1").replace(/_/g, " ").trim();
+          const label = reportLabel(k);
           return (
             <div key={k}>
               <span className={
@@ -519,76 +877,452 @@ function ApprenticeReportModal({
   learner: TicketableLearnerRow | null;
   onClose: () => void;
 }) {
-  if (!learner) return null;
-  const data = (learner as any).apprenticeDashboard as Record<string, unknown> | undefined;
-  const hasData = data && Object.keys(data).length > 0;
+  const [questionTab, setQuestionTab] = useState<"flags" | "answers">("flags");
 
-  // Group top-level keys into sections
-  const entries = hasData ? Object.entries(data!) : [];
+  useEffect(() => {
+    setQuestionTab((learner?.triggeredQuestions?.length ?? 0) > 0 ? "flags" : "answers");
+  }, [learner?.studentId, learner?.triggeredQuestions?.length]);
+
+  if (!learner) return null;
+  const data = asReportRecord((learner as any).apprenticeDashboard) ?? {};
+  const dashboardSummary = reportString(data.dashboard_summary);
+  const whatMatters = asReportRecords(data.what_matters_now);
+  const recommendations = asReportRecords(data.personalised_recommendations);
+  const resources = asReportRecords(data.resources_self_help);
+  const summaryCards = asReportRecord(data.ai_wellbeing_summary);
+  const surveyResponses = learner.surveyResponses || [];
+  const triggeredQuestions = learner.triggeredQuestions || [];
+  const handledKeys = new Set([
+    "overall_wellbeing",
+    "workplace_experience",
+    "support_from_kbc",
+    "what_matters_now",
+    "personalised_recommendations",
+    "resources_self_help",
+    "ai_wellbeing_summary",
+    "dashboard_summary",
+  ]);
+  const additionalEntries = Object.entries(data).filter(([key]) => !handledKeys.has(key));
+  const hasReportData = Object.keys(data).length > 0 || surveyResponses.length > 0 || triggeredQuestions.length > 0;
+
+  const wellbeingSections = [
+    { key: "overall_wellbeing", title: "Overall wellbeing" },
+    { key: "workplace_experience", title: "Workplace experience" },
+    { key: "support_from_kbc", title: "Support from KBC" },
+  ].map((section) => {
+    const sectionData = asReportRecord(data[section.key]);
+    return {
+      ...section,
+      insights: asReportStrings(sectionData?.ai_insights),
+      actions: asReportStrings(sectionData?.recommended_actions),
+    };
+  }).filter((section) => section.insights.length > 0 || section.actions.length > 0);
+
+  const statusItems = ["status_1", "status_2", "status_3"]
+    .map((key) => asReportRecord(summaryCards?.[key]))
+    .filter((item): item is Record<string, unknown> => Boolean(item));
+
+  const responseByQuestion = new Map(
+    surveyResponses
+      .filter((item) => item.questionText || item.questionCode)
+      .map((item) => [questionLookupKey(item.questionText || item.questionCode), item])
+  );
+  const responseForTrigger = (item: TriggeredQuestion) => responseByQuestion.get(questionLookupKey(item.text));
+  const flaggedHighCount = triggeredQuestions.filter((item) => {
+    const matched = responseForTrigger(item);
+    return concernLabelFromScore(item.riskScore, matched?.concernLevel || item.level).toLowerCase().includes("high");
+  }).length;
+  const flaggedFollowUpCount = triggeredQuestions.filter((item) => {
+    const matched = responseForTrigger(item);
+    return concernLabelFromScore(item.riskScore, matched?.concernLevel || item.level).toLowerCase().includes("follow");
+  }).length;
+  const answerConcernCounts = surveyResponses.reduce(
+    (acc, item) => {
+      const label = concernLabelFromScore(null, item.concernLevel).toLowerCase();
+      if (label.includes("high")) acc.high += 1;
+      else if (label.includes("follow")) acc.followUp += 1;
+      else acc.low += 1;
+      return acc;
+    },
+    { high: 0, followUp: 0, low: 0 }
+  );
 
   return (
-    <div className="fixed inset-0 z-50 flex items-start justify-end">
-      <button type="button" className="absolute inset-0 bg-black/30" onClick={onClose} />
-      <div className="relative z-10 flex h-full w-full max-w-xl flex-col bg-white shadow-2xl">
+    <div className="fixed inset-0 z-50 bg-[#120926]/45 p-3 sm:p-5">
+      <button type="button" className="absolute inset-0 cursor-default" onClick={onClose} />
+      <div className="relative z-10 mx-auto flex h-[calc(100vh-24px)] w-full max-w-6xl flex-col overflow-hidden rounded-3xl bg-white shadow-2xl sm:h-[calc(100vh-40px)]">
         {/* Header */}
-        <div className="flex items-start justify-between border-b border-[#EEE8F8] bg-[#FAFAFF] px-6 py-4">
-          <div>
-            <div className="text-xs font-semibold uppercase tracking-wider text-[#7B6D9B]">Learner Safeguarding Report</div>
-            <div className="mt-0.5 text-base font-bold text-[#241453]">{learner.studentName}</div>
-            <div className="text-xs text-slate-500">{learner.studentEmail}</div>
-          </div>
-          <div className="flex items-center gap-2">
-            <button
-              type="button"
-              onClick={() => exportApprenticeToPDF(learner)}
-              className="inline-flex items-center gap-1.5 rounded-lg border border-[#D6CCF0] bg-white px-3 py-1.5 text-xs font-semibold text-[#644D93] shadow-sm hover:bg-[#F5F1FC]"
-            >
-              <FilePdf className="h-3.5 w-3.5" />
-              Export PDF
-            </button>
-            <button type="button" onClick={onClose} className="rounded-lg p-1.5 text-slate-400 hover:bg-[#F5F1FC] hover:text-[#241453]">
-              <X className="h-5 w-5" />
-            </button>
-          </div>
-        </div>
-
-        {/* Quick stats bar */}
-        <div className="grid grid-cols-3 gap-px border-b border-[#EEE8F8] bg-[#EEE8F8]">
-          {[
-            { label: "Risk", value: learner.riskLevel, badge: true },
-            { label: "Total Score", value: learner.totalScore != null ? String(learner.totalScore) : "—" },
-            { label: "Triggers", value: learner.triggerCount != null ? String(learner.triggerCount) : "0" },
-          ].map((s) => (
-            <div key={s.label} className="bg-white px-4 py-3 text-center">
-              <div className="text-[10px] font-semibold uppercase tracking-wider text-[#7B6D9B]">{s.label}</div>
-              {s.badge ? (
-                <span className={`mt-1 inline-flex rounded-full px-2.5 py-0.5 text-xs font-semibold capitalize ${riskBadgeClass(learner.riskLevel)}`}>
-                  {learner.riskLevel}
-                </span>
-              ) : (
-                <div className="mt-1 text-lg font-bold text-[#241453]">{s.value}</div>
-              )}
+        <div className="border-b border-[#EEE8F8] bg-[#FAFAFF] px-5 py-4 sm:px-6">
+          <div className="flex flex-wrap items-start justify-between gap-4">
+            <div className="min-w-0">
+              <div className="text-xs font-semibold uppercase tracking-wider text-[#7B6D9B]">Learner wellbeing report</div>
+              <div className="mt-1 truncate text-xl font-bold text-[#241453]">{learner.studentName}</div>
+              <div className="mt-0.5 truncate text-xs text-slate-500">{learner.studentEmail}</div>
             </div>
-          ))}
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => exportApprenticeToPDF(learner)}
+                className="inline-flex h-10 items-center gap-1.5 rounded-xl border border-[#D6CCF0] bg-white px-3 text-xs font-semibold text-[#644D93] shadow-sm hover:bg-[#F5F1FC]"
+              >
+                <FilePdf className="h-3.5 w-3.5" />
+                Export PDF
+              </button>
+              <button type="button" onClick={onClose} className="rounded-xl border border-[#E7E2F3] bg-white p-2 text-slate-500 hover:bg-[#F5F1FC] hover:text-[#241453]">
+                <X className="h-5 w-5" />
+              </button>
+            </div>
+          </div>
+
+          <div className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
+            {[
+              { label: "Risk", value: learner.riskLevel, badge: true },
+              { label: "Total score", value: learner.totalScore != null ? learner.totalScore : "-" },
+              { label: "Wellbeing", value: learner.wellbeingScore != null ? learner.wellbeingScore : "-" },
+              { label: "Safeguarding", value: learner.safeguardingScore != null ? learner.safeguardingScore : "-" },
+              { label: "Triggers", value: learner.triggerCount ?? triggeredQuestions.length },
+            ].map((s) => (
+              <div key={s.label} className="rounded-2xl border border-[#E7E2F3] bg-white px-4 py-3">
+                <div className="text-[10px] font-bold uppercase tracking-[0.12em] text-[#8B7AAF]">{s.label}</div>
+                {s.badge ? (
+                  <span className={`mt-2 inline-flex rounded-full px-2.5 py-1 text-xs font-semibold capitalize ${riskBadgeClass(learner.riskLevel)}`}>
+                    {learner.riskLevel}
+                  </span>
+                ) : (
+                  <div className={`mt-1 text-lg font-bold ${typeof s.value === "number" ? wellbeingRiskTextColor(Number(s.value)) : "text-[#241453]"}`}>
+                    {s.value}
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
         </div>
 
-        {/* Body — scrollable */}
-        <div className="flex-1 overflow-y-auto px-6 py-5">
-          {!hasData ? (
+        {/* Body - scrollable */}
+        <div className="custom-scroll flex-1 overflow-y-auto bg-[#FBFAFF] px-4 py-5 sm:px-6">
+          {!hasReportData ? (
             <div className="flex flex-col items-center justify-center py-16 text-slate-400">
               <FileText className="mb-3 h-10 w-10 opacity-30" />
               <p className="text-sm">No report data available for this learner yet.</p>
             </div>
           ) : (
             <div className="space-y-5">
-              {entries.map(([key, value]) => (
-                <div key={key} className="rounded-xl border border-[#EEE8F8] bg-[#FAFAFF] p-4">
-                  <div className="mb-2 text-xs font-bold uppercase tracking-wider text-[#644D93]">
-                    {key.replace(/([A-Z])/g, " $1").replace(/_/g, " ").trim()}
-                  </div>
-                  <div className="text-sm">{renderReportValue(value)}</div>
+              <ReportSection title="Learner details" eyebrow="Context">
+                <div className="grid gap-3 text-sm sm:grid-cols-2 lg:grid-cols-4">
+                  {[
+                    ["Programme", learner.programme || "-"],
+                    ["Coach", learner.coachName || "-"],
+                    ["Coach email", learner.coachEmail || "-"],
+                    ["Last survey", learner.lastSurveyDate || "-"],
+                  ].map(([label, value]) => (
+                    <div key={label} className="rounded-xl bg-[#FAFAFF] px-4 py-3">
+                      <div className="text-[10px] font-bold uppercase tracking-[0.12em] text-[#8B7AAF]">{label}</div>
+                      <div className="mt-1 break-words font-semibold text-[#241453]">{value}</div>
+                    </div>
+                  ))}
                 </div>
-              ))}
+              </ReportSection>
+
+              {dashboardSummary && (
+                <ReportSection title="Dashboard summary" eyebrow="AI summary">
+                  <p className="max-w-4xl text-sm leading-6 text-slate-700">{dashboardSummary}</p>
+                </ReportSection>
+              )}
+
+              {statusItems.length > 0 && (
+                <ReportSection title="Wellbeing summary cards" eyebrow="Status">
+                  <div className="grid gap-3 md:grid-cols-3">
+                    {statusItems.map((item, index) => (
+                      <div key={index} className="rounded-2xl border border-[#E7E2F3] bg-[#FAFAFF] p-4">
+                        <div className="text-xs font-bold text-[#644D93]">{reportString(item.label) || `Status ${index + 1}`}</div>
+                        <p className="mt-2 text-sm leading-6 text-slate-700">{reportString(item.text) || "-"}</p>
+                      </div>
+                    ))}
+                  </div>
+                </ReportSection>
+              )}
+
+              {wellbeingSections.length > 0 && (
+                <div className="grid gap-5 xl:grid-cols-3">
+                  {wellbeingSections.map((section) => (
+                    <ReportSection key={section.key} title={section.title} eyebrow="Insights">
+                      <div className="space-y-4">
+                        {section.insights.length > 0 && (
+                          <div>
+                            <div className="mb-2 text-[10px] font-bold uppercase tracking-[0.12em] text-[#8B7AAF]">AI insights</div>
+                            <ul className="space-y-2">
+                              {section.insights.map((item, i) => (
+                                <li key={i} className="rounded-xl bg-[#FAFAFF] px-3 py-2 text-sm leading-5 text-slate-700">{item}</li>
+                              ))}
+                            </ul>
+                          </div>
+                        )}
+                        {section.actions.length > 0 && (
+                          <div>
+                            <div className="mb-2 text-[10px] font-bold uppercase tracking-[0.12em] text-[#8B7AAF]">Recommended actions</div>
+                            <ul className="space-y-2">
+                              {section.actions.map((item, i) => (
+                                <li key={i} className="flex gap-2 text-sm leading-5 text-slate-700">
+                                  <ClipboardCheck className="mt-0.5 h-4 w-4 shrink-0 text-[#0F9B8E]" />
+                                  <span>{item}</span>
+                                </li>
+                              ))}
+                            </ul>
+                          </div>
+                        )}
+                      </div>
+                    </ReportSection>
+                  ))}
+                </div>
+              )}
+
+              {whatMatters.length > 0 && (
+                <ReportSection title="What matters now" eyebrow="Priorities" right={<span className="rounded-full bg-[#F4F0FC] px-2.5 py-1 text-xs font-bold text-[#644D93]">{whatMatters.length} items</span>}>
+                  <div className="grid gap-3 md:grid-cols-2">
+                    {whatMatters.map((item, i) => {
+                      const type = reportString(item.type) || "item";
+                      return (
+                        <div key={i} className="rounded-2xl border border-[#E7E2F3] bg-[#FAFAFF] p-4">
+                          <span className={`inline-flex rounded-full px-2 py-0.5 text-[10px] font-bold uppercase ring-1 ${type === "positive" ? "bg-emerald-50 text-emerald-700 ring-emerald-100" : "bg-red-50 text-red-700 ring-red-100"}`}>
+                            {type}
+                          </span>
+                          <p className="mt-3 text-sm leading-6 text-slate-700">{reportString(item.text) || renderReportValue(item)}</p>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </ReportSection>
+              )}
+
+              {recommendations.length > 0 && (
+                <ReportSection title="Personalised recommendations" eyebrow="Actions" right={<span className="rounded-full bg-[#F4F0FC] px-2.5 py-1 text-xs font-bold text-[#644D93]">{recommendations.length} recommendations</span>}>
+                  <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+                    {recommendations.map((item, i) => {
+                      const tag = reportString(item.tag);
+                      return (
+                        <div key={i} className="rounded-2xl border border-[#E7E2F3] bg-white p-4 shadow-sm">
+                          <div className="flex items-start justify-between gap-3">
+                            <h4 className="text-sm font-bold text-[#241453]">{reportString(item.title) || "Recommendation"}</h4>
+                            {tag && <span className={`shrink-0 rounded-full px-2 py-0.5 text-[10px] font-bold uppercase ring-1 ${reportLevelClass(tag)}`}>{tag}</span>}
+                          </div>
+                          <p className="mt-3 text-sm leading-6 text-slate-700">{reportString(item.reason) || "-"}</p>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </ReportSection>
+              )}
+
+              {resources.length > 0 && (
+                <ReportSection title="Resources" eyebrow="Self help">
+                  <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+                    {resources.map((item, i) => {
+                      const bullets = asReportStrings(item.bullet_points);
+                      const sourceUrl = reportString(item.source_url);
+                      return (
+                        <div key={i} className="rounded-2xl border border-[#E7E2F3] bg-white p-4">
+                          <h4 className="text-sm font-bold text-[#241453]">{reportString(item.title) || "Resource"}</h4>
+                          {bullets.length > 0 && (
+                            <ul className="mt-3 space-y-2">
+                              {bullets.map((bullet, j) => (
+                                <li key={j} className="flex gap-2 text-xs leading-5 text-slate-700">
+                                  <span className="mt-2 h-1.5 w-1.5 shrink-0 rounded-full bg-[#8B6BC8]" />
+                                  <span>{bullet}</span>
+                                </li>
+                              ))}
+                            </ul>
+                          )}
+                          {sourceUrl && isUrl(sourceUrl) && (
+                            <a href={sourceUrl} target="_blank" rel="noopener noreferrer" className="mt-4 inline-flex items-center gap-1 text-xs font-semibold text-[#5B3FD9] hover:underline">
+                              {reportString(item.source_title) || "Open source"}
+                              <ExternalLink className="h-3 w-3" />
+                            </a>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                </ReportSection>
+              )}
+
+              {(triggeredQuestions.length > 0 || surveyResponses.length > 0) && (
+                <ReportSection
+                  title="Question evidence"
+                  eyebrow="Survey review"
+                  right={
+                    <div className="flex rounded-2xl border border-[#E7E2F3] bg-[#F8F5FF] p-1">
+                      {[
+                        { id: "flags" as const, label: "Risk flags", count: triggeredQuestions.length, disabled: triggeredQuestions.length === 0 },
+                        { id: "answers" as const, label: "All answers", count: surveyResponses.length, disabled: surveyResponses.length === 0 },
+                      ].map((tab) => (
+                        <button
+                          key={tab.id}
+                          type="button"
+                          disabled={tab.disabled}
+                          onClick={() => setQuestionTab(tab.id)}
+                          className={`inline-flex h-9 items-center gap-2 rounded-xl px-3 text-xs font-bold transition ${
+                            questionTab === tab.id
+                              ? "bg-[#241453] text-white shadow-sm"
+                              : "text-[#644D93] hover:bg-white disabled:cursor-not-allowed disabled:opacity-40"
+                          }`}
+                        >
+                          <span>{tab.label}</span>
+                          <span className={questionTab === tab.id ? "rounded-full bg-white/20 px-1.5 py-0.5 text-[10px]" : "rounded-full bg-white px-1.5 py-0.5 text-[10px]"}>
+                            {tab.count}
+                          </span>
+                        </button>
+                      ))}
+                    </div>
+                  }
+                >
+                  <div className="mb-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+                    {[
+                      { label: "Risk flags", value: triggeredQuestions.length, tone: "red" },
+                      { label: "High concern", value: flaggedHighCount, tone: "red" },
+                      { label: "Follow-up", value: flaggedFollowUpCount || answerConcernCounts.followUp, tone: "amber" },
+                      { label: "All answers", value: surveyResponses.length, tone: "purple" },
+                    ].map((item) => (
+                      <div
+                        key={item.label}
+                        className={`rounded-2xl border px-4 py-3 ${
+                          item.tone === "red"
+                            ? "border-red-100 bg-red-50/40"
+                            : item.tone === "amber"
+                              ? "border-amber-100 bg-amber-50/40"
+                              : "border-[#E7E2F3] bg-[#FAFAFF]"
+                        }`}
+                      >
+                        <div className="text-[10px] font-bold uppercase tracking-[0.12em] text-[#8B7AAF]">{item.label}</div>
+                        <div className={`mt-1 text-2xl font-black ${
+                          item.tone === "red" ? "text-red-600" : item.tone === "amber" ? "text-amber-600" : "text-[#241453]"
+                        }`}>
+                          {item.value}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+
+                  {questionTab === "flags" ? (
+                    triggeredQuestions.length === 0 ? (
+                      <div className="rounded-2xl border border-[#E7E2F3] bg-[#FAFAFF] px-4 py-6 text-sm text-slate-500">
+                        No active risk flags are available for this learner.
+                      </div>
+                    ) : (
+                      <div className="grid gap-3 lg:grid-cols-2">
+                        {triggeredQuestions.map((item, i) => {
+                          const matched = responseForTrigger(item);
+                          const answer = item.answer ?? item.score ?? matched?.answer;
+                          const concernLabel = concernLabelFromScore(item.riskScore, matched?.concernLevel || item.level);
+                          const visuals = concernVisuals(concernLabel);
+                          const reason = triggerReasonLabel(item.note, item.level);
+                          return (
+                            <div key={`${item.text}-${i}`} className={`rounded-2xl border p-4 ${visuals.card}`}>
+                              <div className="flex items-start justify-between gap-3">
+                                <div className="flex min-w-0 items-start gap-3">
+                                  <span className={`mt-0.5 inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-xl ${visuals.icon}`}>
+                                    <AlertTriangle className="h-4 w-4" />
+                                  </span>
+                                  <div className="min-w-0">
+                                    <div className="flex flex-wrap items-center gap-2">
+                                      <span className={`rounded-full px-2.5 py-1 text-[11px] font-bold ring-1 ${visuals.badge}`}>{concernLabel}</span>
+                                      {matched?.categoryName && (
+                                        <span className="rounded-full bg-white px-2.5 py-1 text-[11px] font-semibold text-[#644D93] ring-1 ring-[#E7E2F3]">
+                                          {matched.categoryName}
+                                        </span>
+                                      )}
+                                    </div>
+                                    <p className="mt-3 text-sm font-bold leading-6 text-[#241453]">{item.text}</p>
+                                    {matched?.constructType && <p className="mt-1 text-xs text-slate-500">{matched.constructType}</p>}
+                                  </div>
+                                </div>
+                              </div>
+
+                              <div className="mt-4 grid gap-3 sm:grid-cols-3">
+                                <div className="rounded-xl bg-white/80 px-3 py-2 ring-1 ring-white">
+                                  <div className="text-[10px] font-bold uppercase tracking-[0.12em] text-[#8B7AAF]">Learner answer</div>
+                                  <div className="mt-1 text-lg font-black text-[#241453]">{answer ?? "-"}</div>
+                                </div>
+                                <div className="rounded-xl bg-white/80 px-3 py-2 ring-1 ring-white">
+                                  <div className="text-[10px] font-bold uppercase tracking-[0.12em] text-[#8B7AAF]">Concern score</div>
+                                  <div className="mt-1 flex items-end gap-2">
+                                    <span className="text-lg font-black text-[#241453]">{item.riskScore ?? "-"}</span>
+                                    {item.riskScore != null && <span className="pb-0.5 text-xs text-slate-400">/ 10</span>}
+                                  </div>
+                                  <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-slate-100">
+                                    <div className={`h-full rounded-full ${visuals.bar}`} style={{ width: `${scoreWidth(item.riskScore)}%` }} />
+                                  </div>
+                                </div>
+                                <div className="rounded-xl bg-white/80 px-3 py-2 ring-1 ring-white">
+                                  <div className="text-[10px] font-bold uppercase tracking-[0.12em] text-[#8B7AAF]">Why flagged</div>
+                                  <div className="mt-1 text-xs font-semibold leading-5 text-slate-700">{reason}</div>
+                                </div>
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )
+                  ) : surveyResponses.length === 0 ? (
+                    <div className="rounded-2xl border border-[#E7E2F3] bg-[#FAFAFF] px-4 py-6 text-sm text-slate-500">
+                      No survey answers are available for this learner.
+                    </div>
+                  ) : (
+                    <div className="custom-scroll max-h-[520px] overflow-auto rounded-2xl border border-[#E7E2F3] bg-white">
+                      <table className="min-w-full divide-y divide-[#F1EDF8] text-left text-sm">
+                        <thead className="sticky top-0 bg-[#FAFAFF] text-[10px] font-bold uppercase tracking-[0.12em] text-[#7B6D9B]">
+                          <tr>
+                            <th className="w-[44%] px-4 py-3">Question</th>
+                            <th className="px-4 py-3">Area</th>
+                            <th className="px-4 py-3">Answer</th>
+                            <th className="px-4 py-3">Concern level</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-[#F1EDF8]">
+                          {surveyResponses.map((item, i) => {
+                            const concernLabel = concernLabelFromScore(null, item.concernLevel);
+                            const visuals = concernVisuals(concernLabel);
+                            return (
+                              <tr key={`${item.questionCode || "q"}-${i}`} className="align-top hover:bg-[#FAFAFF]">
+                                <td className="px-4 py-3">
+                                  <div className="font-semibold leading-5 text-[#241453]">{item.questionText || item.questionCode || "-"}</div>
+                                  {item.questionCode && <div className="mt-1 text-[11px] text-slate-400">{item.questionCode}</div>}
+                                </td>
+                                <td className="px-4 py-3">
+                                  <div className="max-w-[240px] text-slate-600">{item.categoryName || "-"}</div>
+                                  {item.constructType && <div className="mt-1 text-xs text-slate-400">{item.constructType}</div>}
+                                </td>
+                                <td className="px-4 py-3">
+                                  <span className="inline-flex min-w-10 justify-center rounded-xl bg-[#F4F0FC] px-3 py-1.5 text-sm font-black text-[#241453]">
+                                    {item.answer ?? "-"}
+                                  </span>
+                                </td>
+                                <td className="px-4 py-3">
+                                  <span className={`inline-flex rounded-full px-2.5 py-1 text-xs font-bold ring-1 ${visuals.badge}`}>
+                                    {concernLabel}
+                                  </span>
+                                </td>
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
+                </ReportSection>
+              )}
+
+              {additionalEntries.length > 0 && (
+                <ReportSection title="Additional report data" eyebrow="Other fields">
+                  <div className="grid gap-3 lg:grid-cols-2">
+                    {additionalEntries.map(([key, value]) => (
+                      <div key={key} className="rounded-2xl border border-[#EEE8F8] bg-[#FAFAFF] p-4">
+                        <div className="mb-2 text-xs font-bold uppercase tracking-wider text-[#644D93]">{reportLabel(key)}</div>
+                        <div className="text-sm">{renderReportValue(value)}</div>
+                      </div>
+                    ))}
+                  </div>
+                </ReportSection>
+              )}
             </div>
           )}
         </div>
@@ -837,10 +1571,12 @@ function ReferralFormModal({
 
 function LearnerTable({
   rows,
-  onOpenTicket,
+  onCreateFollowUp,
+  onViewTickets,
 }: {
   rows: TicketableLearnerRow[];
-  onOpenTicket: (row: TicketableLearnerRow) => void;
+  onCreateFollowUp: (row: TicketableLearnerRow) => void;
+  onViewTickets: (row: TicketableLearnerRow) => void;
 }) {
   const [reportLearner, setReportLearner] = React.useState<TicketableLearnerRow | null>(null);
   const [referralLearner, setReferralLearner] = React.useState<TicketableLearnerRow | null>(null);
@@ -870,13 +1606,12 @@ function LearnerTable({
           <tbody className="divide-y divide-[#F3EFF9]">
             {rows.length === 0 ? (
               <tr>
-                <td colSpan={13} className="px-5 py-10 text-center text-sm text-slate-400">
+                <td colSpan={14} className="px-5 py-10 text-center text-sm text-slate-400">
                   No learners found
                 </td>
               </tr>
             ) : (
               rows.map((row, index) => {
-                const hasOpenTicket = Boolean(row.hasOpenTicket);
                 const openTicketCount = Number(row.openTicketCount || 0);
                 const noData = !row.hasWellbeingData;
 
@@ -958,16 +1693,37 @@ function LearnerTable({
                     </td>
 
                     <td className="px-4 py-3 last:pr-5">
-                      <button
-                        type="button"
-                        onClick={() => onOpenTicket(row)}
-                        className={`inline-flex h-9 items-center justify-center rounded-xl px-4 text-xs font-semibold transition whitespace-nowrap ${hasOpenTicket
-                            ? "border border-[#D9CFF3] bg-[#F5F1FC] text-[#6248BE] hover:bg-[#EEE7FB]"
-                            : "bg-[#241453] text-white hover:bg-[#362063]"
-                          }`}
-                      >
-                        {openTicketCount > 0 ? `Open ticket (${openTicketCount})` : "Open ticket"}
-                      </button>
+                      {openTicketCount > 0 ? (
+                        <div className="flex items-center gap-2 whitespace-nowrap">
+                          <span className="inline-flex h-8 items-center rounded-lg border border-[#E1D8F4] bg-[#FBFAFE] px-2.5 text-xs font-semibold text-[#644D93]">
+                            {openTicketCount} open
+                          </span>
+                          <button
+                            type="button"
+                            onClick={() => onViewTickets(row)}
+                            className="inline-flex h-8 items-center justify-center rounded-lg border border-[#D9CFF3] bg-[#F5F1FC] px-3 text-xs font-semibold text-[#6248BE] transition hover:bg-[#EEE7FB]"
+                          >
+                            View tickets
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => onCreateFollowUp(row)}
+                            title="Create new follow-up ticket"
+                            aria-label={`Create new follow-up ticket for ${row.studentName || "learner"}`}
+                            className="inline-flex h-8 w-8 items-center justify-center rounded-lg border border-[#D9CFF3] bg-white text-[#6248BE] transition hover:bg-[#F5F1FC]"
+                          >
+                            <Plus className="h-3.5 w-3.5" />
+                          </button>
+                        </div>
+                      ) : (
+                        <button
+                          type="button"
+                          onClick={() => onCreateFollowUp(row)}
+                          className="inline-flex h-9 items-center justify-center rounded-xl bg-[#241453] px-4 text-xs font-semibold text-white transition hover:bg-[#362063] whitespace-nowrap"
+                        >
+                          Create follow-up
+                        </button>
+                      )}
                     </td>
                   </tr>
                 );
@@ -1165,6 +1921,360 @@ function formatTicketDate(value?: string | null) {
   } catch {
     return value;
   }
+}
+
+type ParsedWellbeingTrigger = {
+  text: string;
+  answer?: string;
+  risk?: string;
+  reason?: string;
+  level?: string;
+};
+
+type ParsedWellbeingDetails = {
+  isAutoGenerated: boolean;
+  summary: Record<string, string>;
+  triggers: ParsedWellbeingTrigger[];
+  notes: string[];
+  hiddenLegacyCount: number;
+};
+
+const LEGACY_TRIGGER_KEYS = new Set([
+  "anxiety_high",
+  "low_mood",
+  "sleep_problems",
+  "loneliness",
+  "considering_leaving",
+  "medium",
+  "pattern",
+]);
+
+function stripTicketBullet(line: string) {
+  return line.replace(/^[\s•*-]+/, "").trim();
+}
+
+function parseWellbeingTriggerLine(rawLine: string): ParsedWellbeingTrigger | null {
+  const line = stripTicketBullet(rawLine);
+  if (!line || LEGACY_TRIGGER_KEYS.has(line)) return null;
+
+  const levelMatch = line.match(/\[([^\]]+)\]\s*$/);
+  const level = levelMatch?.[1]?.trim().toLowerCase();
+  const withoutLevel = line.replace(/\s*\[[^\]]+\]\s*$/, "").trim();
+
+  const detailMatch = withoutLevel.match(/\(([^)]*answer\s*:[^)]*)\)\s*$/i);
+  if (detailMatch) {
+    const details = detailMatch[1] || "";
+    const text = withoutLevel.slice(0, detailMatch.index).trim();
+    const answerMatch = details.match(/answer\s*:\s*(.+?)(?=\s*(?:->|,|$))/i);
+    const riskMatch = details.match(/risk\s*:\s*([0-9]+(?:\.[0-9]+)?)/i);
+    const reasonMatch = details.match(/risk\s*:\s*[0-9]+(?:\.[0-9]+)?\s*-\s*(.+)$/i)
+      || details.match(/answer\s*:\s*.+?\s*-\s*(.+)$/i);
+
+    return {
+      text: text || withoutLevel,
+      answer: answerMatch?.[1]?.trim(),
+      risk: riskMatch?.[1]?.trim(),
+      reason: reasonMatch?.[1]?.trim(),
+      level,
+    };
+  }
+
+  const answerRiskMatch = withoutLevel.match(
+    /^(.*?)\s*\(Answer:\s*([^,\)->]+?)\s*(?:(?:->|,)\s*Risk:\s*([^-\)]+?))?\s*(?:-\s*([^)]+?))?\)$/i,
+  );
+  if (answerRiskMatch) {
+    return {
+      text: answerRiskMatch[1]?.trim() || "",
+      answer: answerRiskMatch[2]?.trim(),
+      risk: answerRiskMatch[3]?.trim(),
+      reason: answerRiskMatch[4]?.trim(),
+      level,
+    };
+  }
+
+  const inlineAnswer = withoutLevel.match(/answer\s*:\s*([0-9]+(?:\.[0-9]+)?)/i);
+  const inlineRisk = withoutLevel.match(/risk\s*:\s*([0-9]+(?:\.[0-9]+)?)/i);
+  if (inlineAnswer || inlineRisk) {
+    const inlineReason = withoutLevel.match(/risk\s*:\s*[0-9]+(?:\.[0-9]+)?\s*-\s*(.+)$/i);
+    return {
+      text: withoutLevel.replace(/\(?\s*answer\s*:.*$/i, "").trim() || withoutLevel,
+      answer: inlineAnswer?.[1]?.trim(),
+      risk: inlineRisk?.[1]?.trim(),
+      reason: inlineReason?.[1]?.replace(/\)?\s*$/, "").trim(),
+      level,
+    };
+  }
+
+  const oldScoreMatch = withoutLevel.match(/^(.*?)\s*\(score:\s*([^)]+)\)$/i);
+  if (oldScoreMatch) {
+    return {
+      text: oldScoreMatch[1]?.trim() || "",
+      answer: oldScoreMatch[2]?.trim(),
+      level,
+    };
+  }
+
+  return { text: withoutLevel, level };
+}
+
+function parseWellbeingTicketDetails(details?: string | null): ParsedWellbeingDetails {
+  const lines = String(details || "")
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+
+  const isAutoGenerated = lines.some((line) =>
+    line.toLowerCase().startsWith("auto-generated ticket from wellbeing survey"),
+  );
+  const summary: Record<string, string> = {};
+  const triggers: ParsedWellbeingTrigger[] = [];
+  const notes: string[] = [];
+  let inTriggers = false;
+  let hiddenLegacyCount = 0;
+
+  if (!isAutoGenerated) {
+    return { isAutoGenerated: false, summary, triggers, notes: lines, hiddenLegacyCount };
+  }
+
+  for (const line of lines) {
+    const cleanLine = stripTicketBullet(line);
+    const lower = cleanLine.toLowerCase();
+
+    if (lower.startsWith("auto-generated ticket from wellbeing survey")) continue;
+
+    if (lower === "triggered questions:") {
+      inTriggers = true;
+      continue;
+    }
+
+    if (!inTriggers) {
+      const metaMatch = cleanLine.match(/^([^:]+):\s*(.*)$/);
+      if (metaMatch?.[1]) {
+        summary[metaMatch[1].trim()] = metaMatch[2]?.trim() || "-";
+      } else {
+        notes.push(cleanLine);
+      }
+      continue;
+    }
+
+    if (LEGACY_TRIGGER_KEYS.has(cleanLine)) {
+      hiddenLegacyCount += 1;
+      continue;
+    }
+
+    const trigger = parseWellbeingTriggerLine(cleanLine);
+    if (trigger?.text) {
+      triggers.push(trigger);
+    }
+  }
+
+  return { isAutoGenerated, summary, triggers, notes, hiddenLegacyCount };
+}
+
+function numericRiskValue(value?: string) {
+  if (!value) return null;
+  const parsed = Number(String(value).replace(/[^\d.]/g, ""));
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function triggerToneClass(trigger: ParsedWellbeingTrigger) {
+  const risk = numericRiskValue(trigger.risk);
+  if (risk != null && risk >= 8) {
+    return {
+      border: "border-red-200",
+      bg: "bg-red-50",
+      accent: "bg-red-500",
+      text: "text-red-700",
+    };
+  }
+  if (risk != null && risk >= 6) {
+    return {
+      border: "border-amber-200",
+      bg: "bg-amber-50",
+      accent: "bg-amber-400",
+      text: "text-amber-700",
+    };
+  }
+  return {
+    border: "border-[#E7E2F3]",
+    bg: "bg-white",
+    accent: "bg-[#8B6BC8]",
+    text: "text-[#644D93]",
+  };
+}
+
+function parsedTriggerConcernLabel(trigger: ParsedWellbeingTrigger) {
+  const risk = numericRiskValue(trigger.risk);
+  if (risk != null) return concernLabelFromScore(risk);
+  return "Flagged";
+}
+
+function parsedTriggerConcernClass(trigger: ParsedWellbeingTrigger) {
+  const label = parsedTriggerConcernLabel(trigger);
+  if (label === "Flagged") return "bg-[#F4F0FC] text-[#644D93] ring-[#E7E2F3]";
+  return reportLevelClass(label);
+}
+
+function WellbeingTicketDetailsView({ details }: { details?: string | null }) {
+  const parsed = React.useMemo(() => parseWellbeingTicketDetails(details), [details]);
+
+  if (!parsed.isAutoGenerated) {
+    return (
+      <div className="whitespace-pre-wrap text-sm leading-6 text-[#241453]">
+        {details || "-"}
+      </div>
+    );
+  }
+
+  const summaryItems = [
+    { label: "Risk Level", value: parsed.summary["Risk Level"] },
+    { label: "Total Score", value: parsed.summary["Total Score"] },
+    { label: "Trigger Count", value: parsed.summary["Trigger Count"] },
+    { label: "Programme", value: parsed.summary["Programme"] },
+    { label: "Coach", value: parsed.summary["Coach"] },
+  ].filter((item) => item.value);
+
+  const riskValue = String(parsed.summary["Risk Level"] || "").toLowerCase();
+  const riskClass = riskValue === "high"
+    ? "bg-red-500 text-white"
+    : riskValue === "medium"
+      ? "bg-amber-500 text-white"
+      : "bg-emerald-500 text-white";
+
+  return (
+    <div className="space-y-4">
+      <div className="rounded-xl border border-[#E7E2F3] bg-[#FBFAFE] p-4">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div className="flex min-w-0 items-center gap-3">
+            <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-[#F0EAFD] text-[#644D93]">
+              <Shield className="h-4 w-4" />
+            </span>
+            <div className="min-w-0">
+              <div className="text-sm font-semibold text-[#241453]">
+                Wellbeing survey ticket
+              </div>
+              <div className="text-xs text-[#7B6D9B]">
+                Generated from the learner wellbeing response.
+              </div>
+            </div>
+          </div>
+          {parsed.summary["Risk Level"] && (
+            <span className={`rounded-full px-3 py-1 text-xs font-semibold ${riskClass}`}>
+              {parsed.summary["Risk Level"]}
+            </span>
+          )}
+        </div>
+
+        {summaryItems.length > 0 && (
+          <div className="mt-4 grid grid-cols-2 gap-2 sm:grid-cols-3">
+            {summaryItems.map((item) => (
+              <div key={item.label} className="rounded-lg border border-[#EEE8F8] bg-white px-3 py-2">
+                <div className="text-[10px] font-semibold uppercase tracking-wide text-[#7B6D9B]">
+                  {item.label}
+                </div>
+                <div className="mt-1 truncate text-sm font-semibold text-[#241453]" title={item.value}>
+                  {item.value}
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      <div>
+        <div className="mb-2 flex items-center justify-between gap-3">
+          <div className="flex items-center gap-2 text-sm font-semibold text-[#241453]">
+            <AlertTriangle className="h-4 w-4 text-red-500" />
+            Triggered questions
+          </div>
+          <span className="rounded-full bg-[#FDE7E7] px-2.5 py-1 text-xs font-semibold text-red-700">
+            {parsed.triggers.length}
+          </span>
+        </div>
+
+        {parsed.triggers.length === 0 ? (
+          <div className="rounded-lg border border-[#E7E2F3] bg-white px-3 py-3 text-sm text-slate-500">
+            No active triggered questions are available for this ticket.
+          </div>
+        ) : (
+          <div className="space-y-2">
+            {parsed.triggers.map((trigger, index) => {
+              const tone = triggerToneClass(trigger);
+              const concernLabel = parsedTriggerConcernLabel(trigger);
+              const visuals = concernVisuals(concernLabel);
+              const riskScore = numericRiskValue(trigger.risk);
+              const reason = triggerReasonLabel(trigger.reason, trigger.level);
+              return (
+                <div
+                  key={`${trigger.text}-${index}`}
+                  className={`overflow-hidden rounded-2xl border ${tone.border} ${tone.bg}`}
+                >
+                  <div className="flex gap-3 p-4">
+                    <span className={`mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-xl ${visuals.icon}`}>
+                      <AlertTriangle className="h-4 w-4" />
+                    </span>
+                    <div className="min-w-0 flex-1">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span className={`rounded-full px-2.5 py-1 text-[11px] font-bold ring-1 ${parsedTriggerConcernClass(trigger)}`}>
+                          {concernLabel}
+                        </span>
+                        {trigger.risk && (
+                          <span className={`rounded-full bg-white px-2.5 py-1 text-[11px] font-semibold ring-1 ring-current/20 ${tone.text}`}>
+                            Risk score {trigger.risk}/10
+                          </span>
+                        )}
+                      </div>
+                      <div className="mt-3 text-sm font-bold leading-5 text-[#241453]">
+                        {trigger.text}
+                      </div>
+                      <div className="mt-3 grid gap-2 sm:grid-cols-3">
+                        <div className="rounded-xl bg-white/85 px-3 py-2 ring-1 ring-white">
+                          <div className="text-[9px] font-bold uppercase tracking-[0.12em] text-[#8B7AAF]">Learner answer</div>
+                          <div className="mt-1 text-lg font-black text-[#241453]">{trigger.answer || "-"}</div>
+                        </div>
+                        <div className="rounded-xl bg-white/85 px-3 py-2 ring-1 ring-white">
+                          <div className="text-[9px] font-bold uppercase tracking-[0.12em] text-[#8B7AAF]">Risk score</div>
+                          <div className="mt-1 text-lg font-black text-[#241453]">{trigger.risk || "Not supplied"}</div>
+                          {riskScore != null && (
+                            <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-slate-100">
+                              <div className={`h-full rounded-full ${visuals.bar}`} style={{ width: `${scoreWidth(riskScore)}%` }} />
+                            </div>
+                          )}
+                        </div>
+                        <div className="rounded-xl bg-white/85 px-3 py-2 ring-1 ring-white">
+                          <div className="text-[9px] font-bold uppercase tracking-[0.12em] text-[#8B7AAF]">Why flagged</div>
+                          <div className="mt-1 text-[11px] font-semibold leading-4 text-slate-700">{reason}</div>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
+
+      {parsed.hiddenLegacyCount > 0 && (
+        <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-700">
+          {parsed.hiddenLegacyCount} legacy trigger key{parsed.hiddenLegacyCount === 1 ? "" : "s"} hidden from display.
+        </div>
+      )}
+
+      {parsed.notes.length > 0 && (
+        <div className="rounded-lg border border-[#E7E2F3] bg-white px-3 py-3">
+          <div className="mb-1 text-[10px] font-semibold uppercase tracking-wide text-[#7B6D9B]">
+            Notes
+          </div>
+          <div className="space-y-1 text-sm text-[#241453]">
+            {parsed.notes.map((note, index) => (
+              <p key={`${note}-${index}`}>{note}</p>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
 }
 
 
@@ -2167,9 +3277,9 @@ async function exportApprenticeToPDF(learner: TicketableLearnerRow) {
     green: [240, 253, 244],
   };
   const riskDescriptions: Record<string, string> = {
-    red: "High risk – immediate action required.",
-    amber: "Moderate risk – monitoring and support recommended.",
-    green: "Low risk – continue current support.",
+    red: "High risk - prompt follow-up required.",
+    amber: "Medium risk - monitoring and support recommended.",
+    green: "Low risk - continue current support.",
   };
   const riskKey = (learner.riskLevel || "").toLowerCase();
   const riskTxtColor = riskTextColors[riskKey] ?? C.purple;
@@ -2214,7 +3324,11 @@ async function exportApprenticeToPDF(learner: TicketableLearnerRow) {
   doc.setFontSize(6.5);
   doc.setFont("helvetica", "normal");
   doc.setTextColor(...C.grey);
-  doc.text("Indicates moderate risk.", scoreX + 7, statsY + 24);
+  const scoreDescLines = doc.splitTextToSize(
+    pdfText(wellbeingScoreDescription(learner.totalScore)),
+    cardW - 10,
+  ) as string[];
+  doc.text(scoreDescLines, scoreX + 7, statsY + 24);
 
   // ── Sections ──────────────────────────────────────────────────
   const data = (learner as any).apprenticeDashboard as Record<string, unknown> | undefined;
@@ -2436,6 +3550,107 @@ async function exportApprenticeToPDF(learner: TicketableLearnerRow) {
     doc.setFontSize(9);
     doc.setTextColor(...C.grey);
     doc.text("No report data available for this learner.", pageW / 2, curY + 12, { align: "center" });
+  }
+
+  if (learner.triggeredQuestions?.length) {
+    autoTable(doc, {
+      startY: curY,
+      body: [
+        [{ content: "TRIGGERED QUESTIONS", colSpan: 3, styles: secHdrStyle }],
+        [
+          { content: "QUESTION", styles: { fontStyle: "bold" as const, fontSize: 7, textColor: C.purple as [number, number, number], fillColor: C.cardBg as [number, number, number], cellPadding: { top: 4, bottom: 3, left: 8, right: 4 } } },
+          { content: "ANSWER", styles: { fontStyle: "bold" as const, fontSize: 7, textColor: C.purple as [number, number, number], fillColor: C.cardBg as [number, number, number], cellPadding: { top: 4, bottom: 3, left: 4, right: 4 } } },
+          { content: "CONCERN", styles: { fontStyle: "bold" as const, fontSize: 7, textColor: C.purple as [number, number, number], fillColor: C.cardBg as [number, number, number], cellPadding: { top: 4, bottom: 3, left: 4, right: 7 } } },
+        ],
+        ...learner.triggeredQuestions.map((item) => {
+          const parsed = parseWellbeingTriggerLine(item.text);
+          const parsedRisk = numericRiskValue(parsed?.risk);
+          const answer = item.answer ?? item.score ?? parsed?.answer ?? null;
+          const riskScore = item.riskScore ?? parsedRisk;
+          const concernLabel = concernLabelFromScore(riskScore, item.level || parsed?.level);
+          const reason = triggerReasonLabel(item.note || parsed?.reason, item.level || parsed?.level);
+          const questionText = parsed?.text || item.text;
+          const concernText = riskScore != null
+            ? `${concernLabel} (${riskScore}/10). ${reason}`
+            : `${concernLabel}. ${reason}`;
+
+          return [
+            {
+              content: pdfText(questionText),
+              styles: { fontSize: 8, textColor: C.textBody as [number, number, number], fillColor: C.cardBg as [number, number, number], cellPadding: { top: 4, bottom: 4, left: 8, right: 4 } },
+            },
+            {
+              content: answer != null ? String(answer) : "-",
+              styles: { fontSize: 8, fontStyle: "bold" as const, textColor: C.purpleDeep as [number, number, number], fillColor: C.cardBg as [number, number, number], cellPadding: { top: 4, bottom: 4, left: 4, right: 4 } },
+            },
+            {
+              content: pdfText(concernText),
+              styles: { fontSize: 8, textColor: C.textBody as [number, number, number], fillColor: C.cardBg as [number, number, number], cellPadding: { top: 4, bottom: 4, left: 4, right: 7 } },
+            },
+          ];
+        }),
+      ],
+      theme: "plain",
+      styles: { overflow: "linebreak", valign: "top" },
+      columnStyles: {
+        0: { cellWidth: contentW - 54 },
+        1: { cellWidth: 18 },
+        2: { cellWidth: 36 },
+      },
+      margin: { left: mx, right: mx },
+      tableLineColor: C.border,
+      tableLineWidth: 0.3,
+      didDrawCell: (hookData: any) => { drawAccent(hookData); },
+    });
+
+    curY = (doc as any).lastAutoTable.finalY + 5;
+  }
+
+  if (learner.surveyResponses?.length) {
+    autoTable(doc, {
+      startY: curY,
+      body: [
+        [{ content: "SURVEY ANSWERS", colSpan: 4, styles: secHdrStyle }],
+        [
+          { content: "QUESTION", styles: { fontStyle: "bold" as const, fontSize: 7, textColor: C.purple as [number, number, number], fillColor: C.cardBg as [number, number, number], cellPadding: { top: 4, bottom: 3, left: 8, right: 4 } } },
+          { content: "CATEGORY", styles: { fontStyle: "bold" as const, fontSize: 7, textColor: C.purple as [number, number, number], fillColor: C.cardBg as [number, number, number], cellPadding: { top: 4, bottom: 3, left: 4, right: 4 } } },
+          { content: "ANSWER", styles: { fontStyle: "bold" as const, fontSize: 7, textColor: C.purple as [number, number, number], fillColor: C.cardBg as [number, number, number], cellPadding: { top: 4, bottom: 3, left: 4, right: 4 } } },
+          { content: "CONCERN", styles: { fontStyle: "bold" as const, fontSize: 7, textColor: C.purple as [number, number, number], fillColor: C.cardBg as [number, number, number], cellPadding: { top: 4, bottom: 3, left: 4, right: 7 } } },
+        ],
+        ...learner.surveyResponses.map((item) => [
+          {
+            content: pdfText(item.questionText || item.questionCode || "-"),
+            styles: { fontSize: 7.5, textColor: C.textBody as [number, number, number], fillColor: [255, 255, 255] as [number, number, number], cellPadding: { top: 3, bottom: 3, left: 8, right: 4 } },
+          },
+          {
+            content: pdfText(item.categoryName || item.constructType || "-"),
+            styles: { fontSize: 7.5, textColor: C.textBody as [number, number, number], fillColor: [255, 255, 255] as [number, number, number], cellPadding: { top: 3, bottom: 3, left: 4, right: 4 } },
+          },
+          {
+            content: item.answer != null ? String(item.answer) : "-",
+            styles: { fontSize: 7.5, fontStyle: "bold" as const, textColor: C.purpleDeep as [number, number, number], fillColor: [255, 255, 255] as [number, number, number], cellPadding: { top: 3, bottom: 3, left: 4, right: 4 } },
+          },
+          {
+            content: pdfText(item.concernLevel || "-"),
+            styles: { fontSize: 7.5, textColor: C.textBody as [number, number, number], fillColor: [255, 255, 255] as [number, number, number], cellPadding: { top: 3, bottom: 3, left: 4, right: 7 } },
+          },
+        ]),
+      ],
+      theme: "plain",
+      styles: { overflow: "linebreak", valign: "top" },
+      columnStyles: {
+        0: { cellWidth: contentW * 0.44 },
+        1: { cellWidth: contentW * 0.30 },
+        2: { cellWidth: contentW * 0.11 },
+        3: { cellWidth: contentW * 0.15 },
+      },
+      margin: { left: mx, right: mx },
+      tableLineColor: C.border,
+      tableLineWidth: 0.3,
+      didDrawCell: (hookData: any) => { drawAccent(hookData); },
+    });
+
+    curY = (doc as any).lastAutoTable.finalY + 5;
   }
 
   // ── Dark-purple footer on every page ──────────────────────────
@@ -2742,7 +3957,7 @@ function TicketDetailPanel({
         onClick={onClose}
       />
 
-      <div className="fixed right-0 top-0 z-[90] flex h-full w-full max-w-[520px] flex-col bg-white shadow-2xl">
+      <div className="fixed right-0 top-0 z-[90] flex h-full w-full max-w-[680px] flex-col bg-white shadow-2xl">
         {/* Header */}
         <div className="flex shrink-0 items-center justify-between border-b border-[#ECE7F7] px-6 py-4">
           <div className="flex items-center gap-3">
@@ -2824,9 +4039,7 @@ function TicketDetailPanel({
               <div className="mb-1 text-[10px] font-semibold uppercase tracking-wider text-[#7B6D9B]">
                 Details / Notes
               </div>
-              <div className="whitespace-pre-wrap text-sm text-[#241453]">
-                {ticket.details || "-"}
-              </div>
+              <WellbeingTicketDetailsView details={ticket.details} />
             </div>
 
             {/* Case info */}
@@ -3443,6 +4656,7 @@ function TicketsManagementView({
   search,
   onSearchChange,
   ticketsData,
+  riskCounts,
   onView,
   onStatusChange,
   statusUpdating,
@@ -3467,6 +4681,7 @@ function TicketsManagementView({
   search: string;
   onSearchChange: (value: string) => void;
   ticketsData: SupportTicketsResponse | null;
+  riskCounts: Partial<Record<RiskQuickValue, number>>;
   onView: (ticket: SupportTicketRow) => void;
   onStatusChange: (ticketId: number, newStatus: string) => void;
   statusUpdating: number | null;
@@ -3492,7 +4707,23 @@ function TicketsManagementView({
   const canView = (role || "").toLowerCase() === "qa";
   const isQA = canView;
   const tickets = ticketsData?.tickets || [];
+  const hasTickets = tickets.length > 0;
+  const isInitialTicketLoad = loading && !hasTickets;
   const activeFilterCount = filters.status.length + filters.type.length + filters.risk.length;
+  const selectedRiskFilter = filters.risk[0] ?? "";
+  const ticketQuickRiskValue = filters.risk.length === 0
+    ? "all"
+    : filters.risk.length === 1 && ["red", "amber", "green"].includes(selectedRiskFilter)
+      ? selectedRiskFilter as RiskLevel
+      : undefined;
+
+  function setTicketQuickRisk(value: RiskQuickValue) {
+    onSearchChange("");
+    onFiltersChange(value === "all" ? emptyFilters : {
+      ...emptyFilters,
+      risk: [value],
+    });
+  }
 
   return (
     <div className="space-y-6">
@@ -3501,7 +4732,7 @@ function TicketsManagementView({
           <div>
             <h2 className="text-[20px] font-semibold text-[#241453]">Ticket Management</h2>
             <p className="mt-1 text-sm text-[#7B6D9B]">
-              Manage all safeguarding and wellbeing cases
+              {isQA ? "Manage safeguarding and wellbeing cases" : "Manage your learner wellbeing cases"}
             </p>
           </div>
 
@@ -3567,10 +4798,12 @@ function TicketsManagementView({
                 <button
                   type="button"
                   onClick={() => setExportOpen((v) => !v)}
-                  className="inline-flex h-10 items-center gap-2 rounded-2xl border border-[#E7E2F3] px-4 text-sm text-[#241453] hover:bg-[#F8F5FF]"
+                  disabled={loading || !hasTickets}
+                  title={!hasTickets ? "No tickets available to export" : "Export current ticket data"}
+                  className="inline-flex h-10 items-center gap-2 rounded-2xl border border-[#E7E2F3] px-4 text-sm text-[#241453] hover:bg-[#F8F5FF] disabled:cursor-not-allowed disabled:opacity-50"
                 >
                   <FileDown className="h-4 w-4" />
-                  Export
+                  {loading ? "Loading..." : "Export"}
                   <ChevronDown className="h-3 w-3 opacity-60" />
                 </button>
                 {exportOpen && (
@@ -3582,7 +4815,7 @@ function TicketsManagementView({
                     />
                     <div className="absolute right-0 z-50 mt-2 w-56 rounded-2xl border border-[#E7E2F3] bg-white py-1 shadow-lg">
                       <div className="px-4 py-1.5 text-[10px] font-semibold uppercase tracking-wider text-[#7B6D9B]">
-                        Selected Coach
+                        Current View
                       </div>
                       <button
                         type="button"
@@ -3600,46 +4833,97 @@ function TicketsManagementView({
                         <FilePdf className="h-4 w-4 text-red-500" />
                         PDF Report
                       </button>
-                      <div className="my-1 border-t border-[#EEE8F8]" />
-                      <div className="px-4 py-1.5 text-[10px] font-semibold uppercase tracking-wider text-[#7B6D9B]">
-                        All Coaches
-                      </div>
-                      <button
-                        type="button"
-                        onClick={() => { setExportOpen(false); onExportAllExcel(); }}
-                        className="flex w-full items-center gap-3 px-4 py-2.5 text-sm text-[#241453] hover:bg-[#F8F5FF]"
-                      >
-                        <FileSpreadsheet className="h-4 w-4 text-emerald-600" />
-                        All Tickets — Excel
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => { setExportOpen(false); onExportAllPDF(); }}
-                        className="flex w-full items-center gap-3 px-4 py-2.5 text-sm text-[#241453] hover:bg-[#F8F5FF]"
-                      >
-                        <FilePdf className="h-4 w-4 text-red-500" />
-                        All Tickets — PDF
-                      </button>
+                      {isQA && (
+                        <>
+                          <div className="my-1 border-t border-[#EEE8F8]" />
+                          <div className="px-4 py-1.5 text-[10px] font-semibold uppercase tracking-wider text-[#7B6D9B]">
+                            All Coaches
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => { setExportOpen(false); onExportAllExcel(); }}
+                            className="flex w-full items-center gap-3 px-4 py-2.5 text-sm text-[#241453] hover:bg-[#F8F5FF]"
+                          >
+                            <FileSpreadsheet className="h-4 w-4 text-emerald-600" />
+                            All Tickets - Excel
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => { setExportOpen(false); onExportAllPDF(); }}
+                            className="flex w-full items-center gap-3 px-4 py-2.5 text-sm text-[#241453] hover:bg-[#F8F5FF]"
+                          >
+                            <FilePdf className="h-4 w-4 text-red-500" />
+                            All Tickets - PDF
+                          </button>
+                        </>
+                      )}
                     </div>
                   </>
                 )}
               </div>
             </div>
           </div>
+          <div className="mt-4 border-t border-[#EEE8F8] pt-4">
+            <RiskQuickFilter
+              value={ticketQuickRiskValue}
+              onChange={setTicketQuickRisk}
+              allLabel="All tickets"
+              counts={riskCounts}
+            />
+          </div>
         </div>
 
+        {loading && hasTickets ? (
+          <div className="mt-4">
+            <InlineLoadingNotice label="Refreshing tickets..." />
+          </div>
+        ) : null}
+
         <div className="mt-6 grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-6">
-          <StatCard title="Total" value={ticketsData?.summary?.total ?? 0} icon={<Ticket className="h-4 w-4" />} />
-          <StatCard title="Open" value={ticketsData?.summary?.open ?? 0} icon={<ClipboardList className="h-4 w-4" />} />
-          <StatCard title="Red Risk" value={ticketsData?.summary?.redRisk ?? 0} icon={<AlertTriangle className="h-4 w-4" />} />
-          <StatCard title="Escalated" value={ticketsData?.summary?.escalated ?? 0} icon={<AlertTriangle className="h-4 w-4" />} />
-          <StatCard title="Closed" value={ticketsData?.summary?.closed ?? 0} icon={<ClipboardList className="h-4 w-4" />} />
+          <StatCard
+            title="Total"
+            value={isInitialTicketLoad ? "…" : ticketsData?.summary?.total ?? 0}
+            icon={<Ticket className="h-4 w-4" />}
+            source="Count of tickets currently shown after search and filters."
+          />
+          <StatCard
+            title="Open"
+            value={isInitialTicketLoad ? "…" : ticketsData?.summary?.open ?? 0}
+            icon={<ClipboardList className="h-4 w-4" />}
+            source="Shown tickets whose status is not closed or outcome recorded."
+          />
+          <StatCard
+            title="Red Risk"
+            value={isInitialTicketLoad ? "…" : ticketsData?.summary?.redRisk ?? 0}
+            icon={<AlertTriangle className="h-4 w-4" />}
+            valueColor="text-red-500"
+            iconBg="bg-red-50"
+            iconColor="text-red-500"
+            source="Shown tickets where risk is red."
+          />
+          <StatCard
+            title="Escalated"
+            value={isInitialTicketLoad ? "…" : ticketsData?.summary?.escalated ?? 0}
+            icon={<AlertTriangle className="h-4 w-4" />}
+            valueColor="text-amber-500"
+            iconBg="bg-amber-50"
+            iconColor="text-amber-500"
+            source="Shown tickets with escalated status."
+          />
+          <StatCard
+            title="Closed"
+            value={isInitialTicketLoad ? "…" : ticketsData?.summary?.closed ?? 0}
+            icon={<ClipboardList className="h-4 w-4" />}
+            source="Shown tickets with closed or outcome recorded status."
+          />
           <StatCard
             title="Avg Close Time"
-            value={ticketsData?.summary?.avgCloseDays ?? "—"}
-            unit={ticketsData?.summary?.avgCloseDays != null ? "days" : undefined}
+            value={isInitialTicketLoad ? "…" : ticketsData?.summary?.avgCloseDays ?? "—"}
+            unit={!loading && ticketsData?.summary?.avgCloseDays != null ? "days" : undefined}
             delta={ticketsData?.summary?.avgCloseDelta ?? null}
             icon={<ClipboardList className="h-4 w-4" />}
+            trendPositiveIsGood={false}
+            source="Average days to close for closed tickets currently shown."
           />
         </div>
 
@@ -3666,8 +4950,8 @@ function TicketsManagementView({
                 </tr>
               </thead>
 
-              <tbody>
-                {loading ? (
+             <tbody>
+                {isInitialTicketLoad ? (
                   <tr>
                     <td colSpan={(canView ? 1 : 0) + (isQA ? 1 : 0) + 13} className="px-5 py-8 text-center text-slate-500">
                       Loading tickets...
@@ -3813,12 +5097,37 @@ type CoachWellbeingPageProps = {
   isDesktop?: boolean;
 };
 
+type WellbeingActiveView = "dashboard" | "tickets" | "onboarding";
+
+const WELLBEING_VIEW_LABELS: Record<WellbeingActiveView, string> = {
+  dashboard: "Dashboard",
+  tickets: "Safeguarding Tickets",
+  onboarding: "Onboarding Tickets",
+};
+
+function wellbeingPathForView(view: WellbeingActiveView) {
+  if (view === "tickets") return "/coach-wellbeing/tickets";
+  if (view === "onboarding") return "/coach-wellbeing/onboarding";
+  return "/coach-wellbeing";
+}
+
+function wellbeingViewFromPath(pathname: string): WellbeingActiveView {
+  const cleanPath = pathname.replace(/\/+$/, "").toLowerCase();
+  if (cleanPath.endsWith("/tickets") || cleanPath.endsWith("/safeguarding-tickets")) return "tickets";
+  if (cleanPath.endsWith("/onboarding") || cleanPath.endsWith("/onboarding-tickets")) return "onboarding";
+  return "dashboard";
+}
+
 export default function CoachWellbeingPage({ setMobileOpen, isDesktop }: CoachWellbeingPageProps) {
+  const location = useLocation();
+  const navigate = useNavigate();
   const role = (localStorage.getItem("role") || "").toLowerCase();
 
   const [data, setData] = useState<CoachWellbeingResponse | null>(null);
   const [optionsLoading, setOptionsLoading] = useState(role === "qa");
   const [search, setSearch] = useState("");
+  const [dashboardRiskFilter, setDashboardRiskFilter] = useState<RiskQuickValue>("all");
+  const [followUpExpanded, setFollowUpExpanded] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [coachOptions, setCoachOptions] = useState<CoachOption[]>([]);
@@ -3833,10 +5142,8 @@ export default function CoachWellbeingPage({ setMobileOpen, isDesktop }: CoachWe
   const [ticketForm, setTicketForm] = useState<SupportTicketFormState>(makeInitialTicketForm());
 
   // tickets management state
-  const [activeView, setActiveView] = useState<"dashboard" | "tickets" | "onboarding">(() => {
-    const saved = localStorage.getItem("wb_active_view");
-    return (saved === "tickets" || saved === "onboarding" ? saved : "dashboard") as "dashboard" | "tickets" | "onboarding";
-  });
+  const activeView = useMemo(() => wellbeingViewFromPath(location.pathname), [location.pathname]);
+  const [activeViewHistory, setActiveViewHistory] = useState<WellbeingActiveView[]>([]);
   const [ticketsLoading, setTicketsLoading] = useState(false);
   const [ticketsLoadError, setTicketsLoadError] = useState("");
   const [ticketsData, setTicketsData] = useState<SupportTicketsResponse | null>(null);
@@ -3907,7 +5214,70 @@ export default function CoachWellbeingPage({ setMobileOpen, isDesktop }: CoachWe
     };
   }, [role]);
 
-  useEffect(() => { localStorage.setItem("wb_active_view", activeView); }, [activeView]);
+  const previousWellbeingViewIndex = useMemo(() => {
+    for (let i = activeViewHistory.length - 1; i >= 0; i -= 1) {
+      if (activeViewHistory[i] !== activeView) return i;
+    }
+    return -1;
+  }, [activeViewHistory, activeView]);
+  const previousWellbeingView = previousWellbeingViewIndex >= 0 ? activeViewHistory[previousWellbeingViewIndex] : undefined;
+  const wellbeingBackTarget = activeView !== "dashboard" ? previousWellbeingView || "dashboard" : undefined;
+  const wellbeingBackLabel = wellbeingBackTarget ? `Back to ${WELLBEING_VIEW_LABELS[wellbeingBackTarget]}` : "Back to Dashboard";
+
+  function handleDashboardRiskFilter(value: RiskQuickValue) {
+    setSearch("");
+    setDashboardRiskFilter(value);
+  }
+
+  function navigateWellbeingView(nextView: WellbeingActiveView) {
+    if (nextView === activeView) return;
+
+    setActiveViewHistory((history) => {
+      const nextHistory = [...history, activeView].filter((view, index, array) => {
+        return index === 0 || view !== array[index - 1];
+      });
+      return nextHistory.slice(-8);
+    });
+    navigate(wellbeingPathForView(nextView));
+  }
+
+  function goBackWellbeingView() {
+    const targetView = wellbeingBackTarget || "dashboard";
+
+    if (previousWellbeingView && previousWellbeingViewIndex >= 0) {
+      navigate(wellbeingPathForView(targetView));
+      setActiveViewHistory((history) => history.slice(0, previousWellbeingViewIndex));
+      return;
+    }
+
+    navigate(wellbeingPathForView(targetView), { replace: true });
+    setActiveViewHistory([]);
+  }
+
+  function openSafeguardingTicketsView() {
+    setTicketsSearch("");
+    setTicketFilters(emptyFilters);
+    setTicketsLoading(true);
+    navigateWellbeingView("tickets");
+  }
+
+  function openOnboardingTicketsView() {
+    navigateWellbeingView("onboarding");
+  }
+
+  useEffect(() => {
+    localStorage.removeItem("wb_active_view");
+    localStorage.removeItem("wb_active_view_history");
+
+    if (activeView === "dashboard") {
+      setActiveViewHistory([]);
+      setTicketsSearch("");
+      setTicketFilters(emptyFilters);
+      setDashboardRiskFilter("all");
+      setViewTicket(null);
+    }
+  }, [activeView]);
+
   useEffect(() => { if (selectedCoachEmail) localStorage.setItem("wb_coach_email", selectedCoachEmail); }, [selectedCoachEmail]);
 
   // ticket management handlers
@@ -4028,23 +5398,7 @@ export default function CoachWellbeingPage({ setMobileOpen, isDesktop }: CoachWe
   }
 
   function recalculateSummary(tickets: SupportTicketRow[], prev?: SupportTicketsResponse | null) {
-    const CLOSED = new Set(["closed", "outcome recorded"]);
-    const closedVals = tickets
-      .filter((t) => CLOSED.has(String(t.status).toLowerCase()))
-      .map((t) => t.daysToClose ?? t.daysOpen ?? 0);
-    const avgCloseDays =
-      closedVals.length > 0
-        ? Math.round((closedVals.reduce((a, b) => a + b, 0) / closedVals.length) * 10) / 10
-        : null;
-    return {
-      total: tickets.length,
-      open: tickets.filter((t) => String(t.status).toLowerCase() === "open").length,
-      redRisk: tickets.filter((t) => String(t.risk).toLowerCase() === "red").length,
-      escalated: tickets.filter((t) => String(t.status).toLowerCase() === "escalated").length,
-      closed: closedVals.length,
-      avgCloseDays,
-      avgCloseDelta: prev?.summary.avgCloseDelta ?? null,
-    };
+    return calculateTicketSummaryFromRows(tickets, prev?.summary.avgCloseDelta ?? null);
   }
 
   async function handleStatusChange(ticketId: number, newStatus: string) {
@@ -4197,14 +5551,26 @@ export default function CoachWellbeingPage({ setMobileOpen, isDesktop }: CoachWe
     setTicketForm(makeInitialTicketForm());
   }
 
-  function handleOpenTicket(row: TicketableLearnerRow) {
+  function handleCreateFollowUp(row: TicketableLearnerRow) {
     setSelectedLearner(row);
     setTicketError("");
 
     const now = new Date();
     const triggered = row.triggeredQuestions || [];
     const triggeredSection = triggered.length > 0
-      ? `\n\nTriggered questions (${triggered.length}):\n${triggered.map((q, i) => `${i + 1}. ${q.text}${q.score != null ? ` (Score: ${q.score})` : ""}${q.level ? ` [${q.level}]` : ""}`).join("\n")}`
+      ? `\n\nTriggered Questions:\n${triggered.map((q) => {
+        const answer = q.answer ?? q.score;
+        const riskScore = q.riskScore;
+        const reason = q.note || (q.level === "low" ? "low answer on a positive question" : "high answer on a risk question");
+        const scoreText = answer != null && riskScore != null && riskScore !== answer
+          ? ` (Answer: ${answer} -> Risk: ${riskScore} - ${reason})`
+          : answer != null && riskScore != null
+            ? ` (Answer: ${answer}, Risk: ${riskScore} - ${reason})`
+          : answer != null
+            ? ` (Answer: ${answer} - ${reason})`
+            : "";
+        return `${q.text}${scoreText}${q.level ? ` [${q.level}]` : ""}`;
+      }).join("\n")}`
       : "";
     setTicketForm({
       ticket_type: row.riskLevel === "red" ? "safeguarding" : "wellbeing",
@@ -4220,6 +5586,13 @@ export default function CoachWellbeingPage({ setMobileOpen, isDesktop }: CoachWe
     });
 
     setTicketModalOpen(true);
+  }
+
+  function handleViewLearnerTickets(row: TicketableLearnerRow) {
+    const searchTerm = String(row.studentEmail || row.studentName || row.studentId || "").trim();
+    setTicketsSearch(searchTerm);
+    setTicketFilters(emptyFilters);
+    navigateWellbeingView("tickets");
   }
 
   function handleTicketFieldChange<K extends keyof SupportTicketFormState>(
@@ -4319,13 +5692,26 @@ export default function CoachWellbeingPage({ setMobileOpen, isDesktop }: CoachWe
     };
   }, [role, selectedCoachEmail, optionsLoading]);
 
-  const filteredLearners = useMemo<TicketableLearnerRow[]>(() => {
+  const coachScope = useMemo(() => {
+    if (role === "coach") return storedUserCoachScope();
+    if (role === "qa" && selectedCoachEmail && selectedCoachEmail !== "__all__") {
+      const email = selectedCoachEmail.trim().toLowerCase();
+      return { email, keys: [normaliseCoachIdentity(email)].filter(Boolean) };
+    }
+    return { email: "", keys: [] };
+  }, [role, selectedCoachEmail]);
+
+  const scopedLearners = useMemo<TicketableLearnerRow[]>(() => {
     const learners = (data?.learners || []) as TicketableLearnerRow[];
+    if (!coachScope.email && coachScope.keys.length === 0) return learners;
+    return learners.filter((learner) => learnerMatchesCoachScope(learner, coachScope));
+  }, [data, coachScope]);
+
+  const filteredLearners = useMemo<TicketableLearnerRow[]>(() => {
+    const learners = scopedLearners;
     const q = search.trim().toLowerCase();
 
-    if (!q) return learners;
-
-    return learners.filter((item) => {
+    const searched = q ? learners.filter((item) => {
       const studentName = String(item.studentName || "").toLowerCase();
       const studentEmail = String(item.studentEmail || "").toLowerCase();
       const recommendedAction = String(item.recommendedAction || "").toLowerCase();
@@ -4339,25 +5725,76 @@ export default function CoachWellbeingPage({ setMobileOpen, isDesktop }: CoachWe
         programme.includes(q) ||
         followUpReason.includes(q)
       );
+    }) : learners;
+
+    const filtered = dashboardRiskFilter === "all"
+      ? searched
+      : searched.filter((item) => String(item.riskLevel || "").toLowerCase() === dashboardRiskFilter);
+
+    return [...filtered].sort((a, b) => {
+      const aHasData = hasLearnerWellbeingData(a);
+      const bHasData = hasLearnerWellbeingData(b);
+      if (aHasData !== bHasData) return aHasData ? -1 : 1;
+
+      const riskOrder: Record<string, number> = { red: 0, amber: 1, green: 2 };
+      const aRisk = riskOrder[String(a.riskLevel || "").toLowerCase()] ?? 3;
+      const bRisk = riskOrder[String(b.riskLevel || "").toLowerCase()] ?? 3;
+      if (aRisk !== bRisk) return aRisk - bRisk;
+
+      const aTickets = Number(a.openTicketCount ?? 0);
+      const bTickets = Number(b.openTicketCount ?? 0);
+      if (aTickets !== bTickets) return bTickets - aTickets;
+
+      return String(a.studentName || "").localeCompare(String(b.studentName || ""));
     });
-  }, [data, search]);
+  }, [scopedLearners, search, dashboardRiskFilter]);
+
+  const dashboardSummary = useMemo(() => {
+    const learners = scopedLearners;
+    return {
+      caseload: learners.length,
+      openTickets: learners.reduce((sum, row) => sum + Number(row.openTicketCount ?? 0), 0),
+      atRisk: learners.filter((row) => String(row.riskLevel || "").toLowerCase() === "red").length,
+      greenRisk: learners.filter((row) => String(row.riskLevel || "").toLowerCase() === "green").length,
+      nonResponders: learners.filter((row) => !hasLearnerWellbeingData(row)).length,
+    };
+  }, [scopedLearners]);
+
+  const dashboardRiskCounts = useMemo<Partial<Record<RiskQuickValue, number>>>(() => {
+    const learners = scopedLearners;
+    return {
+      all: learners.length,
+      red: learners.filter((row) => String(row.riskLevel || "").toLowerCase() === "red").length,
+      amber: learners.filter((row) => String(row.riskLevel || "").toLowerCase() === "amber").length,
+      green: learners.filter((row) => String(row.riskLevel || "").toLowerCase() === "green").length,
+    };
+  }, [scopedLearners]);
 
   const surveyResponsePct = useMemo(() => {
-    const learners = data?.learners ?? [];
+    const learners = scopedLearners;
     const total = learners.length;
     if (!total) return 0;
-    const responded = learners.filter((l) => l.lastSurveyDate).length;
+    const responded = learners.filter((row) => hasLearnerWellbeingData(row)).length;
     return Math.round((responded / total) * 100);
-  }, [data]);
+  }, [scopedLearners]);
 
   const avgWellbeing = useMemo(() => {
-    const learners = data?.learners ?? [];
+    const learners = scopedLearners;
     const scores = learners
       .map((l) => l.wellbeingScore)
       .filter((s): s is number => s != null && s > 0);
     if (!scores.length) return null;
-    return (scores.reduce((a, b) => a + b, 0) / scores.length).toFixed(1);
-  }, [data]);
+    return Math.round((scores.reduce((a, b) => a + b, 0) / scores.length) * 10) / 10;
+  }, [scopedLearners]);
+
+  const scopedTicketRows = useMemo<SupportTicketRow[]>(() => {
+    const tickets = ticketsData?.tickets || [];
+    if (!coachScope.email && coachScope.keys.length === 0) return tickets;
+    if (scopedLearners.length === 0) return [];
+    return tickets.filter((ticket) => (
+      scopedLearners.some((learner) => ticketMatchesLearner(ticket, learner))
+    ));
+  }, [ticketsData, scopedLearners, coachScope]);
 
   const filteredTicketsData = useMemo<SupportTicketsResponse>(() => {
     const raw = ticketsData || {
@@ -4367,18 +5804,10 @@ export default function CoachWellbeingPage({ setMobileOpen, isDesktop }: CoachWe
 
     const q = ticketsSearch.trim().toLowerCase();
 
-    const tickets = raw.tickets.filter((item) => {
-      if (q) {
-        const matchesSearch =
-          String(item.ticketCode || "").toLowerCase().includes(q) ||
-          String(item.learnerName || "").toLowerCase().includes(q) ||
-          String(item.learnerEmail || "").toLowerCase().includes(q) ||
-          String(item.type || "").toLowerCase().includes(q) ||
-          String(item.status || "").toLowerCase().includes(q) ||
-          String(item.subject || "").toLowerCase().includes(q) ||
-          String(item.details || "").toLowerCase().includes(q);
-        if (!matchesSearch) return false;
-      }
+    const baseTickets = scopedTicketRows;
+
+    const tickets = baseTickets.filter((item) => {
+      if (!ticketMatchesTextSearch(item, q)) return false;
 
       if (ticketFilters.status.length > 0 && !ticketFilters.status.includes(String(item.status || "").toLowerCase())) return false;
       if (ticketFilters.type.length > 0 && !ticketFilters.type.includes(String(item.type || "").toLowerCase())) return false;
@@ -4387,91 +5816,103 @@ export default function CoachWellbeingPage({ setMobileOpen, isDesktop }: CoachWe
       return true;
     });
 
+    const isFiltered =
+      Boolean(q) ||
+      ticketFilters.status.length > 0 ||
+      ticketFilters.type.length > 0 ||
+      ticketFilters.risk.length > 0;
+
     return {
-      summary: {
-        total: tickets.length,
-        open: tickets.filter((t) => String(t.status).toLowerCase() === "open").length,
-        redRisk: tickets.filter((t) => String(t.risk).toLowerCase() === "red").length,
-        escalated: tickets.filter((t) => String(t.status).toLowerCase() === "escalated").length,
-        closed: tickets.filter((t) => String(t.status).toLowerCase() === "closed").length,
-        avgCloseDays: raw.summary.avgCloseDays ?? null,
-        avgCloseDelta: raw.summary.avgCloseDelta ?? null,
-      },
+      summary: calculateTicketSummaryFromRows(
+        tickets,
+        isFiltered ? null : raw.summary.avgCloseDelta ?? null,
+      ),
       tickets,
     };
-  }, [ticketsData, ticketsSearch, ticketFilters]);
+  }, [ticketsData, scopedTicketRows, ticketsSearch, ticketFilters]);
 
-  const HIGH_PRIORITY = new Set(["high", "urgent", "critical"]);
+  const ticketRiskCounts = useMemo<Partial<Record<RiskQuickValue, number>>>(() => {
+    const q = ticketsSearch.trim().toLowerCase();
+    const countBase = scopedTicketRows.filter((item) => {
+      if (!ticketMatchesTextSearch(item, q)) return false;
+      if (ticketFilters.status.length > 0 && !ticketFilters.status.includes(String(item.status || "").toLowerCase())) return false;
+      if (ticketFilters.type.length > 0 && !ticketFilters.type.includes(String(item.type || "").toLowerCase())) return false;
+      return true;
+    });
 
-  const normalizedFollowUps = useMemo<CoachFollowUpItem[]>(() => {
-    const items = (data?.followUps || []).map((item: any, index: number) => ({
-      id: item.id ?? `${item.learnerName ?? "followup"}-${index}`,
-      priority: formatPriority(item.priority),
-      title: item.title || "Follow-up required",
-      learnerName: item.learnerName || "Unknown learner",
-      dueDate: item.dueDate || "-",
-      reason: item.reason || "",
-    }));
+    return {
+      all: countBase.length,
+      red: countBase.filter((ticket) => String(ticket.risk || "").toLowerCase() === "red").length,
+      amber: countBase.filter((ticket) => String(ticket.risk || "").toLowerCase() === "amber").length,
+      green: countBase.filter((ticket) => String(ticket.risk || "").toLowerCase() === "green").length,
+    };
+  }, [scopedTicketRows, ticketsSearch, ticketFilters.status, ticketFilters.type]);
 
-    const deduped = uniqueBy(items, (item) => `${item.id}-${item.title}-${item.learnerName}`);
-    if (role === "qa") return deduped;
-    return deduped.filter((item) => !HIGH_PRIORITY.has(item.priority));
-  }, [data, role]);
+  const workflowLearnerKeys = useMemo(() => {
+    const names = new Set<string>();
+    const emails = new Set<string>();
 
-  const normalizedActions = useMemo<CoachSuggestedActionItem[]>(() => {
-    const items = (data?.suggestedActions || []).map((item: any) => ({
-      id: item.id ?? String(Math.random()),
-      urgency: item.urgency || item.priority || "medium",
-      priority: formatPriority(item.priority || item.urgency),
-      learnerName: item.learnerName || "",
-      learnerEmail: item.learnerEmail || "",
-      actions: Array.isArray(item.actions)
-        ? item.actions.map((a: any) => ({
-            id: a.id || "",
-            title: a.title || "Action",
-            description: a.description || "",
-            priority: formatPriority(a.priority),
-            actionType: a.actionType || "",
-            recommendedOwner: a.recommendedOwner || "",
-            timeline: a.timeline || "",
-            category: a.category || "",
-          }))
-        : [],
-    }));
-    const deduped = uniqueBy(items, (item) => `${item.id}-${item.learnerName}`);
-    if (role === "qa") return deduped;
-    return deduped.filter((item) => !HIGH_PRIORITY.has(item.urgency) && !HIGH_PRIORITY.has(item.priority));
-  }, [data, role]);
+    scopedLearners.forEach((learner) => {
+      const name = String(learner.studentName || "").trim().toLowerCase();
+      const email = String(learner.studentEmail || "").trim().toLowerCase();
+      if (name) names.add(name);
+      if (email) emails.add(email);
+    });
 
-  const filteredFollowUps = useMemo(() => {
+    return { names, emails };
+  }, [scopedLearners]);
+
+  const workflowFollowUps = useMemo(() => {
     const q = search.trim().toLowerCase();
-    if (!q) return normalizedFollowUps;
+    const rows = data?.followUps || [];
+    const scopeIsActive = Boolean((coachScope.email || coachScope.keys.length > 0) && scopedLearners.length > 0);
+    const scopedRows = scopeIsActive
+      ? rows.filter((item) => workflowLearnerKeys.names.has(String(item.learnerName || "").trim().toLowerCase()))
+      : rows;
 
-    return normalizedFollowUps.filter((item) => {
+    if (!q) return scopedRows;
+    return scopedRows.filter((item) => (
+      String(item.title || "").toLowerCase().includes(q) ||
+      String(item.learnerName || "").toLowerCase().includes(q) ||
+      String(item.dueDate || "").toLowerCase().includes(q) ||
+      String(item.reason || "").toLowerCase().includes(q) ||
+      String(item.priority || "").toLowerCase().includes(q)
+    ));
+  }, [data, search, coachScope, scopedLearners, workflowLearnerKeys]);
+
+  const visibleWorkflowFollowUps = followUpExpanded
+    ? workflowFollowUps
+    : workflowFollowUps.slice(0, 5);
+
+  const workflowSuggestedActions = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    const rows = data?.suggestedActions || [];
+    const scopeIsActive = Boolean((coachScope.email || coachScope.keys.length > 0) && scopedLearners.length > 0);
+    const scopedRows = scopeIsActive
+      ? rows.filter((item) => {
+        const learnerName = String(item.learnerName || "").trim().toLowerCase();
+        const learnerEmail = String(item.learnerEmail || "").trim().toLowerCase();
+        return (
+          (learnerName && workflowLearnerKeys.names.has(learnerName)) ||
+          (learnerEmail && workflowLearnerKeys.emails.has(learnerEmail))
+        );
+      })
+      : rows;
+
+    if (!q) return scopedRows;
+    return scopedRows.filter((item) => {
+      const actionText = (Array.isArray(item.actions) ? item.actions : [])
+        .map((action) => `${action.title || ""} ${action.description || ""} ${action.recommendedOwner || ""}`)
+        .join(" ");
       return (
-        String(item.title || "").toLowerCase().includes(q) ||
         String(item.learnerName || "").toLowerCase().includes(q) ||
-        String(item.reason || "").toLowerCase().includes(q) ||
-        String(item.dueDate || "").toLowerCase().includes(q)
+        String(item.learnerEmail || "").toLowerCase().includes(q) ||
+        String(item.urgency || "").toLowerCase().includes(q) ||
+        String(item.priority || "").toLowerCase().includes(q) ||
+        actionText.toLowerCase().includes(q)
       );
     });
-  }, [normalizedFollowUps, search]);
-
-  const filteredSuggestedActions = useMemo(() => {
-    const q = search.trim().toLowerCase();
-    if (!q) return normalizedActions;
-
-    return normalizedActions.filter((item) => {
-      if (String(item.learnerName || "").toLowerCase().includes(q)) return true;
-      if (String(item.urgency || "").toLowerCase().includes(q)) return true;
-      return item.actions.some(
-        (a) =>
-          String(a.title || "").toLowerCase().includes(q) ||
-          String(a.description || "").toLowerCase().includes(q) ||
-          String(a.recommendedOwner || "").toLowerCase().includes(q)
-      );
-    });
-  }, [normalizedActions, search]);
+  }, [data, search, coachScope, scopedLearners, workflowLearnerKeys]);
 
   const chartData = useMemo(() => {
     return (data?.trends || []).map((item: any) => ({
@@ -4485,16 +5926,10 @@ export default function CoachWellbeingPage({ setMobileOpen, isDesktop }: CoachWe
 
   if (loading && !data) {
     return (
-      <div id="report-area" className="p-6">
-        <div className="rounded-2xl bg-white p-8 shadow-sm">Loading...</div>
-      </div>
-    );
-  }
-
-  if (loading && data) {
-    return (
       <div id="report-area" className="min-h-screen bg-[#F8F6FC] p-4 sm:p-6">
-        <div className="rounded-2xl bg-white p-8 shadow-sm">Loading...</div>
+        <div className="flex min-h-[70vh] items-center justify-center rounded-3xl bg-white shadow-sm">
+          <LoadingBadge label="Loading wellbeing dashboard..." />
+        </div>
       </div>
     );
   }
@@ -4508,7 +5943,6 @@ export default function CoachWellbeingPage({ setMobileOpen, isDesktop }: CoachWe
   }
 
   const isPageBootstrapping =
-    loading ||
     data === null ||
     (role === "qa" && (optionsLoading || selectedCoachEmail === ""));
 
@@ -4516,7 +5950,7 @@ export default function CoachWellbeingPage({ setMobileOpen, isDesktop }: CoachWe
     return (
       <div className="min-h-screen bg-[#F8F6FC] p-4 sm:p-6">
         <div className="flex min-h-[70vh] items-center justify-center rounded-3xl bg-white shadow-sm">
-          <div className="text-sm font-medium text-[#7B6D9B]">Loading dashboard...</div>
+          <LoadingBadge label={optionsLoading ? "Loading coach list..." : "Loading dashboard..."} />
         </div>
       </div>
     );
@@ -4563,14 +5997,14 @@ export default function CoachWellbeingPage({ setMobileOpen, isDesktop }: CoachWe
               />
             ) : null}
 
-            {role === "qa" && activeView !== "dashboard" && (
+            {activeView !== "dashboard" && (
               <button
                 type="button"
-                onClick={() => setActiveView("dashboard")}
+                onClick={goBackWellbeingView}
                 className="inline-flex h-12 items-center justify-center gap-2 rounded-2xl bg-[#241453] px-5 text-sm font-medium text-white shadow-sm transition hover:bg-[#362063]"
               >
                 <ArrowLeft className="h-4 w-4" />
-                Back to Dashboard
+                {wellbeingBackLabel}
               </button>
             )}
 
@@ -4578,7 +6012,7 @@ export default function CoachWellbeingPage({ setMobileOpen, isDesktop }: CoachWe
               <>
                 <button
                   type="button"
-                  onClick={() => setActiveView("tickets")}
+                  onClick={openSafeguardingTicketsView}
                   className="inline-flex h-12 items-center justify-center gap-2 rounded-2xl border border-[#a88cd9] bg-[#f9f5ff] px-5 text-sm font-medium text-[#442F73] shadow-sm transition hover:bg-[#F3EBFF] hover:border-[#866cb6]"
                 >
                   <Ticket className="h-4 w-4" />
@@ -4586,7 +6020,7 @@ export default function CoachWellbeingPage({ setMobileOpen, isDesktop }: CoachWe
                 </button>
                 <button
                   type="button"
-                  onClick={() => setActiveView("onboarding")}
+                  onClick={openOnboardingTicketsView}
                   className="inline-flex h-12 items-center justify-center gap-2 rounded-2xl border border-[#DDC398] bg-[#F9F4EC] px-5 text-sm font-medium text-[#9D6912] shadow-sm transition hover:bg-[#F3E9DA] hover:border-[#CEA869]"
                 >
                   <ClipboardList className="h-4 w-4" />
@@ -4610,18 +6044,27 @@ export default function CoachWellbeingPage({ setMobileOpen, isDesktop }: CoachWe
         </div>
       </div>
 
+      {loading && data ? (
+        <div className="sticky top-3 z-30 mb-4 flex justify-end">
+          <LoadingBadge label="Refreshing wellbeing data..." />
+        </div>
+      ) : null}
+
       {activeView === "onboarding" ? (
-        <OnboardingTicketsView coachEmail={selectedCoachEmail === "__all__" ? "" : selectedCoachEmail} />
+        <OnboardingTicketsView
+          coachEmail={role === "qa" ? (selectedCoachEmail === "__all__" ? "" : selectedCoachEmail) : coachScope.email}
+        />
       ) : activeView === "dashboard" ? (
         <>
           <div className="mb-6 grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
             <StatCard
               title="Active Learners"
-              value={data?.summary?.caseload ?? 0}
+              value={dashboardSummary.caseload}
               icon={<Users className="h-4 w-4" />}
               valueColor="text-[#0F9B8E]"
               iconBg="bg-[#E6F7F6]"
               iconColor="text-[#0F9B8E]"
+              source="Calculated from the current learners returned by the wellbeing dashboard API."
             />
             <StatCard
               title="Survey Response"
@@ -4630,146 +6073,67 @@ export default function CoachWellbeingPage({ setMobileOpen, isDesktop }: CoachWe
               valueColor="text-[#0F9B8E]"
               iconBg="bg-[#E6F7F6]"
               iconColor="text-[#0F9B8E]"
+              source="Learners with wellbeing response data divided by active learners."
             />
             <StatCard
               title="Open Tickets"
-              value={data?.summary?.openTickets ?? 0}
+              value={dashboardSummary.openTickets}
               icon={<ClipboardList className="h-4 w-4" />}
               valueColor="text-amber-500"
               iconBg="bg-amber-50"
               iconColor="text-amber-500"
+              source="Sum of active ticket counts on the current learner rows."
             />
             <StatCard
               title="Red Risk Cases"
-              value={data?.summary?.atRisk ?? 0}
+              value={dashboardSummary.atRisk}
               icon={<AlertTriangle className="h-4 w-4" />}
               valueColor="text-red-500"
               iconBg="bg-red-50"
               iconColor="text-red-500"
+              source="Learner rows where riskLevel is red."
             />
             <StatCard
               title="Green Risk Cases"
-              value={data?.summary?.greenRisk ?? 0}
+              value={dashboardSummary.greenRisk}
               icon={<Shield className="h-4 w-4" />}
               valueColor="text-[#3D7A55]"
               iconBg="bg-[#F2FAF6]"
               iconColor="text-[#3D7A55]"
+              source="Learner rows where riskLevel is green."
             />
             <StatCard
               title="Avg Wellbeing"
               value={avgWellbeing ?? "—"}
               icon={<Heart className="h-4 w-4" />}
-              valueColor="text-[#0F9B8E]"
+              valueColor={wellbeingRiskTextColor(avgWellbeing)}
               iconBg="bg-[#E6F7F6]"
               iconColor="text-[#0F9B8E]"
+              source="Average emotional stress and resilience score across learner rows with a score."
             />
           </div>
 
           <div className="mb-6 rounded-3xl bg-white p-4 shadow-sm sm:p-6">
-            <div className="mb-5 flex items-center justify-between">
-              <h2 className="text-md font-semibold text-[#241453]">Caseload Risk Overview <span className="text-sm font-normal text-[#7B6D9B]"> ( High score = safe )</span></h2>
-              <span className="text-xs text-[#8E82AA]">{filteredLearners.length} learner{filteredLearners.length !== 1 ? "s" : ""}</span>
+            <div className="mb-5 flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+              <div>
+                <h2 className="text-md font-semibold text-[#241453]">Caseload Risk Overview <span className="text-sm font-normal text-[#7B6D9B]"> ( Higher risk score = more concern )</span></h2>
+                <span className="mt-1 block text-xs text-[#8E82AA]">{filteredLearners.length} learner{filteredLearners.length !== 1 ? "s" : ""} shown</span>
+              </div>
+              <RiskQuickFilter
+                value={dashboardRiskFilter}
+                onChange={handleDashboardRiskFilter}
+                allLabel="All learners"
+                counts={dashboardRiskCounts}
+              />
             </div>
-            <LearnerTable rows={filteredLearners} onOpenTicket={handleOpenTicket} />
+            <LearnerTable
+              rows={filteredLearners}
+              onCreateFollowUp={handleCreateFollowUp}
+              onViewTickets={handleViewLearnerTickets}
+            />
           </div>
 
-          <div className="grid grid-cols-1 gap-6 xl:grid-cols-3">
-            <div className="rounded-3xl bg-white p-4 shadow-sm sm:p-6 xl:h-[420px]">
-              <div className="flex h-full flex-col">
-                <h2 className="mb-5 shrink-0 text-md font-semibold text-[#241453]">
-                  Caseload Trends
-                </h2>
-
-                <p className="mb-4 text-sm text-[#7B6D9B]">
-                  Number of learners surveyed per month, by risk level.
-                </p>
-
-                <div className="h-[280px]">
-                  <ResponsiveContainer width="100%" height="100%">
-                    <BarChart
-                      data={chartData}
-                      maxBarSize={56}
-                      barCategoryGap="35%"
-                      margin={{ top: 16, right: 32, left: 8, bottom: 8 }}
-                    >
-                      <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#EEE8F8" />
-
-                      <XAxis
-                        dataKey="month"
-                        tick={{ fontSize: 11, fill: "#8E82AA" }}
-                        axisLine={{ stroke: "#DDD8F0" }}
-                        tickLine={false}
-                        label={{
-                          value: "Month →",
-                          position: "insideRight",
-                          dx: 28,
-                          dy: -2,
-                          fontSize: 11,
-                          fill: "#8E82AA",
-                        }}
-                      />
-
-                      <YAxis
-                        allowDecimals={false}
-                        tick={{ fontSize: 11, fill: "#8E82AA" }}
-                        axisLine={false}
-                        tickLine={false}
-                        width={32}
-                        label={{
-                          value: "Students",
-                          angle: 0,
-                          position: "insideTopLeft",
-                          dx: -10,
-                          dy: -21,
-                          fontSize: 11,
-                          fill: "#8E82AA",
-                        }}
-                      />
-
-                      <Tooltip
-                        cursor={{ fill: "#F5F1FD", radius: 6 }}
-                        content={({ active, payload, label }) => {
-                          if (!active || !payload?.length) return null;
-                          const total = payload.reduce((s, p) => s + Number(p.value ?? 0), 0);
-                          return (
-                            <div style={{
-                              background: "#fff",
-                              border: "1px solid #EEE8F8",
-                              borderRadius: 12,
-                              boxShadow: "0 4px 16px rgba(0,0,0,0.08)",
-                              padding: "10px 14px",
-                              fontSize: 12,
-                              minWidth: 160,
-                            }}>
-                              <p style={{ fontWeight: 600, color: "#241453", marginBottom: 6 }}>{label}</p>
-                              {payload.map((p) => (
-                                <p key={p.name} style={{ color: p.color as string, marginBottom: 2 }}>
-                                  {p.name}: <strong>{p.value ?? 0}</strong> learner{Number(p.value ?? 0) !== 1 ? "s" : ""}
-                                </p>
-                              ))}
-                              <div style={{ borderTop: "1px solid #EEE8F8", marginTop: 6, paddingTop: 6, color: "#241453", fontWeight: 600 }}>
-                                Total: {total} learner{total !== 1 ? "s" : ""}
-                              </div>
-                            </div>
-                          );
-                        }}
-                      />
-
-                      <Legend
-                        iconType="circle"
-                        iconSize={8}
-                        wrapperStyle={{ fontSize: 11, paddingTop: 10, color: "#7B6D9B" }}
-                      />
-
-                      <Bar dataKey="red" name="At Risk" stackId="a" fill="#EF4444" radius={[0, 0, 3, 3]} />
-                      <Bar dataKey="amber" name="Moderate" stackId="a" fill="#F59E0B" radius={[0, 0, 0, 0]} />
-                      <Bar dataKey="green" name="Safe" stackId="a" fill="#10B981" radius={[6, 6, 0, 0]} />
-                    </BarChart>
-                  </ResponsiveContainer>
-                </div>
-              </div>
-            </div>
-
+          <div className="grid grid-cols-1 gap-6 xl:grid-cols-2">
             <div className="rounded-3xl bg-white p-4 shadow-sm sm:p-6 xl:h-[420px]">
               <div className="flex h-full flex-col">
                 <h2 className="mb-5 shrink-0 text-md font-semibold text-[#241453]">
@@ -4778,27 +6142,25 @@ export default function CoachWellbeingPage({ setMobileOpen, isDesktop }: CoachWe
 
                 <div className="custom-scroll min-h-0 flex-1 overflow-y-auto pr-2">
                   <div className="space-y-4">
-                    {filteredFollowUps.length === 0 ? (
+                    {workflowFollowUps.length === 0 ? (
                       <div className="rounded-2xl border border-[#ECE7F7] p-4 text-sm text-slate-500">
                         No follow-ups yet
                       </div>
                     ) : (
-                      filteredFollowUps.map((item) => (
+                      visibleWorkflowFollowUps.map((item) => (
                         <div
                           key={item.id}
                           className="rounded-2xl border border-[#ECE7F7] bg-[#FCFBFE] p-4"
                         >
-                          <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-                            <div className="min-w-0 flex-1">
-                              <div className="mb-2 flex flex-wrap items-start gap-2">
-                                <span className={priorityBadgeClass(item.priority)}>
-                                  {item.priority}
-                                </span>
+                          <div className="flex items-start gap-3">
+                            <span className={priorityBadgeClass(item.priority)}>
+                              {item.priority}
+                            </span>
 
-                                <h3 className="min-w-0 flex-1 text-sm font-semibold leading-6 text-[#241453] sm:text-base">
-                                  {item.title}
-                                </h3>
-                              </div>
+                            <div className="min-w-0 flex-1">
+                              <h3 className="min-w-0 flex-1 text-sm font-semibold leading-6 text-[#241453] sm:text-base">
+                                {item.title}
+                              </h3>
 
                               <p className="text-sm text-[#7B6D9B]">
                                 {item.learnerName}, Due: {item.dueDate}
@@ -4811,12 +6173,22 @@ export default function CoachWellbeingPage({ setMobileOpen, isDesktop }: CoachWe
                               ) : null}
                             </div>
 
-                            <button className="self-end text-[#7B6D9B] sm:self-auto">
+                            <span className="self-end text-[#7B6D9B] sm:self-auto" aria-hidden="true">
                               <ChevronRight className="h-5 w-5" />
-                            </button>
+                            </span>
                           </div>
                         </div>
                       ))
+                    )}
+
+                    {workflowFollowUps.length > 5 && (
+                      <button
+                        type="button"
+                        onClick={() => setFollowUpExpanded((prev) => !prev)}
+                        className="w-full rounded-2xl border border-[#D9CFF3] bg-white py-3 text-sm font-semibold text-[#6248BE] hover:bg-[#F5F1FC]"
+                      >
+                        {followUpExpanded ? "Show top 5" : `View all ${workflowFollowUps.length}`}
+                      </button>
                     )}
                   </div>
                 </div>
@@ -4831,17 +6203,16 @@ export default function CoachWellbeingPage({ setMobileOpen, isDesktop }: CoachWe
 
                 <div className="custom-scroll min-h-0 flex-1 overflow-y-auto pr-2">
                   <div className="space-y-4">
-                    {filteredSuggestedActions.length === 0 ? (
+                    {workflowSuggestedActions.length === 0 ? (
                       <div className="rounded-2xl border border-[#ECE7F7] p-4 text-sm text-slate-500">
                         No suggested actions yet
                       </div>
                     ) : (
-                      filteredSuggestedActions.map((item) => (
+                      workflowSuggestedActions.map((item) => (
                         <div
                           key={item.id}
                           className="rounded-2xl border border-[#ECE7F7] bg-[#FCFBFE] p-4"
                         >
-                          {/* Learner header */}
                           <div className="mb-3 flex items-center gap-2">
                             <span className={priorityBadgeClass(item.priority)}>
                               {item.urgency || item.priority}
@@ -4851,15 +6222,14 @@ export default function CoachWellbeingPage({ setMobileOpen, isDesktop }: CoachWe
                             </span>
                           </div>
 
-                          {/* Actions list */}
                           <div className="space-y-2">
-                            {item.actions.map((action) => (
+                            {(Array.isArray(item.actions) ? item.actions : []).map((action) => (
                               <div
                                 key={action.id}
                                 className="rounded-xl border border-[#EEE8F8] bg-white p-3"
                               >
                                 <div className="flex items-start gap-2">
-                                  <span className={`${priorityBadgeClass(action.priority)} shrink-0 mt-0.5`}>
+                                  <span className={`${priorityBadgeClass(action.priority)} mt-0.5 shrink-0`}>
                                     {action.priority}
                                   </span>
                                   <div className="min-w-0 flex-1">
@@ -4889,6 +6259,99 @@ export default function CoachWellbeingPage({ setMobileOpen, isDesktop }: CoachWe
               </div>
             </div>
           </div>
+
+          <div className="mt-6 rounded-3xl bg-white p-4 shadow-sm sm:p-6">
+            <div className="flex flex-col gap-2 sm:flex-row sm:items-end sm:justify-between">
+              <div>
+                <h2 className="text-md font-semibold text-[#241453]">Caseload Trends</h2>
+                <p className="mt-1 text-sm text-[#7B6D9B]">Number of learners surveyed per month, by risk level.</p>
+              </div>
+            </div>
+
+            <div className="mt-5 h-[320px]">
+              <ResponsiveContainer width="100%" height="100%">
+                <BarChart
+                  data={chartData}
+                  maxBarSize={56}
+                  barCategoryGap="35%"
+                  margin={{ top: 16, right: 32, left: 8, bottom: 8 }}
+                >
+                  <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#EEE8F8" />
+
+                  <XAxis
+                    dataKey="month"
+                    tick={{ fontSize: 11, fill: "#8E82AA" }}
+                    axisLine={{ stroke: "#DDD8F0" }}
+                    tickLine={false}
+                    label={{
+                      value: "Month →",
+                      position: "insideRight",
+                      dx: 28,
+                      dy: -2,
+                      fontSize: 11,
+                      fill: "#8E82AA",
+                    }}
+                  />
+
+                  <YAxis
+                    allowDecimals={false}
+                    tick={{ fontSize: 11, fill: "#8E82AA" }}
+                    axisLine={false}
+                    tickLine={false}
+                    width={32}
+                    label={{
+                      value: "Students",
+                      angle: 0,
+                      position: "insideTopLeft",
+                      dx: -10,
+                      dy: -21,
+                      fontSize: 11,
+                      fill: "#8E82AA",
+                    }}
+                  />
+
+                  <Tooltip
+                    cursor={{ fill: "#F5F1FD", radius: 6 }}
+                    content={({ active, payload, label }) => {
+                      if (!active || !payload?.length) return null;
+                      const total = payload.reduce((s, p) => s + Number(p.value ?? 0), 0);
+                      return (
+                        <div style={{
+                          background: "#fff",
+                          border: "1px solid #EEE8F8",
+                          borderRadius: 12,
+                          boxShadow: "0 4px 16px rgba(0,0,0,0.08)",
+                          padding: "10px 14px",
+                          fontSize: 12,
+                          minWidth: 160,
+                        }}>
+                          <p style={{ fontWeight: 600, color: "#241453", marginBottom: 6 }}>{label}</p>
+                          {payload.map((p) => (
+                            <p key={p.name} style={{ color: p.color as string, marginBottom: 2 }}>
+                              {p.name}: <strong>{p.value ?? 0}</strong> learner{Number(p.value ?? 0) !== 1 ? "s" : ""}
+                            </p>
+                          ))}
+                          <div style={{ borderTop: "1px solid #EEE8F8", marginTop: 6, paddingTop: 6, color: "#241453", fontWeight: 600 }}>
+                            Total: {total} learner{total !== 1 ? "s" : ""}
+                          </div>
+                        </div>
+                      );
+                    }}
+                  />
+
+                  <Legend
+                    iconType="circle"
+                    iconSize={8}
+                    wrapperStyle={{ fontSize: 11, paddingTop: 10, color: "#7B6D9B" }}
+                  />
+
+                  <Bar dataKey="red" name="At Risk" stackId="a" fill="#EF4444" radius={[0, 0, 3, 3]} />
+                  <Bar dataKey="amber" name="Moderate" stackId="a" fill="#F59E0B" radius={[0, 0, 0, 0]} />
+                  <Bar dataKey="green" name="Safe" stackId="a" fill="#10B981" radius={[6, 6, 0, 0]} />
+                </BarChart>
+              </ResponsiveContainer>
+            </div>
+          </div>
         </>
       ) : (
         <>
@@ -4902,6 +6365,7 @@ export default function CoachWellbeingPage({ setMobileOpen, isDesktop }: CoachWe
             search={ticketsSearch}
             onSearchChange={setTicketsSearch}
             ticketsData={filteredTicketsData}
+            riskCounts={ticketRiskCounts}
             onView={setViewTicket}
             onStatusChange={handleStatusChange}
             statusUpdating={statusUpdating}
@@ -4947,7 +6411,7 @@ export default function CoachWellbeingPage({ setMobileOpen, isDesktop }: CoachWe
 
       <CreateTicketModal
         open={createTicketOpen}
-        learners={data?.learners || []}
+        learners={scopedLearners}
         saving={createTicketSaving}
         error={createTicketError}
         onClose={() => {

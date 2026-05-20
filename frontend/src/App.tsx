@@ -115,7 +115,7 @@ export default function App() {
 
             {/* Coach Wellbeing */}
             <Route
-              path="/coach-wellbeing"
+              path="/coach-wellbeing/*"
               element={
                 <RequireRole allow={["qa", "coach"]}>
                   <CoachWellbeingPage

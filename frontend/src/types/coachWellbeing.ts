@@ -37,8 +37,18 @@ export type CoachLearnerRow = {
   triggeredQuestions?: Array<{
     text: string;
     score?: number | null;
+    answer?: number | null;
+    riskScore?: number | null;
     level?: string;
     note?: string;
+  }>;
+  surveyResponses?: Array<{
+    questionCode?: string;
+    questionText?: string;
+    categoryName?: string;
+    constructType?: string;
+    answer?: number | string | null;
+    concernLevel?: string;
   }>;
   apprenticeDashboard?: Record<string, unknown>;
 };

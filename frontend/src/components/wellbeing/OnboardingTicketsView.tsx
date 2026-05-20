@@ -88,6 +88,59 @@ function riskBadgeClass(level: string): string {
   return "bg-slate-100 text-slate-500 border border-slate-200";
 }
 
+type OnboardingQuickRisk = "all" | "red" | "amber" | "green";
+
+const ONBOARDING_QUICK_RISKS: Array<{
+  value: OnboardingQuickRisk;
+  label: string;
+  activeClass: string;
+}> = [
+  { value: "all", label: "All tickets", activeClass: "border-[#241453] bg-[#241453] text-white" },
+  { value: "red", label: "Red", activeClass: "border-red-500 bg-red-500 text-white" },
+  { value: "amber", label: "Amber", activeClass: "border-amber-500 bg-amber-500 text-white" },
+  { value: "green", label: "Green", activeClass: "border-emerald-500 bg-emerald-500 text-white" },
+];
+
+function OnboardingRiskQuickFilter({
+  value,
+  onChange,
+  counts,
+}: {
+  value?: OnboardingQuickRisk;
+  onChange: (value: OnboardingQuickRisk) => void;
+  counts?: Partial<Record<OnboardingQuickRisk, number>>;
+}) {
+  return (
+    <div className="flex flex-wrap gap-2">
+      {ONBOARDING_QUICK_RISKS.map((item) => {
+        const isActive = value === item.value;
+        const count = counts?.[item.value];
+        return (
+          <button
+            key={item.value}
+            type="button"
+            onClick={() => onChange(item.value)}
+            className={`inline-flex h-9 items-center gap-2 rounded-xl border px-3 text-xs font-semibold transition ${
+              isActive
+                ? item.activeClass
+                : "border-[#E7E2F3] bg-white text-[#241453] hover:bg-[#F8F5FF]"
+            }`}
+          >
+            <span>{item.label}</span>
+            {count != null && (
+              <span className={`rounded-full px-1.5 py-0.5 text-[10px] ${
+                isActive ? "bg-white/20 text-current" : "bg-[#F4F0FC] text-[#644D93]"
+              }`}>
+                {count}
+              </span>
+            )}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
 function priorityBadgeClass(p: string): string {
   const v = (p || "").toLowerCase();
   if (v === "high" || v === "urgent" || v === "very high") return "bg-[#FEF0F0] text-[#B85858]";
@@ -131,20 +184,322 @@ function pdfSafe(text: string | null | undefined, fallback = "-"): string {
     .trim() || fallback;
 }
 
+function asRecord(value: any): Record<string, any> {
+  return value && typeof value === "object" && !Array.isArray(value) ? value : {};
+}
+
+function asArray(value: any): any[] {
+  return Array.isArray(value) ? value : [];
+}
+
+function asString(value: any): string {
+  return typeof value === "string" ? value.trim() : "";
+}
+
+function asNumber(value: any): number | null {
+  const n = Number(value);
+  return Number.isFinite(n) ? n : null;
+}
+
+function firstPresent(...values: any[]) {
+  return values.find((value) => value !== undefined && value !== null && value !== "");
+}
+
+function riskRank(level: string) {
+  const v = normaliseRisk(level).toLowerCase();
+  if (v === "very high") return 4;
+  if (v === "high") return 3;
+  if (v === "moderate") return 2;
+  if (v === "low") return 1;
+  return 0;
+}
+
+function riskFromPercentage(pct: number | null) {
+  if (pct == null) return "";
+  if (pct >= 75) return "Very High";
+  if (pct >= 50) return "High";
+  if (pct >= 25) return "Moderate";
+  return "Low";
+}
+
+function supportKeyFromLabel(label: string) {
+  const text = label.toLowerCase();
+  if (/technology|digital/.test(text)) return "digitalSupport";
+  if (/visual|hearing|accessibility|dyslexia|adhd/.test(text)) return "accessibilityAdjustments";
+  if (/anxiety|mood|wellbeing/.test(text)) return "wellbeingSupport";
+  if (/communication|social/.test(text)) return "communicationSupport";
+  return "learningSupport";
+}
+
+function iconFromLabel(label: string) {
+  const text = label.toLowerCase();
+  if (/technology|digital/.test(text)) return "Laptop";
+  if (/visual|hearing|accessibility/.test(text)) return "Headphones";
+  if (/mood|wellbeing|anxiety/.test(text)) return "HeartPulse";
+  if (/communication|social/.test(text)) return "Mic";
+  if (/dyslexia|adhd|learning/.test(text)) return "BookOpen";
+  return "FileText";
+}
+
+function sectionScore(section: any) {
+  const data = asRecord(section.data);
+  const score = asRecord(data.score);
+  const ui = asRecord(data.ui);
+  const rawAi = asRecord(asRecord(data.raw).aiOutput);
+  const scoreDisplay = asString(firstPresent(ui.scoreDisplay, data.scoreDisplay, rawAi.scoreDisplay));
+  const [displayScore, displayMax] = scoreDisplay.split("/").map((part) => asNumber(part?.trim()));
+  const total = asNumber(firstPresent(
+    score.total,
+    score.score,
+    score.overallScore,
+    score.overall_score,
+    data.total,
+    data.score,
+    data.overallScore,
+    data.overall_score,
+    rawAi.total,
+    rawAi.score,
+    rawAi.overallScore,
+    rawAi.overall_score,
+    displayScore,
+  ));
+  const max = asNumber(firstPresent(
+    score.max,
+    score.maxScore,
+    score.max_score,
+    score.overallMaxScore,
+    score.overall_max_score,
+    data.max,
+    data.maxScore,
+    data.max_score,
+    data.overallMaxScore,
+    data.overall_max_score,
+    rawAi.max,
+    rawAi.maxScore,
+    rawAi.max_score,
+    rawAi.overallMaxScore,
+    rawAi.overall_max_score,
+    displayMax,
+  ));
+  const pct = asNumber(firstPresent(
+    score.adjustedPercentage,
+    score.adjusted_percentage,
+    score.rawPercentage,
+    score.raw_percentage,
+    score.percentage,
+    data.adjustedPercentage,
+    data.adjusted_percentage,
+    data.rawPercentage,
+    data.raw_percentage,
+    data.percentage,
+    rawAi.adjustedPercentage,
+    rawAi.adjusted_percentage,
+    rawAi.rawPercentage,
+    rawAi.raw_percentage,
+    rawAi.percentage,
+  ));
+  const riskLevel = normaliseRisk(
+    asString(firstPresent(
+      score.riskLevel,
+      score.risk_level,
+      score.overallRiskLevel,
+      score.overall_risk_level,
+      score.risk,
+      data.riskLevel,
+      data.risk_level,
+      data.overallRiskLevel,
+      data.overall_risk_level,
+      data.risk,
+      rawAi.riskLevel,
+      rawAi.risk_level,
+      rawAi.overallRiskLevel,
+      rawAi.overall_risk_level,
+      rawAi.risk,
+      ui.badge,
+      ui.riskBadge,
+      ui.riskLevel,
+      section.badge,
+    )) || riskFromPercentage(pct)
+  );
+
+  return { total, max, pct, riskLevel };
+}
+
+function sectionSummaries(section: any) {
+  const data = asRecord(section.data);
+  const summaries = asRecord(data.summaries);
+  const rawAi = asRecord(asRecord(data.raw).aiOutput);
+  return {
+    coach: asString(firstPresent(summaries.coach, rawAi.coachSummary, section.summary)),
+    learner: asString(firstPresent(summaries.learner, rawAi.learnerFriendlySummary)),
+  };
+}
+
+function sectionFindingData(section: any) {
+  const data = asRecord(section.data);
+  const findings = asRecord(data.findings);
+  const rawAi = asRecord(asRecord(data.raw).aiOutput);
+  return {
+    mainIndicators: asArray(firstPresent(findings.mainIndicators, rawAi.mainIndicators)),
+    recommendedActions: asArray(firstPresent(findings.recommendedActions, rawAi.recommendedActions)),
+    recommendedAdjustments: asArray(firstPresent(findings.recommendedAdjustments, rawAi.recommendedAdjustments)),
+  };
+}
+
+function normaliseReportContent(report: OnboardingReport) {
+  const master = asRecord(report.master_report);
+  const doneSections = asArray(report.section_progress).filter((section) => section?.done && section?.data);
+
+  const fallbackRoadmap = doneSections.map((section) => {
+    const score = sectionScore(section);
+    const pct = score.pct ?? (score.max ? scoreBar(score.total ?? 0, score.max) : 0);
+    return {
+      label: section.label,
+      sectionIcon: iconFromLabel(section.label),
+      score: score.total,
+      maxScore: score.max,
+      rawPercentage: pct,
+      adjustedPercentage: pct,
+      riskLevel: score.riskLevel,
+    };
+  });
+
+  const scoredSections = fallbackRoadmap.filter((item) => item.score != null && item.maxScore);
+  const fallbackScore = scoredSections.reduce((sum, item) => sum + Number(item.score || 0), 0);
+  const fallbackMax = scoredSections.reduce((sum, item) => sum + Number(item.maxScore || 0), 0);
+  const fallbackPct = fallbackMax ? scoreBar(fallbackScore, fallbackMax) : asNumber(report.percentage);
+  const highestRisk = fallbackRoadmap.reduce((current, item) => (
+    riskRank(item.riskLevel) > riskRank(current) ? item.riskLevel : current
+  ), report.overall_risk_level || "");
+
+  const fallbackKeyFindings = doneSections.flatMap((section) => {
+    const score = sectionScore(section);
+    const summaries = sectionSummaries(section);
+    const findingData = sectionFindingData(section);
+    const response = findingData.recommendedAdjustments[0]
+      || findingData.recommendedActions[0]?.description
+      || findingData.recommendedActions[0]?.action
+      || summaries.coach;
+
+    return findingData.mainIndicators.map((indicator) => ({
+      area: section.label,
+      riskLevel: score.riskLevel,
+      finding: String(indicator || section.summary || summaries.coach || "").trim(),
+      recommendedResponse: String(response || "Review this area with the learner and agree practical next steps.").trim(),
+    })).filter((item) => item.finding);
+  });
+
+  const fallbackSupportPlan: Record<string, string[]> = {};
+  doneSections.forEach((section) => {
+    const findingData = sectionFindingData(section);
+    const key = supportKeyFromLabel(section.label);
+    const items = [
+      ...findingData.recommendedAdjustments,
+      ...findingData.recommendedActions.map((action) => action.description || action.action || action.title),
+    ].map((item) => String(item || "").trim()).filter(Boolean);
+    if (items.length) fallbackSupportPlan[key] = [...(fallbackSupportPlan[key] || []), ...items];
+  });
+
+  const fallbackActions = doneSections.flatMap((section) => {
+    const score = sectionScore(section);
+    const findingData = sectionFindingData(section);
+    return findingData.recommendedActions.map((action) => ({
+      priority: action.priority || score.riskLevel || "Medium",
+      owner: action.recommendedOwner || action.owner || "Coach",
+      due: action.timeline || action.due || "",
+      action: action.description || action.action || action.title || `Review ${section.label} support needs.`,
+    }));
+  });
+
+  const masterOverview = asRecord(master.overview);
+  const masterHeader = asRecord(master.reportHeader);
+  const overview: Record<string, any> = {
+    ...masterOverview,
+    overallRiskLevel: firstPresent(masterOverview.overallRiskLevel, report.overall_risk_level, highestRisk),
+    overallScore: firstPresent(masterOverview.overallScore, report.overall_score, scoredSections.length ? fallbackScore : undefined),
+    overallMaxScore: firstPresent(masterOverview.overallMaxScore, report.overall_max_score, scoredSections.length ? fallbackMax : undefined),
+    rawPercentage: firstPresent(masterOverview.rawPercentage, masterOverview.adjustedPercentage, masterOverview.percentage, report.percentage, fallbackPct),
+    adjustedPercentage: firstPresent(masterOverview.adjustedPercentage, masterOverview.rawPercentage, masterOverview.percentage, report.percentage, fallbackPct),
+    percentage: firstPresent(masterOverview.percentage, masterOverview.rawPercentage, masterOverview.adjustedPercentage, report.percentage, fallbackPct),
+    completedReportsCount: firstPresent(masterOverview.completedReportsCount, report.completed_reports, doneSections.length),
+    expectedReportsCount: firstPresent(masterOverview.expectedReportsCount, report.expected_reports, 6),
+  };
+
+  const reportHeader: Record<string, any> = {
+    ...masterHeader,
+    learnerName: firstPresent(masterHeader.learnerName, report.learner_name),
+    learnerEmail: firstPresent(masterHeader.learnerEmail, report.learner_email),
+    programme: firstPresent(masterHeader.programme, report.programme),
+    organisation: firstPresent(masterHeader.organisation, report.organization_name),
+    generatedAt: firstPresent(masterHeader.generatedAt, report.created_at),
+    overallRiskLevel: firstPresent(masterHeader.overallRiskLevel, overview.overallRiskLevel),
+  };
+
+  const executiveSummary = asString(master.executiveSummary)
+    || doneSections.map((section) => sectionSummaries(section).coach || section.summary).filter(Boolean).slice(0, 3).join(" ");
+
+  const managerBrief = { ...asRecord(master.managerBrief) };
+  if (!managerBrief.oneLineStatus && executiveSummary) managerBrief.oneLineStatus = executiveSummary;
+  if (!Array.isArray(managerBrief.whatNeedsAttention)) {
+    managerBrief.whatNeedsAttention = fallbackKeyFindings.map((item) => item.finding).slice(0, 5);
+  }
+  if (!managerBrief.recommendedNextStep && fallbackActions[0]?.action) {
+    managerBrief.recommendedNextStep = fallbackActions[0].action;
+  }
+
+  return {
+    overview,
+    reportHeader,
+    riskRoadmap: asArray(master.riskRoadmap).length ? asArray(master.riskRoadmap) : fallbackRoadmap,
+    keyFindings: asArray(master.keyFindings).length ? asArray(master.keyFindings) : fallbackKeyFindings,
+    supportPlan: Object.keys(asRecord(master.supportPlan)).length ? asRecord(master.supportPlan) : fallbackSupportPlan,
+    priorityActions: asArray(master.priorityActions).length ? asArray(master.priorityActions) : fallbackActions,
+    reviewTimeline: asRecord(master.reviewTimeline),
+    managerBrief,
+    executiveSummary,
+    professionalNote: asString(master.professionalNote),
+  };
+}
+
 // ── PDF Generator ──────────────────────────────────────────────────────────
 
+function cleanOnboardingRisk(value: any) {
+  const risk = normaliseRisk(String(value || ""));
+  return risk === "—" ? "" : risk;
+}
+
+function normaliseOnboardingReportRow(report: OnboardingReport): OnboardingReport {
+  const { overview } = normaliseReportContent(report);
+  const overallScore = asNumber(firstPresent(overview.overallScore, report.overall_score));
+  const overallMaxScore = asNumber(firstPresent(overview.overallMaxScore, report.overall_max_score));
+  const percentage = asNumber(firstPresent(overview.rawPercentage, overview.adjustedPercentage, overview.percentage, report.percentage));
+  const completedReports = asNumber(firstPresent(overview.completedReportsCount, report.completed_reports));
+  const expectedReports = asNumber(firstPresent(overview.expectedReportsCount, report.expected_reports));
+
+  return {
+    ...report,
+    overall_risk_level: cleanOnboardingRisk(firstPresent(overview.overallRiskLevel, report.overall_risk_level)),
+    overall_score: overallScore,
+    overall_max_score: overallMaxScore,
+    percentage,
+    completed_reports: completedReports,
+    expected_reports: expectedReports,
+  };
+}
+
 async function downloadInclusivenessPDF(report: OnboardingReport) {
-  const master = report.master_report || {};
-  const overview = master.overview || {};
-  const reportHeader = master.reportHeader || {};
-  const riskRoadmap: any[] = master.riskRoadmap || [];
-  const keyFindings: any[] = master.keyFindings || [];
-  const supportPlan: Record<string, string[]> = master.supportPlan || {};
-  const priorityActions: any[] = master.priorityActions || [];
-  const reviewTimeline = master.reviewTimeline || {};
-  const managerBrief = master.managerBrief || {};
-  const executiveSummary = master.executiveSummary || "";
-  const professionalNote = master.professionalNote || "";
+  const {
+    overview,
+    reportHeader,
+    riskRoadmap,
+    keyFindings,
+    supportPlan,
+    priorityActions,
+    reviewTimeline,
+    managerBrief,
+    executiveSummary,
+    professionalNote,
+  } = normaliseReportContent(report);
 
   const doc = new jsPDF({ orientation: "portrait", unit: "mm", format: "a4" });
   const W = doc.internal.pageSize.getWidth();
@@ -635,7 +990,7 @@ function OnboardingFiltersPanel({
       <div>
         <div className="mb-2 text-[10px] font-semibold uppercase tracking-wide text-[#7B6D9B]">Risk Level</div>
         <div className="flex flex-wrap gap-1.5">
-          {["High", "Moderate", "Low"].map((r) => (
+          {["Very High", "High", "Moderate", "Low"].map((r) => (
             <button
               key={r}
               type="button"
@@ -989,17 +1344,18 @@ function OnboardingReportDetailPanel({
 
   if (!report) return null;
 
-  const master = report.master_report || {};
-  const overview = master.overview || {};
-  const reportHeader = master.reportHeader || {};
-  const riskRoadmap: any[] = master.riskRoadmap || [];
-  const keyFindings: any[] = master.keyFindings || [];
-  const supportPlan: Record<string, string[]> = master.supportPlan || {};
-  const priorityActions: any[] = master.priorityActions || [];
-  const reviewTimeline = master.reviewTimeline || {};
-  const managerBrief = master.managerBrief || {};
-  const executiveSummary = master.executiveSummary || "";
-  const professionalNote = master.professionalNote || "";
+  const {
+    overview,
+    reportHeader,
+    riskRoadmap,
+    keyFindings,
+    supportPlan,
+    priorityActions,
+    reviewTimeline,
+    managerBrief,
+    executiveSummary,
+    professionalNote,
+  } = normaliseReportContent(report);
 
   const riskLvl = normaliseRisk(
     overview.overallRiskLevel || reportHeader.overallRiskLevel || report.overall_risk_level || ""
@@ -1595,9 +1951,9 @@ export default function OnboardingTicketsView({ coachEmail }: { coachEmail?: str
       setLoading(true);
       setError("");
       try {
-        const res = await getOnboardingReports();
+        const res = await getOnboardingReports((coachEmail || "").trim() || undefined);
         if (!mounted) return;
-        const rows: OnboardingReport[] = res?.reports || [];
+        const rows: OnboardingReport[] = (res?.reports || []).map(normaliseOnboardingReportRow);
         setReports(rows);
         const statusMap = new Map<string, string>();
         rows.forEach((r) => statusMap.set(r.id, r.status || "active"));
@@ -1611,9 +1967,9 @@ export default function OnboardingTicketsView({ coachEmail }: { coachEmail?: str
     }
     load();
     return () => { mounted = false; };
-  }, []);
+  }, [coachEmail]);
 
-  const filtered = useMemo(() => {
+  const searchedReports = useMemo(() => {
     const q = search.trim().toLowerCase();
     const ce = (coachEmail || "").trim().toLowerCase();
     return reports.filter((r) => {
@@ -1627,13 +1983,46 @@ export default function OnboardingTicketsView({ coachEmail }: { coachEmail?: str
           (r.coach_name || "").toLowerCase().includes(q);
         if (!match) return false;
       }
+      return true;
+    });
+  }, [reports, search, coachEmail]);
+
+  const filtered = useMemo(() => {
+    return searchedReports.filter((r) => {
       if (filters.risk.length > 0) {
         const nr = normaliseRisk(r.overall_risk_level);
         if (!filters.risk.includes(nr)) return false;
       }
       return true;
     });
-  }, [reports, search, filters, coachEmail]);
+  }, [searchedReports, filters]);
+
+  const quickRiskValue = useMemo<OnboardingQuickRisk | undefined>(() => {
+    const risk = [...filters.risk].sort();
+    if (risk.length === 0) return "all";
+    if (risk.length === 2 && risk.includes("High") && risk.includes("Very High")) return "red";
+    if (risk.length === 1 && risk[0] === "Moderate") return "amber";
+    if (risk.length === 1 && risk[0] === "Low") return "green";
+    return undefined;
+  }, [filters.risk]);
+
+  const quickRiskCounts = useMemo<Partial<Record<OnboardingQuickRisk, number>>>(() => ({
+    all: searchedReports.length,
+    red: searchedReports.filter((r) => {
+      const nr = normaliseRisk(r.overall_risk_level);
+      return nr === "Very High" || nr === "High";
+    }).length,
+    amber: searchedReports.filter((r) => normaliseRisk(r.overall_risk_level) === "Moderate").length,
+    green: searchedReports.filter((r) => normaliseRisk(r.overall_risk_level) === "Low").length,
+  }), [searchedReports]);
+
+  function setQuickRisk(value: OnboardingQuickRisk) {
+    setSearch("");
+    if (value === "all") setFilters({ risk: [] });
+    if (value === "red") setFilters({ risk: ["Very High", "High"] });
+    if (value === "amber") setFilters({ risk: ["Moderate"] });
+    if (value === "green") setFilters({ risk: ["Low"] });
+  }
 
   const stats = useMemo(() => ({
     total: filtered.length,
@@ -1800,7 +2189,15 @@ export default function OnboardingTicketsView({ coachEmail }: { coachEmail?: str
   }
 
   return (
-    <div className="space-y-6">
+    <div className="relative space-y-6">
+      {loading && reports.length > 0 ? (
+        <div className="pointer-events-none absolute inset-0 z-20 flex items-start justify-end rounded-3xl bg-white/45 p-4 backdrop-blur-[1px]">
+          <div className="inline-flex items-center gap-2 rounded-full border border-[#E7E2F3] bg-white px-3 py-1.5 text-xs font-semibold text-[#644D93] shadow-sm">
+            <span className="h-2 w-2 animate-pulse rounded-full bg-[#8B6BC8]" />
+            Refreshing onboarding reports...
+          </div>
+        </div>
+      ) : null}
       <div className="rounded-3xl bg-white p-5 shadow-sm sm:p-6">
         {/* Header */}
         <div className="mb-6 flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
@@ -1852,10 +2249,12 @@ export default function OnboardingTicketsView({ coachEmail }: { coachEmail?: str
                 <button
                   type="button"
                   onClick={() => setExportOpen((v) => !v)}
-                  className="inline-flex h-10 items-center gap-2 rounded-2xl border border-[#E7E2F3] px-4 text-sm text-[#241453] hover:bg-[#F8F5FF]"
+                  disabled={loading || filtered.length === 0}
+                  title={filtered.length === 0 ? "No onboarding reports available to export" : "Export current onboarding report data"}
+                  className="inline-flex h-10 items-center gap-2 rounded-2xl border border-[#E7E2F3] px-4 text-sm text-[#241453] hover:bg-[#F8F5FF] disabled:cursor-not-allowed disabled:opacity-50"
                 >
                   <FileDown className="h-4 w-4" />
-                  Export
+                  {loading ? "Loading..." : "Export"}
                   <ChevronDown className="h-3 w-3 opacity-60" />
                 </button>
                 {exportOpen && (
@@ -1882,16 +2281,23 @@ export default function OnboardingTicketsView({ coachEmail }: { coachEmail?: str
               </div>
             </div>
           </div>
+          <div className="mt-4 border-t border-[#EEE8F8] pt-4">
+            <OnboardingRiskQuickFilter
+              value={quickRiskValue}
+              onChange={setQuickRisk}
+              counts={quickRiskCounts}
+            />
+          </div>
         </div>
 
         {/* Stat Cards */}
         <div className="mt-6 grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-5">
           {[
-            { title: "Total Reports",   value: stats.total,    icon: <FileText className="h-4 w-4" />,       color: "text-[#0F9B8E]",    bg: "bg-[#E6F7F6]" },
-            { title: "Very High Risk",  value: stats.veryHigh, icon: <AlertTriangle className="h-4 w-4" />,  color: "text-[#8B2020]",    bg: "bg-[#F5E8E8]" },
-            { title: "High Risk",       value: stats.high,     icon: <AlertTriangle className="h-4 w-4" />,  color: "text-[#C06060]",    bg: "bg-[#FEF0F0]" },
-            { title: "Moderate Risk",   value: stats.moderate, icon: <Users className="h-4 w-4" />,          color: "text-[#B08040]",    bg: "bg-[#FEF9EE]" },
-            { title: "Low Risk",        value: stats.low,      icon: <CheckCircle className="h-4 w-4" />,    color: "text-[#4A9068]",    bg: "bg-[#F2FAF6]" },
+            { title: "Total Reports",   value: loading && reports.length === 0 ? "…" : stats.total,    icon: <FileText className="h-4 w-4" />,       color: "text-[#0F9B8E]",    bg: "bg-[#E6F7F6]" },
+            { title: "Very High Risk",  value: loading && reports.length === 0 ? "…" : stats.veryHigh, icon: <AlertTriangle className="h-4 w-4" />,  color: "text-[#8B2020]",    bg: "bg-[#F5E8E8]" },
+            { title: "High Risk",       value: loading && reports.length === 0 ? "…" : stats.high,     icon: <AlertTriangle className="h-4 w-4" />,  color: "text-[#C06060]",    bg: "bg-[#FEF0F0]" },
+            { title: "Moderate Risk",   value: loading && reports.length === 0 ? "…" : stats.moderate, icon: <Users className="h-4 w-4" />,          color: "text-[#B08040]",    bg: "bg-[#FEF9EE]" },
+            { title: "Low Risk",        value: loading && reports.length === 0 ? "…" : stats.low,      icon: <CheckCircle className="h-4 w-4" />,    color: "text-[#4A9068]",    bg: "bg-[#F2FAF6]" },
           ].map((s) => (
             <div key={s.title} className="rounded-3xl border border-[#ECE7F7] bg-[#F8F6FC] p-5">
               <div className="mb-3 flex items-center justify-between">

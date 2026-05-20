@@ -188,6 +188,7 @@ export function TicketActionsDropdown({
   const [pos, setPos] = React.useState({ top: 0, left: 0, maxH: 320 });
   const [activeModal, setActiveModal] = React.useState<ActionModalType>(null);
   const btnRef = React.useRef<HTMLButtonElement>(null);
+  const menuRef = React.useRef<HTMLDivElement>(null);
   const currentStatus = String(ticket.status || "").toLowerCase();
 
   const MENU_W = 288; // w-72
@@ -195,38 +196,93 @@ export function TicketActionsDropdown({
   const calcPos = React.useCallback(() => {
     if (!btnRef.current) return;
     const rect = btnRef.current.getBoundingClientRect();
-    const spaceBelow = window.innerHeight - rect.bottom - 8;
-    const spaceAbove = rect.top - 8;
+
+    const VIEWPORT_PAD = 8;
+    const GAP = 4;
     const HEADER_H = 44;
+    const MAX_LIST_H = 420;
+    const MIN_LIST_H = 80;
+    const maxViewportListH = Math.max(MIN_LIST_H, window.innerHeight - (VIEWPORT_PAD * 2) - HEADER_H);
+    const spaceBelow = window.innerHeight - rect.bottom - VIEWPORT_PAD;
+    const spaceAbove = rect.top - VIEWPORT_PAD;
+    const listSpaceBelow = spaceBelow - HEADER_H - GAP;
+    const listSpaceAbove = spaceAbove - HEADER_H - GAP;
+    const openBelow = listSpaceBelow >= MIN_LIST_H && (
+      listSpaceBelow >= MAX_LIST_H || listSpaceBelow >= listSpaceAbove
+    );
 
     let top: number;
     let maxH: number;
-    if (spaceBelow >= spaceAbove || spaceBelow >= 180) {
-      maxH = Math.min(420, Math.max(120, spaceBelow - 8));
-      top = rect.bottom + 4;
+    if (openBelow) {
+      maxH = Math.min(MAX_LIST_H, maxViewportListH, Math.max(MIN_LIST_H, listSpaceBelow));
+      top = rect.bottom + GAP;
     } else {
-      maxH = Math.min(420, Math.max(120, spaceAbove - HEADER_H - 8));
-      top = Math.max(8, rect.top - HEADER_H - maxH - 4);
+      maxH = Math.min(MAX_LIST_H, maxViewportListH, Math.max(MIN_LIST_H, listSpaceAbove));
+      top = rect.top - HEADER_H - maxH - GAP;
     }
+
+    const menuHeight = HEADER_H + maxH;
+    top = Math.max(VIEWPORT_PAD, Math.min(top, window.innerHeight - menuHeight - VIEWPORT_PAD));
 
     // align right edge with button, clamp inside viewport
     let left = rect.right - MENU_W;
-    if (left < 8) left = 8;
-    if (left + MENU_W > window.innerWidth - 8) left = window.innerWidth - MENU_W - 8;
+    if (left < VIEWPORT_PAD) left = VIEWPORT_PAD;
+    if (left + MENU_W > window.innerWidth - VIEWPORT_PAD) left = window.innerWidth - MENU_W - VIEWPORT_PAD;
 
-    setPos({ top, left, maxH });
+    setPos((prev) => (
+      prev.top === top && prev.left === left && prev.maxH === maxH
+        ? prev
+        : { top, left, maxH }
+    ));
   }, []);
+
+  React.useLayoutEffect(() => {
+    if (!open) return;
+    let frame = 0;
+
+    const followAnchor = () => {
+      calcPos();
+      frame = window.requestAnimationFrame(followAnchor);
+    };
+
+    frame = window.requestAnimationFrame(followAnchor);
+    return () => window.cancelAnimationFrame(frame);
+  }, [open, calcPos]);
 
   React.useEffect(() => {
     if (!open) return;
     // recalculate on any scroll or resize so the menu follows the button
     window.addEventListener("scroll", calcPos, true);
+    document.addEventListener("scroll", calcPos, true);
     window.addEventListener("resize", calcPos);
     return () => {
       window.removeEventListener("scroll", calcPos, true);
+      document.removeEventListener("scroll", calcPos, true);
       window.removeEventListener("resize", calcPos);
     };
   }, [open, calcPos]);
+
+  React.useEffect(() => {
+    if (!open) return;
+
+    const handlePointerDown = (event: PointerEvent) => {
+      const target = event.target as Node | null;
+      if (!target) return;
+      if (btnRef.current?.contains(target) || menuRef.current?.contains(target)) return;
+      setOpen(false);
+    };
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setOpen(false);
+    };
+
+    document.addEventListener("pointerdown", handlePointerDown, true);
+    document.addEventListener("keydown", handleKeyDown);
+    return () => {
+      document.removeEventListener("pointerdown", handlePointerDown, true);
+      document.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [open]);
 
   function handleToggle() {
     if (!open) calcPos();
@@ -264,14 +320,10 @@ export function TicketActionsDropdown({
         Actions
       </button>
 
-      {open && (
+      {open && createPortal(
         <>
-          <button
-            type="button"
-            className="fixed inset-0 z-[100] cursor-default"
-            onClick={() => setOpen(false)}
-          />
           <div
+            ref={menuRef}
             style={{ position: "fixed", top: pos.top, left: pos.left, width: MENU_W }}
             className="z-[110] overflow-hidden rounded-2xl border border-[#E6DDF8] bg-white shadow-[0_12px_32px_rgba(36,20,83,0.18)]"
           >
@@ -335,7 +387,8 @@ export function TicketActionsDropdown({
               ))}
             </div>
           </div>
-        </>
+        </>,
+        document.body
       )}
 
       {activeModal !== null && (
@@ -1140,6 +1193,7 @@ export function OnboardingActionsDropdown({
   const [activeModal, setActiveModal] = React.useState<ActionModalType>(null);
   const [updating, setUpdating] = React.useState(false);
   const btnRef = React.useRef<HTMLButtonElement>(null);
+  const menuRef = React.useRef<HTMLDivElement>(null);
 
   const MENU_W = 240;
   const currentStatus = (reportStatus || "active").toLowerCase();
@@ -1147,33 +1201,90 @@ export function OnboardingActionsDropdown({
   const calcPos = React.useCallback(() => {
     if (!btnRef.current) return;
     const rect = btnRef.current.getBoundingClientRect();
-    const spaceBelow = window.innerHeight - rect.bottom - 8;
-    const spaceAbove = rect.top - 8;
+
+    const VIEWPORT_PAD = 8;
+    const GAP = 4;
     const HEADER_H = 44;
+    const MAX_LIST_H = 380;
+    const MIN_LIST_H = 80;
+    const maxViewportListH = Math.max(MIN_LIST_H, window.innerHeight - (VIEWPORT_PAD * 2) - HEADER_H);
+    const spaceBelow = window.innerHeight - rect.bottom - VIEWPORT_PAD;
+    const spaceAbove = rect.top - VIEWPORT_PAD;
+    const listSpaceBelow = spaceBelow - HEADER_H - GAP;
+    const listSpaceAbove = spaceAbove - HEADER_H - GAP;
+    const openBelow = listSpaceBelow >= MIN_LIST_H && (
+      listSpaceBelow >= MAX_LIST_H || listSpaceBelow >= listSpaceAbove
+    );
+
     let top: number;
     let maxH: number;
-    if (spaceBelow >= spaceAbove || spaceBelow >= 180) {
-      maxH = Math.min(380, Math.max(120, spaceBelow - 8));
-      top = rect.bottom + 4;
+    if (openBelow) {
+      maxH = Math.min(MAX_LIST_H, maxViewportListH, Math.max(MIN_LIST_H, listSpaceBelow));
+      top = rect.bottom + GAP;
     } else {
-      maxH = Math.min(380, Math.max(120, spaceAbove - HEADER_H - 8));
-      top = Math.max(8, rect.top - HEADER_H - maxH - 4);
+      maxH = Math.min(MAX_LIST_H, maxViewportListH, Math.max(MIN_LIST_H, listSpaceAbove));
+      top = rect.top - HEADER_H - maxH - GAP;
     }
+
+    const menuHeight = HEADER_H + maxH;
+    top = Math.max(VIEWPORT_PAD, Math.min(top, window.innerHeight - menuHeight - VIEWPORT_PAD));
+
     let left = rect.right - MENU_W;
-    if (left < 8) left = 8;
-    if (left + MENU_W > window.innerWidth - 8) left = window.innerWidth - MENU_W - 8;
-    setPos({ top, left, maxH });
+    if (left < VIEWPORT_PAD) left = VIEWPORT_PAD;
+    if (left + MENU_W > window.innerWidth - VIEWPORT_PAD) left = window.innerWidth - MENU_W - VIEWPORT_PAD;
+    setPos((prev) => (
+      prev.top === top && prev.left === left && prev.maxH === maxH
+        ? prev
+        : { top, left, maxH }
+    ));
   }, []);
+
+  React.useLayoutEffect(() => {
+    if (!open) return;
+    let frame = 0;
+
+    const followAnchor = () => {
+      calcPos();
+      frame = window.requestAnimationFrame(followAnchor);
+    };
+
+    frame = window.requestAnimationFrame(followAnchor);
+    return () => window.cancelAnimationFrame(frame);
+  }, [open, calcPos]);
 
   React.useEffect(() => {
     if (!open) return;
     window.addEventListener("scroll", calcPos, true);
+    document.addEventListener("scroll", calcPos, true);
     window.addEventListener("resize", calcPos);
     return () => {
       window.removeEventListener("scroll", calcPos, true);
+      document.removeEventListener("scroll", calcPos, true);
       window.removeEventListener("resize", calcPos);
     };
   }, [open, calcPos]);
+
+  React.useEffect(() => {
+    if (!open) return;
+
+    const handlePointerDown = (event: PointerEvent) => {
+      const target = event.target as Node | null;
+      if (!target) return;
+      if (btnRef.current?.contains(target) || menuRef.current?.contains(target)) return;
+      setOpen(false);
+    };
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setOpen(false);
+    };
+
+    document.addEventListener("pointerdown", handlePointerDown, true);
+    document.addEventListener("keydown", handleKeyDown);
+    return () => {
+      document.removeEventListener("pointerdown", handlePointerDown, true);
+      document.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [open]);
 
   function handleToggle() {
     if (!open) calcPos();
@@ -1204,7 +1315,7 @@ export function OnboardingActionsDropdown({
     }),
   })).filter((group) => group.items.length > 0);
 
-  const badge = STATUS_BADGE[currentStatus] ?? STATUS_BADGE.active;
+  const badge = STATUS_BADGE[currentStatus] ?? { label: "Active", cls: "bg-emerald-50 text-emerald-700" };
 
   const fakeTicket: SupportTicketRow = {
     id: 0,
@@ -1242,12 +1353,8 @@ export function OnboardingActionsDropdown({
 
       {open && createPortal(
         <>
-          <button
-            type="button"
-            className="fixed inset-0 z-[100] cursor-default"
-            onClick={() => setOpen(false)}
-          />
           <div
+            ref={menuRef}
             style={{ position: "fixed", top: pos.top, left: pos.left, width: MENU_W }}
             className="z-[110] overflow-hidden rounded-2xl border border-[#E6DDF8] bg-white shadow-[0_12px_32px_rgba(36,20,83,0.18)]"
           >

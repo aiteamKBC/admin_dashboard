@@ -133,6 +133,7 @@ def _auth_payload_for_user(user: User) -> dict[str, str | None]:
         "role": role,
         "coach_id": coach_id,
         "username": user.username,
+        "email": user.email,
     }
 
 

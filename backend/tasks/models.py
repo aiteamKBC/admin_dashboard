@@ -53,12 +53,31 @@ class WellbeingSafeguardingMonitoringSystem(models.Model):
     safeguarding_vulnerability_score = models.FloatField(null=True, blank=True)
     trigger_count = models.IntegerField(null=True, blank=True)
     triggered_questions = models.JSONField(null=True, blank=True)
+    submission_json = models.JSONField(null=True, blank=True)
     risk_level = models.TextField(null=True, blank=True)
     history_json = models.JSONField(null=True, blank=True)
 
     class Meta:
         managed = False
         db_table = "wellbeing_safeguarding_monitoring_system"
+
+
+class SafeguardingQuestion(models.Model):
+    id = models.BigAutoField(primary_key=True)
+    category_no = models.IntegerField(null=True, blank=True)
+    question_order = models.IntegerField(null=True, blank=True)
+    question_text = models.TextField(null=True, blank=True)
+    question_code = models.TextField(null=True, blank=True)
+    min_score = models.IntegerField(null=True, blank=True)
+    max_score = models.IntegerField(null=True, blank=True)
+    is_trigger = models.BooleanField(null=True, blank=True)
+    trigger_rule = models.TextField(null=True, blank=True)
+    is_reverse_scored = models.BooleanField(null=True, blank=True)
+    is_active = models.BooleanField(null=True, blank=True)
+
+    class Meta:
+        managed = False
+        db_table = "safeguarding_questions"
 
 # safeguarding
 class SupportTicket(models.Model):

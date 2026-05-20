@@ -5,6 +5,7 @@ type User = {
   username: string;
   role: "qa" | "coach";
   coach_id?: string | null;
+  email?: string | null;
 };
 
 type AuthContextType = {
@@ -23,9 +24,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     const role = localStorage.getItem("role") as User["role"] | null;
     const username = localStorage.getItem("username");
     const coach_id = localStorage.getItem("coach_id");
+    const email = localStorage.getItem("email");
 
     if (token && role && username) {
-      setUser({ username, role, coach_id: coach_id || null });
+      setUser({ username, role, coach_id: coach_id || null, email: email || null });
     } else {
       setUser(null);
     }
@@ -39,6 +41,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     localStorage.removeItem("role");
     localStorage.removeItem("coach_id");
     localStorage.removeItem("username");
+    localStorage.removeItem("email");
     setUser(null);
     window.location.replace("/login");
   }, []);
