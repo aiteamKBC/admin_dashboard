@@ -714,6 +714,86 @@ def _trigger_reason_for_label(label):
     return "high answer on a risk question"
 
 
+SAME_DAY_SAFEGUARDING_CODES = {
+    "i_feel_unsafe_at_the_moment",
+    "i_need_urgent_support_right_now",
+    "i_feel_pressured_by_someone_to_do_things_i_do_not_want_to_do",
+    "someone_in_my_personal_life_makes_me_feel_controlled_or_afraid",
+    "i_feel_physically_safe_in_my_workplace",
+}
+
+ACTIVE_SAFEGUARDING_CODES = SAME_DAY_SAFEGUARDING_CODES | {
+    "i_believe_someone_may_be_taking_advantage_of_me",
+    "i_have_experienced_bullying_at_work",
+    "i_have_experienced_harassment_or_bullying_online",
+    "i_have_felt_pressured_to_share_personal_information_or_images_online",
+    "i_have_been_exposed_to_extremist_or_harmful_ideological_content_that_concerns_me",
+}
+
+
+def _trigger_code(item):
+    return (
+        item.get("code")
+        or item.get("questionCode")
+        or item.get("question_code")
+        or ""
+    ).strip()
+
+
+def _trigger_risk_score(item):
+    return _number_or_none(item.get("riskScore") or item.get("risk_score") or item.get("score"))
+
+
+def _has_active_trigger_for_codes(triggered_questions, codes):
+    for item in triggered_questions or []:
+        if _trigger_code(item) in codes and (_trigger_risk_score(item) or 0) >= 8:
+            return True
+    return False
+
+
+def derive_auto_ticket_context(learner, triggered_questions):
+    triggered_questions = triggered_questions or []
+    has_same_day_safeguarding = _has_active_trigger_for_codes(
+        triggered_questions,
+        SAME_DAY_SAFEGUARDING_CODES,
+    )
+    has_active_safeguarding = _has_active_trigger_for_codes(
+        triggered_questions,
+        ACTIVE_SAFEGUARDING_CODES,
+    )
+    high_trigger_count = sum(1 for item in triggered_questions if (_trigger_risk_score(item) or 0) >= 8)
+    follow_up_count = sum(1 for item in triggered_questions if 6 <= (_trigger_risk_score(item) or 0) < 8)
+    max_score = max(
+        _number_or_none(getattr(learner, "total_score", None)) or 0,
+        _number_or_none(getattr(learner, "safeguarding_vulnerability_score", None)) or 0,
+    )
+
+    if has_same_day_safeguarding:
+        urgency = "urgent"
+    elif has_active_safeguarding or high_trigger_count > 0 or max_score >= 8:
+        urgency = "high"
+    elif follow_up_count > 0 or max_score >= 6:
+        urgency = "medium"
+    else:
+        urgency = "low"
+
+    learner_name = (getattr(learner, "learner_name", "") or "learner").strip()
+    if has_active_safeguarding:
+        ticket_type = "safeguarding"
+        subject = f"[AUTO] Safeguarding follow-up flagged - {learner_name}"
+    else:
+        ticket_type = "wellbeing"
+        subject = f"[AUTO] Wellbeing and engagement follow-up - {learner_name}"
+
+    return {
+        "ticket_type": ticket_type,
+        "urgency": urgency,
+        "subject": subject,
+        "has_active_safeguarding": has_active_safeguarding,
+        "has_same_day_safeguarding": has_same_day_safeguarding,
+    }
+
+
 def _risk_score_from_answer(answer, question):
     raw_score = _number_or_none(answer.get("raw_answer"))
     if raw_score is None:
@@ -814,6 +894,7 @@ def compute_true_triggered_questions_from_submission(submission_json, question_m
         reason = _trigger_reason_for_label(label)
         result.append({
             "questionId": question_id,
+            "code": answer.get("question_code") or getattr(question, "question_code", "") or "",
             "text": text,
             "score": _compact_number(raw_score),
             "answer": _compact_number(raw_score),
@@ -1831,14 +1912,18 @@ def support_tickets_list(request):
                 computed_triggers_by_record_id[learner_cache_key] = computed_triggered_questions
 
         urgency = (getattr(row, "urgency", "") or "").strip().lower()
-        if learner_record and (getattr(row, "details", "") or "").strip().startswith("Auto-generated ticket from wellbeing survey."):
-            urgency = derive_ticket_urgency(
-                getattr(learner_record, "total_score", None),
-                getattr(learner_record, "safeguarding_vulnerability_score", None),
-                len(computed_triggered_questions),
-            )
-        status_value = (getattr(row, "status", "") or "").strip().lower()
         ticket_type = (getattr(row, "ticket_type", "") or "").strip()
+        subject = (getattr(row, "subject", "") or "").strip()
+        is_auto_wellbeing_ticket = (
+            learner_record
+            and (getattr(row, "details", "") or "").strip().startswith("Auto-generated ticket from wellbeing survey.")
+        )
+        if is_auto_wellbeing_ticket:
+            ticket_context = derive_auto_ticket_context(learner_record, computed_triggered_questions)
+            urgency = ticket_context["urgency"]
+            ticket_type = ticket_context["ticket_type"]
+            subject = ticket_context["subject"]
+        status_value = (getattr(row, "status", "") or "").strip().lower()
 
         risk = "green"
         if urgency in ["urgent", "high"]:
@@ -1886,7 +1971,7 @@ def support_tickets_list(request):
             display_source = "Coach" if name_part else "-"
 
         details = (getattr(row, "details", "") or "").strip()
-        if learner_record and details.startswith("Auto-generated ticket from wellbeing survey."):
+        if is_auto_wellbeing_ticket and details.startswith("Auto-generated ticket from wellbeing survey."):
             details = build_auto_ticket_details_from_monitoring(
                 learner_record,
                 computed_triggered_questions,
@@ -1906,7 +1991,7 @@ def support_tickets_list(request):
             "daysOpen": 0,
             "daysToClose": getattr(row, "days_to_close", None),
             "closedAt": safe_dt_iso(getattr(row, "updated_at", None)) if status_value in {"closed", "outcome recorded"} else None,
-            "subject": (getattr(row, "subject", "") or "").strip(),
+            "subject": subject,
             "details": details,
             "urgency": urgency or "medium",
             "preferredContact": (getattr(row, "preferred_contact", "") or "").strip(),
