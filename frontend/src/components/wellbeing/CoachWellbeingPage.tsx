@@ -40,6 +40,9 @@ import {
   FileSpreadsheet,
   FileText as FilePdf,
   Heart,
+  BookOpen,
+  Archive,
+  ArchiveRestore,
 } from "lucide-react";
 import { jsPDF } from "jspdf";
 import autoTable from "jspdf-autotable";
@@ -57,7 +60,7 @@ import {
   YAxis,
 } from "recharts";
 
-import { getCoachWellbeing, getCoachOptions, createSupportTicket, getSupportTickets, updateSupportTicket, deleteTicket, createTicketNote, uploadEvidenceFile, createTicketEvidence, getTicketNotes, getTicketEvidence, createBookingAppointment, getBookingServices, getBookingAvailability, getBookingStaff } from "@/services/coachWellbeing";
+import { getCoachWellbeing, getCoachOptions, createSupportTicket, getSupportTickets, updateSupportTicket, deleteTicket, archiveTicket, restoreTicket, getArchivedTickets, createTicketNote, uploadEvidenceFile, createTicketEvidence, getTicketNotes, getTicketEvidence, getTicketSurveyResponses, createBookingAppointment, getBookingServices, getBookingAvailability, getBookingStaff } from "@/services/coachWellbeing";
 import OnboardingTicketsView from "@/components/wellbeing/OnboardingTicketsView";
 import type { UpdateSupportTicketPayload } from "@/services/coachWellbeing";
 import type {
@@ -68,7 +71,7 @@ import type {
   CoachFollowUpItem,
   CoachSuggestedActionItem,
 } from "@/types/coachWellbeing";
-import type { TicketStatus, ActionModalType, ActionItem, ActionGroup, TicketNoteRow, TicketEvidenceRow, SupportTicketRow } from "@/components/wellbeing/TicketActions";
+import type { TicketStatus, ActionModalType, ActionItem, ActionGroup, TicketNoteRow, TicketEvidenceRow, SupportTicketRow, SurveyResponseRow } from "@/components/wellbeing/TicketActions";
 import { resolveMediaUrl, ACTION_ICONS, ACTION_GROUPS, TicketActionsDropdown, ActionModal } from "@/components/wellbeing/TicketActions";
 
 type CoachOption = {
@@ -1806,6 +1809,11 @@ function ticketRiskBadgeClass(risk?: string) {
   }
 
   return "bg-[#22C55E] text-white";
+}
+
+function ticketStatusLabel(status?: string) {
+  if (String(status || "").toLowerCase() === "outcome recorded") return "outcome recorded / closed";
+  return status || "";
 }
 
 function ticketStatusBadgeClass(status?: string) {
@@ -3843,6 +3851,295 @@ async function exportTicketsToPDF(tickets: SupportTicketRow[], summary?: Support
   doc.save(`safeguarding-tickets${fileCoach}-${new Date().toISOString().split("T")[0]}.pdf`);
 }
 
+type ArchivedTicketItem = {
+  id: number;
+  ticketCode: string;
+  learnerName: string;
+  learnerEmail: string;
+  type: string;
+  urgency: string;
+  status: string;
+  subject: string;
+  createdAt: string | null;
+  createdBy: string;
+};
+
+function ArchivedTicketsPanel({
+  coachEmail,
+  onClose,
+  onRestored,
+}: {
+  coachEmail?: string;
+  onClose: () => void;
+  onRestored: () => void;
+}) {
+  const [tickets, setTickets] = React.useState<ArchivedTicketItem[]>([]);
+  const [loading, setLoading] = React.useState(true);
+  const [error, setError] = React.useState("");
+  const [restoringId, setRestoringId] = React.useState<number | null>(null);
+  const [deletingId, setDeletingId] = React.useState<number | null>(null);
+  const [deleteConfirmId, setDeleteConfirmId] = React.useState<number | null>(null);
+
+  React.useEffect(() => {
+    let mounted = true;
+    setLoading(true);
+    setError("");
+    getArchivedTickets(coachEmail)
+      .then((data: any) => {
+        if (mounted) setTickets(Array.isArray(data?.tickets) ? data.tickets : []);
+      })
+      .catch(() => { if (mounted) setError("Failed to load archived tickets."); })
+      .finally(() => { if (mounted) setLoading(false); });
+    return () => { mounted = false; };
+  }, [coachEmail]);
+
+  async function handleRestore(id: number) {
+    setRestoringId(id);
+    try {
+      await restoreTicket(id);
+      setTickets((prev) => prev.filter((t) => t.id !== id));
+      onRestored();
+    } catch { /* ignore */ } finally { setRestoringId(null); }
+  }
+
+  async function handleDelete(id: number) {
+    setDeletingId(id);
+    try {
+      await deleteTicket(id);
+      setTickets((prev) => prev.filter((t) => t.id !== id));
+    } catch { /* ignore */ } finally { setDeletingId(null); setDeleteConfirmId(null); }
+  }
+
+  return createPortal(
+    <>
+      <button type="button" className="fixed inset-0 z-[85] cursor-default bg-black/30" onClick={onClose} />
+      <div className="fixed right-0 top-0 z-[90] flex h-full w-full max-w-[640px] flex-col bg-white shadow-2xl">
+        <div className="flex shrink-0 items-center justify-between border-b border-[#ECE7F7] px-6 py-4">
+          <div>
+            <div className="flex items-center gap-2 text-base font-semibold text-[#241453]">
+              <Archive className="h-4 w-4 text-[#7B6D9B]" />
+              Archived Tickets
+            </div>
+            <div className="mt-0.5 text-xs text-[#7B6D9B]">{tickets.length} ticket{tickets.length !== 1 ? "s" : ""} archived</div>
+          </div>
+          <button type="button" onClick={onClose} className="rounded-xl border border-[#E7E2F3] p-2 text-[#241453] hover:bg-[#F8F5FF]">
+            <X className="h-4 w-4" />
+          </button>
+        </div>
+
+        <div className="custom-scroll flex-1 overflow-y-auto p-6">
+          {loading && <div className="py-12 text-center text-sm text-[#7B6D9B]">Loading archived tickets...</div>}
+          {!loading && error && <div className="rounded-xl border border-red-200 bg-red-50 p-4 text-sm text-red-600">{error}</div>}
+          {!loading && !error && tickets.length === 0 && (
+            <div className="rounded-xl border border-[#ECE7F7] bg-[#F8F6FC] p-8 text-center text-sm text-[#7B6D9B]">
+              No archived tickets.
+            </div>
+          )}
+          {!loading && !error && tickets.length > 0 && (
+            <div className="space-y-3">
+              {tickets.map((t) => (
+                <div key={t.id} className="rounded-2xl border border-[#ECE7F7] bg-white p-4">
+                  <div className="mb-2 flex items-start justify-between gap-3">
+                    <div className="min-w-0">
+                      <div className="flex items-center gap-2">
+                        <span className="text-xs font-semibold text-[#7B6D9B]">{t.ticketCode}</span>
+                        <span className="rounded-full bg-[#F5F3FF] px-2 py-0.5 text-[10px] font-medium capitalize text-[#6D28D9]">{t.type}</span>
+                      </div>
+                      <div className="mt-0.5 truncate text-sm font-medium text-[#241453]">{t.subject || "—"}</div>
+                      <div className="mt-0.5 text-xs text-[#7B6D9B]">{t.learnerName} · {t.learnerEmail}</div>
+                    </div>
+                    <span className={`shrink-0 rounded-full px-2 py-0.5 text-[10px] font-semibold capitalize ${ticketStatusBadgeClass(t.status)}`}>
+                      {ticketStatusLabel(t.status)}
+                    </span>
+                  </div>
+
+                  <div className="flex items-center gap-2 pt-2">
+                    <button
+                      type="button"
+                      disabled={restoringId === t.id}
+                      onClick={() => handleRestore(t.id)}
+                      className="inline-flex items-center gap-1.5 rounded-xl border border-[#D9CFF3] bg-white px-3 py-1.5 text-xs font-medium text-[#6248BE] transition hover:bg-[#F5F1FC] disabled:opacity-60"
+                    >
+                      <ArchiveRestore className="h-3 w-3" />
+                      {restoringId === t.id ? "Restoring..." : "Restore"}
+                    </button>
+
+                    {deleteConfirmId === t.id ? (
+                      <div className="flex items-center gap-1.5">
+                        <button
+                          type="button"
+                          disabled={deletingId === t.id}
+                          onClick={() => handleDelete(t.id)}
+                          className="rounded-lg bg-red-500 px-3 py-1.5 text-xs font-semibold text-white hover:bg-red-600 disabled:opacity-60"
+                        >
+                          {deletingId === t.id ? "Deleting..." : "Confirm Delete"}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setDeleteConfirmId(null)}
+                          className="rounded-lg border border-slate-200 px-3 py-1.5 text-xs font-semibold text-slate-500 hover:bg-slate-50"
+                        >
+                          Cancel
+                        </button>
+                      </div>
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={() => setDeleteConfirmId(t.id)}
+                        className="inline-flex items-center gap-1.5 rounded-xl border border-red-200 bg-white px-3 py-1.5 text-xs font-medium text-red-500 transition hover:bg-red-50"
+                      >
+                        <Trash2 className="h-3 w-3" />
+                        Delete
+                      </button>
+                    )}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      </div>
+    </>,
+    document.body,
+  );
+}
+
+function concernBadgeClass(level?: string) {
+  if (level === "High") return "bg-red-100 text-red-700";
+  if (level === "Follow-up") return "bg-amber-100 text-amber-700";
+  if (level === "Low") return "bg-green-100 text-green-700";
+  return "bg-slate-100 text-slate-500";
+}
+
+function AllAnswersModal({
+  ticketId,
+  learnerName,
+  onClose,
+}: {
+  ticketId: number;
+  learnerName: string;
+  onClose: () => void;
+}) {
+  const [responses, setResponses] = React.useState<SurveyResponseRow[]>([]);
+  const [loading, setLoading] = React.useState(true);
+  const [error, setError] = React.useState("");
+
+  React.useEffect(() => {
+    let mounted = true;
+    setLoading(true);
+    setError("");
+    getTicketSurveyResponses(ticketId)
+      .then((data: any) => {
+        if (!mounted) return;
+        setResponses(Array.isArray(data?.responses) ? data.responses : []);
+      })
+      .catch(() => {
+        if (mounted) setError("Failed to load survey responses.");
+      })
+      .finally(() => {
+        if (mounted) setLoading(false);
+      });
+    return () => { mounted = false; };
+  }, [ticketId]);
+
+  const grouped = React.useMemo(() => {
+    const map: Record<string, SurveyResponseRow[]> = {};
+    for (const r of responses) {
+      const cat = r.categoryName || "General";
+      if (!map[cat]) map[cat] = [];
+      map[cat].push(r);
+    }
+    return map;
+  }, [responses]);
+
+  return createPortal(
+    <>
+      <button
+        type="button"
+        className="fixed inset-0 z-[100] cursor-default bg-black/40"
+        onClick={onClose}
+      />
+      <div className="fixed inset-0 z-[101] flex items-center justify-center p-4">
+        <div className="custom-scroll flex max-h-[90vh] w-full max-w-2xl flex-col overflow-hidden rounded-3xl bg-white shadow-2xl">
+          {/* Header */}
+          <div className="flex shrink-0 items-center justify-between border-b border-[#ECE7F7] px-6 py-4">
+            <div>
+              <div className="text-base font-semibold text-[#241453]">All Survey Answers</div>
+              <div className="mt-0.5 text-xs text-[#7B6D9B]">{learnerName} — raw answers (not normalised)</div>
+            </div>
+            <button
+              type="button"
+              onClick={onClose}
+              className="rounded-xl border border-[#E7E2F3] p-2 text-[#241453] hover:bg-[#F8F5FF]"
+            >
+              <X className="h-4 w-4" />
+            </button>
+          </div>
+
+          {/* Body */}
+          <div className="custom-scroll flex-1 overflow-y-auto p-6">
+            {loading && (
+              <div className="flex items-center justify-center py-12 text-sm text-[#7B6D9B]">
+                Loading answers...
+              </div>
+            )}
+            {!loading && error && (
+              <div className="rounded-xl border border-red-200 bg-red-50 p-4 text-sm text-red-600">{error}</div>
+            )}
+            {!loading && !error && responses.length === 0 && (
+              <div className="rounded-xl border border-[#ECE7F7] bg-[#F8F6FC] p-6 text-center text-sm text-[#7B6D9B]">
+                No survey data available for this learner.
+              </div>
+            )}
+            {!loading && !error && responses.length > 0 && (
+              <div className="space-y-6">
+                {Object.entries(grouped).map(([category, items]) => (
+                  <div key={category}>
+                    <div className="mb-2 text-[10px] font-semibold uppercase tracking-wider text-[#7B6D9B]">
+                      {category}
+                    </div>
+                    <div className="space-y-2">
+                      {items.map((r, i) => (
+                        <div
+                          key={i}
+                          className="flex items-start justify-between gap-3 rounded-xl border border-[#ECE7F7] bg-white px-4 py-3"
+                        >
+                          <div className="min-w-0 flex-1">
+                            <div className="text-sm text-[#241453]">{r.questionText || r.questionCode || "—"}</div>
+                            {r.questionCode && r.questionText && (
+                              <div className="mt-0.5 text-[10px] text-[#B8AACC]">{r.questionCode}</div>
+                            )}
+                          </div>
+                          <div className="flex shrink-0 items-center gap-2">
+                            <span className="min-w-[2rem] rounded-lg bg-[#F0EAFD] px-2 py-1 text-center text-sm font-semibold text-[#241453]">
+                              {r.answer ?? "—"}
+                            </span>
+                            {r.concernLevel && (
+                              <span className={`rounded-full px-2 py-0.5 text-[10px] font-semibold ${concernBadgeClass(r.concernLevel)}`}>
+                                {r.concernLevel}
+                              </span>
+                            )}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+
+          {/* Footer */}
+          <div className="shrink-0 border-t border-[#ECE7F7] px-6 py-3 text-right">
+            <span className="text-xs text-[#B8AACC]">{responses.length} question{responses.length !== 1 ? "s" : ""} total</span>
+          </div>
+        </div>
+      </div>
+    </>,
+    document.body,
+  );
+}
+
 function TicketDetailPanel({
   ticket,
   onClose,
@@ -3859,6 +4156,7 @@ function TicketDetailPanel({
   const [notes, setNotes] = React.useState<TicketNoteRow[]>([]);
   const [evidence, setEvidence] = React.useState<TicketEvidenceRow[]>([]);
   const [notesLoading, setNotesLoading] = React.useState(false);
+  const [showAllAnswers, setShowAllAnswers] = React.useState(false);
 
   React.useEffect(() => {
     if (!ticket) { setNotes([]); setEvidence([]); return; }
@@ -3914,7 +4212,7 @@ function TicketDetailPanel({
             <span
               className={`inline-flex rounded-full px-3 py-1 text-xs font-medium capitalize ${ticketStatusBadgeClass(ticket.status)}`}
             >
-              {ticket.status || "open"}
+              {ticketStatusLabel(ticket.status) || "open"}
             </span>
           </div>
           <button
@@ -3985,11 +4283,29 @@ function TicketDetailPanel({
 
             {/* Details */}
             <div className="rounded-xl border border-[#ECE7F7] p-4">
-              <div className="mb-1 text-[10px] font-semibold uppercase tracking-wider text-[#7B6D9B]">
-                Details / Notes
+              <div className="mb-3 flex items-center justify-between gap-2">
+                <div className="text-[10px] font-semibold uppercase tracking-wider text-[#7B6D9B]">
+                  Details / Notes
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setShowAllAnswers(true)}
+                  className="inline-flex items-center gap-1.5 rounded-2xl bg-[#b27715] px-4 py-2 text-xs font-medium text-white transition hover:bg-[#362063]"
+                >
+                  <BookOpen className="h-3 w-3" />
+                  All Answers
+                </button>
               </div>
               <WellbeingTicketDetailsView details={ticket.details} />
             </div>
+
+            {showAllAnswers && (
+              <AllAnswersModal
+                ticketId={ticket.id}
+                learnerName={ticket.learnerName || "Learner"}
+                onClose={() => setShowAllAnswers(false)}
+              />
+            )}
 
             {/* Case info */}
             <div>
@@ -4599,6 +4915,177 @@ function OpenTicketModal({
   );
 }
 
+const OWNER_OPTIONS = ["Tina Wright", "Yousef Sultan", "Alex Pennington", "Nada Ibrahim"];
+
+const OWNER_COLORS: Record<string, { avatar: string; pill: string; text: string }> = {
+  "Tina Wright":     { avatar: "#b27715", pill: "#F9F4EC", text: "#80560F" },
+  "Yousef Sultan":   { avatar: "#644d93", pill: "#f9f5ff", text: "#442F73" },
+  "Alex Pennington": { avatar: "#9875A3", pill: "#FCF3FF", text: "#644d93" },
+  "Nada Ibrahim":    { avatar: "#241453", pill: "#EEE8F8", text: "#241453" },
+};
+
+const DEFAULT_OWNER_COLOR = { avatar: "#aaaaaa", pill: "#F1F1F1", text: "#666666" };
+
+function getOwnerColor(name: string) {
+  return OWNER_COLORS[name] ?? DEFAULT_OWNER_COLOR;
+}
+
+function ownerInitials(name: string) {
+  const parts = name.trim().split(" ");
+  return parts.length >= 2
+    ? ((parts[0]?.[0] ?? "") + (parts[parts.length - 1]?.[0] ?? "")).toUpperCase()
+    : name.slice(0, 2).toUpperCase();
+}
+
+function AssignedOwnerCell({ ticket }: { ticket: SupportTicketRow }) {
+  const [open, setOpen] = React.useState(false);
+  const [current, setCurrent] = React.useState(ticket.assignedOwner || "");
+  const [otherText, setOtherText] = React.useState(
+    ticket.assignedOwner && !OWNER_OPTIONS.includes(ticket.assignedOwner) ? ticket.assignedOwner : ""
+  );
+  const [showOther, setShowOther] = React.useState(false);
+  const [saving, setSaving] = React.useState(false);
+  const ref = React.useRef<HTMLDivElement>(null);
+
+  React.useEffect(() => {
+    setCurrent(ticket.assignedOwner || "");
+    setOtherText(ticket.assignedOwner && !OWNER_OPTIONS.includes(ticket.assignedOwner) ? ticket.assignedOwner : "");
+  }, [ticket.assignedOwner]);
+
+  React.useEffect(() => {
+    function handleClick(e: MouseEvent) {
+      if (ref.current && !ref.current.contains(e.target as Node)) {
+        setOpen(false); setShowOther(false);
+      }
+    }
+    if (open) document.addEventListener("mousedown", handleClick);
+    return () => document.removeEventListener("mousedown", handleClick);
+  }, [open]);
+
+  async function save(value: string) {
+    setSaving(true);
+    try {
+      await updateSupportTicket(ticket.id, { assigned_owner: value });
+      setCurrent(value);
+    } catch (_) { /* silent */ }
+    finally { setSaving(false); }
+    setOpen(false); setShowOther(false);
+  }
+
+  async function handleOtherSave() {
+    const trimmed = otherText.trim();
+    if (trimmed) await save(trimmed);
+  }
+
+  const isAssigned = !!current;
+
+  return (
+    <div ref={ref} className="relative" style={{ minWidth: 150 }}>
+      {(() => {
+        const c = getOwnerColor(current);
+        return (
+          <button
+            type="button"
+            onClick={() => { setOpen((v) => !v); setShowOther(false); }}
+            disabled={saving}
+            style={isAssigned ? { backgroundColor: c.pill, color: c.text } : undefined}
+            className={`inline-flex w-full items-center gap-2 rounded-xl px-2.5 py-1.5 text-xs font-medium transition disabled:opacity-50 ${
+              isAssigned
+                ? "hover:brightness-95"
+                : "border border-dashed border-[#C4B8E0] text-[#9B8EC4] hover:border-[#644D93] hover:text-[#241453]"
+            }`}
+          >
+            {isAssigned ? (
+              <>
+                <span
+                  className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full text-[9px] font-bold text-white"
+                  style={{ backgroundColor: c.avatar }}
+                >
+                  {ownerInitials(current)}
+                </span>
+                <span className="truncate">{current}</span>
+                <ChevronDown className="ml-auto h-3 w-3 shrink-0 opacity-50" />
+              </>
+            ) : (
+              <>
+                <Plus className="h-3 w-3" />
+                <span>Assign</span>
+              </>
+            )}
+          </button>
+        );
+      })()}
+
+      {open && (
+        <div className="absolute left-0 top-full z-50 mt-1 w-48 rounded-2xl border border-[#E7E2F3] bg-white py-1 shadow-lg">
+          {OWNER_OPTIONS.map((name) => {
+            const c = getOwnerColor(name);
+            return (
+              <button
+                key={name}
+                type="button"
+                onClick={() => save(name)}
+                className={`flex w-full items-center gap-2 px-3 py-2 text-xs hover:bg-[#F8F5FF] ${current === name ? "font-semibold" : "text-slate-700"}`}
+                style={current === name ? { color: c.text } : undefined}
+              >
+                <span
+                  className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full text-[9px] font-bold text-white"
+                  style={{ backgroundColor: c.avatar }}
+                >
+                  {ownerInitials(name)}
+                </span>
+                {name}
+                {current === name && <span className="ml-auto">✓</span>}
+              </button>
+            );
+          })}
+          <div className="my-1 border-t border-[#F1EDF8]" />
+          {!showOther ? (
+            <button
+              type="button"
+              onClick={() => setShowOther(true)}
+              className="flex w-full items-center gap-2 px-3 py-2 text-xs text-slate-500 hover:bg-[#F8F5FF]"
+            >
+              <Plus className="h-3 w-3" /> Other...
+            </button>
+          ) : (
+            <div className="px-3 py-2 flex gap-1">
+              <input
+                autoFocus
+                type="text"
+                value={otherText}
+                onChange={(e) => setOtherText(e.target.value)}
+                onKeyDown={(e) => { if (e.key === "Enter") handleOtherSave(); if (e.key === "Escape") setShowOther(false); }}
+                placeholder="Name..."
+                className="flex-1 rounded-lg border border-[#DED5F3] px-2 py-1 text-xs outline-none focus:ring-1 focus:ring-[#644D93]"
+              />
+              <button
+                type="button"
+                onClick={handleOtherSave}
+                className="rounded-lg bg-[#241453] px-2 py-1 text-[10px] font-semibold text-white hover:bg-[#362063]"
+              >
+                ✓
+              </button>
+            </div>
+          )}
+          {isAssigned && (
+            <>
+              <div className="my-1 border-t border-[#F1EDF8]" />
+              <button
+                type="button"
+                onClick={() => save("")}
+                className="flex w-full items-center gap-2 px-3 py-2 text-xs text-slate-400 hover:bg-[#FFF5F5] hover:text-red-400"
+              >
+                <X className="h-3 w-3" /> Remove assignment
+              </button>
+            </>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // tickets componant
 function TicketsManagementView({
   loading,
@@ -4621,10 +5108,11 @@ function TicketsManagementView({
   onNotesChanged,
   onEvidenceChanged,
   role,
-  onDelete,
-  deleteConfirmId,
-  deleting,
-  onDeleteConfirm,
+  onArchive,
+  archiveConfirmId,
+  archiving,
+  onArchiveConfirm,
+  onArchivedOpen,
 }: {
   loading: boolean;
   search: string;
@@ -4646,10 +5134,11 @@ function TicketsManagementView({
   onNotesChanged: (ticketId: number) => void;
   onEvidenceChanged: (ticketId: number) => void;
   role?: string;
-  onDelete: (id: number) => void;
-  deleteConfirmId: number | null;
-  deleting: boolean;
-  onDeleteConfirm: (id: number) => void;
+  onArchive: (id: number) => void;
+  archiveConfirmId: number | null;
+  archiving: boolean;
+  onArchiveConfirm: (id: number) => void;
+  onArchivedOpen: () => void;
 }) {
   const [filtersOpen, setFiltersOpen] = React.useState(false);
   const [exportOpen, setExportOpen] = React.useState(false);
@@ -4708,6 +5197,17 @@ function TicketsManagementView({
             </div>
 
             <div className="flex items-center gap-3">
+              {isQA && (
+                <button
+                  type="button"
+                  onClick={onArchivedOpen}
+                  className="inline-flex h-10 items-center gap-2 rounded-2xl border border-[#E7E2F3] px-4 text-sm text-[#241453] hover:bg-[#F8F5FF]"
+                >
+                  <Archive className="h-4 w-4" />
+                  Archived
+                </button>
+              )}
+
               <div className="relative">
                 <button
                   type="button"
@@ -4878,7 +5378,7 @@ function TicketsManagementView({
 
         <div className="mt-6 overflow-hidden rounded-3xl border border-[#E9E3F5]">
           <div className="custom-scroll overflow-auto" style={{ maxHeight: "calc(100vh - 320px)" }}>
-            <table className="w-full min-w-[1250px] text-sm">
+            <table className="w-full min-w-[1420px] text-sm">
               <thead className="sticky top-0 z-10 bg-[#FCFBFE]">
                 <tr className="border-b border-[#EEE8F8] text-left text-[#7B6D9B]">
                   <th className="px-5 py-4 font-medium">Ticket</th>
@@ -4889,6 +5389,7 @@ function TicketsManagementView({
                   <th className="px-5 py-4 font-medium">Created</th>
                   <th className="px-5 py-4 font-medium">Created By</th>
                   <th className="px-5 py-4 font-medium">Status</th>
+                  <th className="px-5 py-4 font-medium">Assigned Owner</th>
                   <th className="px-5 py-4 font-medium">Days</th>
                   <th className="px-5 py-4 font-medium">Notes</th>
                   <th className="px-5 py-4 font-medium">Evidence</th>
@@ -4902,13 +5403,13 @@ function TicketsManagementView({
              <tbody>
                 {isInitialTicketLoad ? (
                   <tr>
-                    <td colSpan={(canView ? 1 : 0) + (isQA ? 1 : 0) + 13} className="px-5 py-8 text-center text-slate-500">
+                    <td colSpan={(canView ? 1 : 0) + (isQA ? 1 : 0) + 14} className="px-5 py-8 text-center text-slate-500">
                       Loading tickets...
                     </td>
                   </tr>
                 ) : tickets.length === 0 ? (
                   <tr>
-                    <td colSpan={(canView ? 1 : 0) + (isQA ? 1 : 0) + 13} className="px-5 py-8 text-center text-slate-500">
+                    <td colSpan={(canView ? 1 : 0) + (isQA ? 1 : 0) + 14} className="px-5 py-8 text-center text-slate-500">
                       No tickets found
                     </td>
                   </tr>
@@ -4936,8 +5437,12 @@ function TicketsManagementView({
 
                       <td className="px-5 py-4">
                         <span className={`inline-flex rounded-full px-3 py-1 text-xs font-medium capitalize ${ticketStatusBadgeClass(item.status)}`}>
-                          {item.status || "-"}
+                          {ticketStatusLabel(item.status) || "-"}
                         </span>
+                      </td>
+
+                      <td className="px-5 py-4">
+                        <AssignedOwnerCell ticket={item} />
                       </td>
 
                       <td className="px-5 py-4 text-[#241453]">{item.daysToClose ?? item.daysOpen ?? 0}</td>
@@ -4985,20 +5490,20 @@ function TicketsManagementView({
 
                       {isQA && (
                         <td className="px-5 py-4">
-                          {deleteConfirmId === item.id ? (
+                          {archiveConfirmId === item.id ? (
                             <div className="flex items-center gap-1.5">
                               <button
                                 type="button"
-                                onClick={() => onDeleteConfirm(item.id)}
-                                disabled={deleting}
-                                className="rounded-lg bg-red-500 px-2.5 py-1 text-xs font-semibold text-white hover:bg-red-600 disabled:opacity-60"
+                                onClick={() => onArchiveConfirm(item.id)}
+                                disabled={archiving}
+                                className="rounded-lg bg-[#241453] px-2.5 py-1 text-xs font-semibold text-white hover:bg-[#362063] disabled:opacity-60"
                               >
-                                {deleting ? "..." : "Yes"}
+                                {archiving ? "..." : "Yes"}
                               </button>
                               <button
                                 type="button"
-                                onClick={() => onDelete(0)}
-                                disabled={deleting}
+                                onClick={() => onArchive(0)}
+                                disabled={archiving}
                                 className="rounded-lg border border-slate-200 px-2.5 py-1 text-xs font-semibold text-slate-500 hover:bg-slate-50"
                               >
                                 No
@@ -5007,11 +5512,11 @@ function TicketsManagementView({
                           ) : (
                             <button
                               type="button"
-                              onClick={() => onDelete(item.id)}
-                              className="inline-flex items-center gap-1.5 text-sm font-medium text-red-400 hover:text-red-600"
+                              onClick={() => onArchive(item.id)}
+                              className="inline-flex items-center gap-1.5 text-sm font-medium text-[#7B6D9B] hover:text-[#241453]"
                             >
-                              <Trash2 className="h-4 w-4" />
-                              Delete
+                              <Archive className="h-4 w-4" />
+                              Archive
                             </button>
                           )}
                         </td>
@@ -5117,8 +5622,9 @@ export default function CoachWellbeingPage({ setMobileOpen, isDesktop }: CoachWe
   const [ticketFilters, setTicketFilters] = useState<TicketFilters>(emptyFilters);
   const [viewRefreshKey, setViewRefreshKey] = useState(0);
   const [editTicket, setEditTicket] = useState<SupportTicketRow | null>(null);
-  const [deleteConfirmId, setDeleteConfirmId] = useState<number | null>(null);
-  const [deleting, setDeleting] = useState(false);
+  const [archiveConfirmId, setArchiveConfirmId] = useState<number | null>(null);
+  const [archiving, setArchiving] = useState(false);
+  const [archivedPanelOpen, setArchivedPanelOpen] = useState(false);
 
   useEffect(() => {
     const token = localStorage.getItem("access") || localStorage.getItem("token");
@@ -5406,20 +5912,20 @@ export default function CoachWellbeingPage({ setMobileOpen, isDesktop }: CoachWe
     }
   }
 
-  async function handleDeleteTicket(ticketId: number) {
+  async function handleArchiveTicket(ticketId: number) {
     try {
-      setDeleting(true);
-      await deleteTicket(ticketId);
+      setArchiving(true);
+      await archiveTicket(ticketId);
       setTicketsData((prev) => {
         if (!prev) return prev;
         const updated = prev.tickets.filter((t) => t.id !== ticketId);
         return { ...prev, tickets: updated, summary: recalculateSummary(updated, prev) };
       });
-      setDeleteConfirmId(null);
+      setArchiveConfirmId(null);
     } catch (err) {
-      console.error("Failed to delete ticket", err);
+      console.error("Failed to archive ticket", err);
     } finally {
-      setDeleting(false);
+      setArchiving(false);
     }
   }
 
@@ -5710,17 +6216,6 @@ export default function CoachWellbeingPage({ setMobileOpen, isDesktop }: CoachWe
     });
   }, [scopedLearners, search, dashboardRiskFilter]);
 
-  const dashboardSummary = useMemo(() => {
-    const learners = scopedLearners;
-    return {
-      caseload: learners.length,
-      openTickets: learners.reduce((sum, row) => sum + Number(row.openTicketCount ?? 0), 0),
-      atRisk: learners.filter((row) => String(row.riskLevel || "").toLowerCase() === "red").length,
-      greenRisk: learners.filter((row) => String(row.riskLevel || "").toLowerCase() === "green").length,
-      nonResponders: learners.filter((row) => !hasLearnerWellbeingData(row)).length,
-    };
-  }, [scopedLearners]);
-
   const dashboardRiskCounts = useMemo<Partial<Record<RiskQuickValue, number>>>(() => {
     const learners = scopedLearners;
     return {
@@ -5731,17 +6226,29 @@ export default function CoachWellbeingPage({ setMobileOpen, isDesktop }: CoachWe
     };
   }, [scopedLearners]);
 
+  const dashboardSummary = useMemo(() => {
+    const learners = scopedLearners;
+    return {
+      caseload: learners.length,
+      openTickets: learners.reduce((sum, row) => sum + Number(row.openTicketCount ?? 0), 0),
+      atRisk: dashboardRiskCounts.red ?? 0,
+      greenRisk: dashboardRiskCounts.green ?? 0,
+      nonResponders: learners.filter((row) => !hasLearnerWellbeingData(row)).length,
+    };
+  }, [scopedLearners, dashboardRiskCounts]);
+
   const surveyResponsePct = useMemo(() => {
     const learners = scopedLearners;
     const total = learners.length;
     if (!total) return 0;
-    const responded = learners.filter((row) => hasLearnerWellbeingData(row)).length;
+    const responded = learners.filter((row) => (row.surveyResponses?.length ?? 0) > 0).length;
     return Math.round((responded / total) * 100);
   }, [scopedLearners]);
 
   const avgWellbeing = useMemo(() => {
     const learners = scopedLearners;
     const scores = learners
+      .filter((l) => (l.surveyResponses?.length ?? 0) > 0)
       .map((l) => l.wellbeingScore)
       .filter((s): s is number => s != null && s > 0);
     if (!scores.length) return null;
@@ -5888,8 +6395,116 @@ export default function CoachWellbeingPage({ setMobileOpen, isDesktop }: CoachWe
   if (loading && !data) {
     return (
       <div id="report-area" className="min-h-screen bg-[#F8F6FC] p-4 sm:p-6">
-        <div className="flex min-h-[70vh] items-center justify-center rounded-3xl bg-white shadow-sm">
-          <LoadingBadge label="Loading wellbeing dashboard..." />
+        {/* Header skeleton */}
+        <div className="mb-6 flex items-center justify-between rounded-3xl bg-white px-6 py-4 shadow-sm">
+          <div className="space-y-2">
+            <div className="h-5 w-56 animate-pulse rounded-xl bg-[#EDE8F8]" />
+            <div className="h-3.5 w-80 animate-pulse rounded-xl bg-[#F3EFFC]" />
+          </div>
+          <div className="flex items-center gap-3">
+            <div className="h-10 w-44 animate-pulse rounded-2xl bg-[#EDE8F8]" />
+            <div className="h-10 w-36 animate-pulse rounded-2xl bg-[#241453]/10" />
+          </div>
+        </div>
+
+        {/* Summary cards skeleton */}
+        <div className="mb-6 grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-5">
+          {[
+            "bg-[#E6F7F6]", "bg-[#F5E8E8]", "bg-[#FEF9EE]", "bg-[#F0EBF9]", "bg-[#F2FAF6]"
+          ].map((bg, i) => (
+            <div key={i} className="rounded-3xl border border-[#ECE7F7] bg-white p-5 shadow-sm">
+              <div className="mb-3 flex items-center justify-between">
+                <div className="h-3 w-20 animate-pulse rounded-lg bg-[#EDE8F8]" />
+                <div className={`h-8 w-8 animate-pulse rounded-xl ${bg}`} />
+              </div>
+              <div className="h-8 w-14 animate-pulse rounded-xl bg-[#EDE8F8]" />
+            </div>
+          ))}
+        </div>
+
+        {/* Main content skeleton */}
+        <div className="grid gap-6 lg:grid-cols-3">
+          {/* Table skeleton */}
+          <div className="lg:col-span-2 rounded-3xl bg-white p-6 shadow-sm">
+            <div className="mb-4 flex items-center justify-between">
+              <div className="h-5 w-40 animate-pulse rounded-xl bg-[#EDE8F8]" />
+              <div className="h-9 w-24 animate-pulse rounded-2xl bg-[#EDE8F8]" />
+            </div>
+            <div className="mb-4 h-10 w-full animate-pulse rounded-2xl bg-[#F3EFFC]" />
+            <div className="space-y-3">
+              {[...Array(6)].map((_, i) => (
+                <div key={i} className="flex items-center gap-4 rounded-2xl border border-[#F1EDF8] p-3"
+                  style={{ opacity: 1 - i * 0.12 }}>
+                  <div className="h-8 w-8 shrink-0 animate-pulse rounded-full bg-[#EDE8F8]" />
+                  <div className="flex-1 space-y-1.5">
+                    <div className="h-3.5 w-32 animate-pulse rounded-lg bg-[#EDE8F8]" />
+                    <div className="h-3 w-48 animate-pulse rounded-lg bg-[#F3EFFC]" />
+                  </div>
+                  <div className="h-6 w-14 animate-pulse rounded-xl bg-[#F3EFFC]" />
+                  <div className="h-6 w-16 animate-pulse rounded-xl bg-[#EDE8F8]" />
+                  <div className="h-8 w-8 animate-pulse rounded-xl bg-[#F3EFFC]" />
+                </div>
+              ))}
+            </div>
+          </div>
+
+          {/* Side panel skeleton */}
+          <div className="space-y-6">
+            <div className="rounded-3xl bg-white p-6 shadow-sm">
+              <div className="mb-4 h-5 w-32 animate-pulse rounded-xl bg-[#EDE8F8]" />
+              <div className="flex items-center justify-center py-4">
+                <div className="relative flex items-center justify-center">
+                  <svg className="h-32 w-32 -rotate-90" viewBox="0 0 120 120">
+                    <circle cx="60" cy="60" r="50" fill="none" stroke="#EDE8F8" strokeWidth="10" />
+                    <circle cx="60" cy="60" r="50" fill="none" stroke="#C4B5E8" strokeWidth="10"
+                      strokeDasharray="100 214" strokeLinecap="round"
+                      className="animate-pulse" />
+                  </svg>
+                  <div className="absolute inset-0 flex flex-col items-center justify-center gap-1">
+                    <div className="h-7 w-12 animate-pulse rounded-xl bg-[#EDE8F8]" />
+                    <div className="h-3 w-8 animate-pulse rounded-lg bg-[#F3EFFC]" />
+                  </div>
+                </div>
+              </div>
+              <div className="mt-2 space-y-2">
+                {[...Array(3)].map((_, i) => (
+                  <div key={i} className="flex items-center justify-between rounded-xl bg-[#FAF8FF] px-3 py-2">
+                    <div className="h-3 w-20 animate-pulse rounded-lg bg-[#EDE8F8]" />
+                    <div className="h-5 w-10 animate-pulse rounded-lg bg-[#EDE8F8]" />
+                  </div>
+                ))}
+              </div>
+            </div>
+            <div className="rounded-3xl bg-white p-6 shadow-sm">
+              <div className="mb-4 h-5 w-36 animate-pulse rounded-xl bg-[#EDE8F8]" />
+              <div className="space-y-3">
+                {[...Array(3)].map((_, i) => (
+                  <div key={i} className="rounded-2xl border border-[#F1EDF8] p-3 space-y-1.5"
+                    style={{ opacity: 1 - i * 0.2 }}>
+                    <div className="h-3.5 w-40 animate-pulse rounded-lg bg-[#EDE8F8]" />
+                    <div className="h-3 w-28 animate-pulse rounded-lg bg-[#F3EFFC]" />
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+        </div>
+
+        {/* Centered brand badge */}
+        <div className="fixed inset-0 pointer-events-none flex items-end justify-center pb-8">
+          <div className="inline-flex items-center gap-2.5 rounded-full border border-[#DDD5F5] bg-white/90 px-4 py-2 shadow-lg backdrop-blur-sm">
+            <span className="relative flex h-2.5 w-2.5">
+              <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-[#8B6BC8] opacity-60" />
+              <span className="relative inline-flex h-2.5 w-2.5 rounded-full bg-[#644D93]" />
+            </span>
+            <span className="text-xs font-semibold text-[#241453]">Loading wellbeing dashboard</span>
+            <span className="flex gap-0.5">
+              {[0, 1, 2].map((i) => (
+                <span key={i} className="h-1 w-1 rounded-full bg-[#9B8EC4] animate-bounce"
+                  style={{ animationDelay: `${i * 150}ms` }} />
+              ))}
+            </span>
+          </div>
         </div>
       </div>
     );
@@ -6347,11 +6962,24 @@ export default function CoachWellbeingPage({ setMobileOpen, isDesktop }: CoachWe
             onNotesChanged={handleNotesChanged}
             onEvidenceChanged={handleEvidenceChanged}
             role={role}
-            onDelete={(id) => setDeleteConfirmId(id === 0 ? null : id)}
-            deleteConfirmId={deleteConfirmId}
-            deleting={deleting}
-            onDeleteConfirm={handleDeleteTicket}
+            onArchive={(id) => setArchiveConfirmId(id === 0 ? null : id)}
+            archiveConfirmId={archiveConfirmId}
+            archiving={archiving}
+            onArchiveConfirm={handleArchiveTicket}
+            onArchivedOpen={() => setArchivedPanelOpen(true)}
           />
+          {archivedPanelOpen && (
+            <ArchivedTicketsPanel
+              coachEmail={selectedCoachEmail && selectedCoachEmail !== "__all__" ? selectedCoachEmail : undefined}
+              onClose={() => setArchivedPanelOpen(false)}
+              onRestored={() => {
+                setArchivedPanelOpen(false);
+                getSupportTickets(selectedCoachEmail && selectedCoachEmail !== "__all__" ? selectedCoachEmail : undefined)
+                  .then((data: any) => { if (data?.tickets) setTicketsData(data); })
+                  .catch(() => {});
+              }}
+            />
+          )}
         </>
       )}
 

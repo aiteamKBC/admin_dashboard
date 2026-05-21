@@ -118,7 +118,7 @@ export default function Sidebar({
               to="/coach-wellbeing"
               collapsed={collapsed && isDesktop}
               icon="fa-shield-heart"
-              label="Wellbeing"
+              label="Wellbeing & Safeguarding"
               onClick={() => !isDesktop && setMobileOpen(false)}
             />
 

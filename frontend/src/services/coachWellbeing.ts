@@ -42,6 +42,7 @@ export type UpdateSupportTicketPayload = {
   details?: string;
   ticket_type?: string;
   preferred_contact?: string;
+  assigned_owner?: string;
 };
 
 export async function updateSupportTicket(ticketId: number, payload: UpdateSupportTicketPayload) {
@@ -68,6 +69,23 @@ export async function createTicketNote(ticketId: number, note: string) {
 
 export async function getTicketEvidence(ticketId: number) {
   return await fetchWithAuth(`/support-tickets/${ticketId}/evidence/`);
+}
+
+export async function getTicketSurveyResponses(ticketId: number) {
+  return await fetchWithAuth(`/support-tickets/${ticketId}/survey-responses/`);
+}
+
+export async function archiveTicket(ticketId: number) {
+  return await fetchWithAuth(`/support-tickets/${ticketId}/archive/`, { method: "POST" });
+}
+
+export async function restoreTicket(ticketId: number) {
+  return await fetchWithAuth(`/support-tickets/${ticketId}/restore/`, { method: "POST" });
+}
+
+export async function getArchivedTickets(coachEmail?: string) {
+  const query = coachEmail ? `?coach_email=${encodeURIComponent(coachEmail)}` : "";
+  return await fetchWithAuth(`/support-tickets/archived/${query}`);
 }
 
 export async function uploadEvidenceFile(file: File) {

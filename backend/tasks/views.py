@@ -1705,7 +1705,12 @@ def update_support_ticket(request, ticket_id):
     if request.method == "DELETE":
         if role != "qa":
             return Response({"detail": "Forbidden"}, status=status.HTTP_403_FORBIDDEN)
+        wellbeing_record_id = getattr(ticket, "wellbeing_record_id", None)
         ticket.delete(using="wellbeing")
+        if wellbeing_record_id:
+            WellbeingSafeguardingMonitoringSystem.objects.using("wellbeing").filter(
+                id=wellbeing_record_id
+            ).delete()
         return Response({"detail": "Ticket deleted"}, status=status.HTTP_204_NO_CONTENT)
 
     if role == "coach":
@@ -1789,6 +1794,11 @@ def update_support_ticket(request, ticket_id):
         update_fields.append("preferred_contact")
         response_data["preferred_contact"] = new_preferred_contact
 
+    if "assigned_owner" in request.data:
+        ticket.assigned_owner = (request.data.get("assigned_owner") or "").strip()
+        update_fields.append("assigned_owner")
+        response_data["assigned_owner"] = ticket.assigned_owner
+
     if not update_fields:
         return Response({"detail": "No valid fields to update."}, status=status.HTTP_400_BAD_REQUEST)
 
@@ -1810,7 +1820,9 @@ def support_tickets_list(request):
     if role not in ["qa", "coach"]:
         return Response({"detail": "Forbidden"}, status=status.HTTP_403_FORBIDDEN)
 
-    qs = SupportTicket.objects.using("wellbeing").all().order_by("-created_at", "-id")
+    qs = SupportTicket.objects.using("wellbeing").filter(
+        is_archived__in=[False, None]
+    ).order_by("-created_at", "-id")
 
     if role == "coach":
         # Coaches only see tickets for their own learners
@@ -1980,6 +1992,7 @@ def support_tickets_list(request):
         tickets.append({
             "id": row.id,
             "ticketCode": f"TKT-{row.id:03d}",
+            "wellbeingRecordId": getattr(row, "wellbeing_record_id", None),
             "learnerName": (getattr(row, "full_name", "") or "").strip(),
             "learnerEmail": (getattr(row, "email", "") or "").strip(),
             "type": ticket_type or "Support",
@@ -1997,6 +2010,7 @@ def support_tickets_list(request):
             "preferredContact": (getattr(row, "preferred_contact", "") or "").strip(),
             "notes": _ensure_list(getattr(row, "notes", None)),
             "evidence": _ensure_list(getattr(row, "evidence", None)),
+            "assignedOwner": (getattr(row, "assigned_owner", "") or "").strip(),
         })
 
     now_dt = timezone.now()
@@ -2121,6 +2135,127 @@ def _check_ticket_access(request, ticket_id):
             return None, Response({"detail": "Forbidden"}, status=status.HTTP_403_FORBIDDEN)
 
     return ticket, None
+
+
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+def archive_ticket(request, ticket_id):
+    ticket, err = _check_ticket_access(request, ticket_id)
+    if err:
+        return err
+    ticket.is_archived = True
+    ticket.save(using="wellbeing", update_fields=["is_archived"])
+    return Response({"detail": "Ticket archived"})
+
+
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+def restore_ticket(request, ticket_id):
+    ticket, err = _check_ticket_access(request, ticket_id)
+    if err:
+        return err
+    ticket.is_archived = False
+    ticket.save(using="wellbeing", update_fields=["is_archived"])
+    return Response({"detail": "Ticket restored"})
+
+
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+def archived_tickets_list(request):
+    user = request.user
+    profile = getattr(user, "profile", None)
+    role = (getattr(profile, "role", "") or "").strip().lower()
+
+    if role not in ["qa", "coach"]:
+        return Response({"detail": "Forbidden"}, status=status.HTTP_403_FORBIDDEN)
+
+    qs = SupportTicket.objects.using("wellbeing").filter(is_archived=True).order_by("-created_at", "-id")
+
+    if role == "coach":
+        coach_email = (getattr(user, "email", "") or "").strip().lower()
+        learner_qs = WellbeingSafeguardingMonitoringSystem.objects.using("wellbeing").filter(
+            coach_email__iexact=coach_email
+        )
+        learner_ids = list(learner_qs.values_list("id", flat=True))
+        learner_emails = [
+            (e or "").strip() for e in learner_qs.values_list("learner_email", flat=True) if (e or "").strip()
+        ]
+        from django.db.models import Q as _Q
+        f = _Q()
+        if learner_ids:
+            f |= _Q(wellbeing_record_id__in=learner_ids)
+        if learner_emails:
+            f |= _Q(email__in=learner_emails)
+        qs = qs.filter(f) if f else qs.none()
+    else:
+        coach_email_filter = (request.query_params.get("coach_email") or "").strip().lower()
+        if coach_email_filter:
+            learner_qs = WellbeingSafeguardingMonitoringSystem.objects.using("wellbeing").filter(
+                coach_email__iexact=coach_email_filter
+            )
+            learner_ids = list(learner_qs.values_list("id", flat=True))
+            learner_emails = [
+                (e or "").strip() for e in learner_qs.values_list("learner_email", flat=True) if (e or "").strip()
+            ]
+            from django.db.models import Q as _Q
+            f = _Q()
+            if learner_ids:
+                f |= _Q(wellbeing_record_id__in=learner_ids)
+            if learner_emails:
+                f |= _Q(email__in=learner_emails)
+            qs = qs.filter(f) if f else qs.none()
+
+    tickets = []
+    for row in qs:
+        raw_created_by = (getattr(row, "created_by", "") or "").strip()
+        if "||" in raw_created_by:
+            display_created_by = raw_created_by.split("||", 1)[0].strip() or "-"
+        else:
+            display_created_by = raw_created_by or "-"
+
+        tickets.append({
+            "id": row.id,
+            "ticketCode": f"TKT-{row.id:03d}",
+            "learnerName": (getattr(row, "full_name", "") or "").strip(),
+            "learnerEmail": (getattr(row, "email", "") or "").strip(),
+            "type": (getattr(row, "ticket_type", "") or "").strip() or "Support",
+            "urgency": (getattr(row, "urgency", "") or "").strip() or "medium",
+            "status": (getattr(row, "status", "") or "").strip() or "open",
+            "subject": (getattr(row, "subject", "") or "").strip(),
+            "createdAt": safe_dt_iso(getattr(row, "created_at", None)),
+            "createdBy": display_created_by,
+            "assignedOwner": (getattr(row, "assigned_owner", "") or "").strip(),
+        })
+
+    return Response({"tickets": tickets})
+
+
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+def ticket_survey_responses(request, ticket_id):
+    ticket, err = _check_ticket_access(request, ticket_id)
+    if err:
+        return err
+
+    learner = None
+    if ticket.wellbeing_record_id:
+        learner = WellbeingSafeguardingMonitoringSystem.objects.using("wellbeing").filter(
+            id=ticket.wellbeing_record_id
+        ).first()
+    if not learner and ticket.email:
+        learner = WellbeingSafeguardingMonitoringSystem.objects.using("wellbeing").filter(
+            learner_email__iexact=ticket.email.strip()
+        ).first()
+
+    if not learner:
+        return Response({"responses": []})
+
+    question_map = _active_question_map()
+    responses = extract_survey_responses_for_report(
+        getattr(learner, "submission_json", None),
+        question_map,
+    )
+    return Response({"responses": responses})
 
 
 @api_view(["GET", "POST"])

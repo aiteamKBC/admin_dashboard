@@ -98,6 +98,8 @@ class SupportTicket(models.Model):
     created_by = models.TextField(null=True, blank=True)
     days_to_close = models.IntegerField(null=True, blank=True)
     submitted_by = models.TextField(null=True, blank=True)
+    is_archived = models.BooleanField(null=True, blank=True, default=False)
+    assigned_owner = models.TextField(null=True, blank=True)
 
     class Meta:
         managed = False

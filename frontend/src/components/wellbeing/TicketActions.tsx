@@ -66,9 +66,19 @@ export type TicketEvidenceRow = {
   mime_type?: string;
 };
 
+export type SurveyResponseRow = {
+  questionCode?: string;
+  questionText?: string;
+  categoryName?: string;
+  constructType?: string;
+  answer?: number | string | null;
+  concernLevel?: string;
+};
+
 export type SupportTicketRow = {
   id: number;
   ticketCode: string;
+  wellbeingRecordId?: number | null;
   learnerName: string;
   learnerEmail: string;
   type: string;
@@ -86,6 +96,7 @@ export type SupportTicketRow = {
   notes?: TicketNoteRow[];
   evidence?: TicketEvidenceRow[];
   createdBy?: string;
+  assignedOwner?: string;
 };
 
 // ── resolveMediaUrl ───────────────────────────────────────────────────────────
@@ -443,7 +454,7 @@ export function ActionModal({
   const [bookingStaff, setBookingStaff] = React.useState<{ id: string; displayName: string }[]>([]);
   const [selectedStaffId, setSelectedStaffId] = React.useState("");
   const [staffLoading, setStaffLoading] = React.useState(false);
-  const [riskLevel, setRiskLevel] = React.useState("amber");
+  const [riskLevel, setRiskLevel] = React.useState(() => (ticket?.risk || "amber").toLowerCase());
   const [planDetails, setPlanDetails] = React.useState("");
   const [escalateReason, setEscalateReason] = React.useState("");
   const [escalateTo, setEscalateTo] = React.useState("Safeguarding Lead");
@@ -456,6 +467,10 @@ export function ActionModal({
   const [evidencePreview, setEvidencePreview] = React.useState<string | null>(null);
   const [saving, setSaving] = React.useState(false);
   const [saveError, setSaveError] = React.useState("");
+
+  React.useEffect(() => {
+    if (type === "change_risk") setRiskLevel((ticket?.risk || "amber").toLowerCase());
+  }, [type, ticket?.risk]);
 
   // Auto-select the Safeguarding service when modal opens
   React.useEffect(() => {
@@ -604,7 +619,11 @@ export function ActionModal({
         };
         const newUrgency = urgencyMap[riskLevel] || "medium";
         if (!saveNote) await updateSupportTicket(ticket.id, { urgency: newUrgency });
-        const noteText = `🔴 Risk level changed to ${riskLevel.charAt(0).toUpperCase() + riskLevel.slice(1)}${note.trim() ? ` — ${note.trim()}` : ""}`;
+        const riskEmoji: Record<string, string> = { red: "🔴", amber: "🟠", green: "🟢" };
+        const fmt = (r: string) => r.charAt(0).toUpperCase() + r.slice(1);
+        const prevRisk = (ticket.risk || "").toLowerCase();
+        const fromPart = prevRisk && prevRisk !== riskLevel ? ` from ${fmt(prevRisk)}` : "";
+        const noteText = `${riskEmoji[riskLevel] ?? "🔴"} Risk level changed${fromPart} to ${fmt(riskLevel)}${note.trim() ? ` — ${note.trim()}` : ""}`;
         if (saveNote) await saveNote(noteText);
         else await createTicketNote(ticket.id, noteText);
         onConfirm(undefined, { risk: riskLevel, notesChanged: true });

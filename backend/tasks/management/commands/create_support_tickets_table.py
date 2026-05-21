@@ -39,6 +39,8 @@ ALTER_COLUMNS = [
     "ALTER TABLE support_tickets ADD COLUMN IF NOT EXISTS evidence JSONB DEFAULT '[]'::jsonb;",
     "ALTER TABLE support_tickets ADD COLUMN IF NOT EXISTS preferred_contact TEXT;",
     "ALTER TABLE support_tickets ADD COLUMN IF NOT EXISTS created_by TEXT;",
+    "ALTER TABLE support_tickets ADD COLUMN IF NOT EXISTS is_archived BOOLEAN DEFAULT FALSE;",
+    "ALTER TABLE support_tickets ADD COLUMN IF NOT EXISTS assigned_owner TEXT;",
 ]
 
 

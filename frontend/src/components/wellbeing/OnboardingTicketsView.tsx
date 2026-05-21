@@ -64,9 +64,10 @@ export type OnboardingReport = {
 
 type OnboardingFilters = {
   risk: string[];
+  status: "" | "open" | "closed";
 };
 
-const emptyFilters: OnboardingFilters = { risk: [] };
+const emptyFilters: OnboardingFilters = { risk: [], status: "" };
 
 // ── Helpers ────────────────────────────────────────────────────────────────
 
@@ -971,10 +972,13 @@ function OnboardingFiltersPanel({
   onChange: (f: OnboardingFilters) => void;
   onReset: () => void;
 }) {
-  const activeCount = filters.risk.length;
+  const activeCount = filters.risk.length + (filters.status ? 1 : 0);
   function toggleRisk(r: string) {
     const cur = filters.risk;
-    onChange({ risk: cur.includes(r) ? cur.filter((v) => v !== r) : [...cur, r] });
+    onChange({ ...filters, risk: cur.includes(r) ? cur.filter((v) => v !== r) : [...cur, r] });
+  }
+  function toggleStatus(s: "open" | "closed") {
+    onChange({ ...filters, status: filters.status === s ? "" : s });
   }
 
   return (
@@ -987,21 +991,44 @@ function OnboardingFiltersPanel({
           </button>
         )}
       </div>
-      <div>
-        <div className="mb-2 text-[10px] font-semibold uppercase tracking-wide text-[#7B6D9B]">Risk Level</div>
-        <div className="flex flex-wrap gap-1.5">
-          {["Very High", "High", "Moderate", "Low"].map((r) => (
-            <button
-              key={r}
-              type="button"
-              onClick={() => toggleRisk(r)}
-              className={`rounded-xl px-2.5 py-1 text-xs font-medium capitalize transition ${
-                filters.risk.includes(r) ? riskBadgeClass(r) : "border border-[#E7E2F3] text-[#241453] hover:bg-[#F8F5FF]"
-              }`}
-            >
-              {r}
-            </button>
-          ))}
+      <div className="space-y-4">
+        <div>
+          <div className="mb-2 text-[10px] font-semibold uppercase tracking-wide text-[#7B6D9B]">Risk Level</div>
+          <div className="flex flex-wrap gap-1.5">
+            {["Very High", "High", "Moderate", "Low"].map((r) => (
+              <button
+                key={r}
+                type="button"
+                onClick={() => toggleRisk(r)}
+                className={`rounded-xl px-2.5 py-1 text-xs font-medium capitalize transition ${
+                  filters.risk.includes(r) ? riskBadgeClass(r) : "border border-[#E7E2F3] text-[#241453] hover:bg-[#F8F5FF]"
+                }`}
+              >
+                {r}
+              </button>
+            ))}
+          </div>
+        </div>
+        <div>
+          <div className="mb-2 text-[10px] font-semibold uppercase tracking-wide text-[#7B6D9B]">Status</div>
+          <div className="flex gap-1.5">
+            {(["open", "closed"] as const).map((s) => (
+              <button
+                key={s}
+                type="button"
+                onClick={() => toggleStatus(s)}
+                className={`rounded-xl px-2.5 py-1 text-xs font-medium capitalize transition ${
+                  filters.status === s
+                    ? s === "open"
+                      ? "border border-emerald-500 bg-emerald-500 text-white"
+                      : "border border-slate-500 bg-slate-500 text-white"
+                    : "border border-[#E7E2F3] text-[#241453] hover:bg-[#F8F5FF]"
+                }`}
+              >
+                {s === "open" ? "Open" : "Closed"}
+              </button>
+            ))}
+          </div>
         </div>
       </div>
     </div>
@@ -1942,6 +1969,7 @@ export default function OnboardingTicketsView({ coachEmail }: { coachEmail?: str
   const [viewReport, setViewReport] = useState<OnboardingReport | null>(null);
   const [viewSection, setViewSection] = useState<SectionView | null>(null);
   const [reportStatuses, setReportStatuses] = useState<Map<string, string>>(new Map());
+  const [sortStatus, setSortStatus] = useState<"open-first" | "closed-first">("open-first");
   const [notesModal, setNotesModal] = useState<{ reportId: string; learnerName: string } | null>(null);
   const [evidenceModal, setEvidenceModal] = useState<{ reportId: string; learnerName: string } | null>(null);
 
@@ -1953,7 +1981,7 @@ export default function OnboardingTicketsView({ coachEmail }: { coachEmail?: str
       try {
         const res = await getOnboardingReports((coachEmail || "").trim() || undefined);
         if (!mounted) return;
-        const rows: OnboardingReport[] = (res?.reports || []).map(normaliseOnboardingReportRow);
+        const rows: OnboardingReport[] = res?.reports || [];
         setReports(rows);
         const statusMap = new Map<string, string>();
         rows.forEach((r) => statusMap.set(r.id, r.status || "active"));
@@ -1993,9 +2021,25 @@ export default function OnboardingTicketsView({ coachEmail }: { coachEmail?: str
         const nr = normaliseRisk(r.overall_risk_level);
         if (!filters.risk.includes(nr)) return false;
       }
+      if (filters.status) {
+        const s = (reportStatuses.get(r.id) || r.status || "active").toLowerCase();
+        const isClosed = s === "closed";
+        if (filters.status === "closed" && !isClosed) return false;
+        if (filters.status === "open" && isClosed) return false;
+      }
       return true;
     });
-  }, [searchedReports, filters]);
+  }, [searchedReports, filters, reportStatuses]);
+
+  const sorted = useMemo(() => {
+    return [...filtered].sort((a, b) => {
+      const sa = (reportStatuses.get(a.id) || a.status || "active").toLowerCase();
+      const sb = (reportStatuses.get(b.id) || b.status || "active").toLowerCase();
+      const aClosed = sa === "closed" ? 1 : 0;
+      const bClosed = sb === "closed" ? 1 : 0;
+      return sortStatus === "open-first" ? aClosed - bClosed : bClosed - aClosed;
+    });
+  }, [filtered, reportStatuses, sortStatus]);
 
   const quickRiskValue = useMemo<OnboardingQuickRisk | undefined>(() => {
     const risk = [...filters.risk].sort();
@@ -2016,12 +2060,17 @@ export default function OnboardingTicketsView({ coachEmail }: { coachEmail?: str
     green: searchedReports.filter((r) => normaliseRisk(r.overall_risk_level) === "Low").length,
   }), [searchedReports]);
 
+  const statusCounts = useMemo(() => {
+    const closed = searchedReports.filter((r) => (reportStatuses.get(r.id) || r.status || "active").toLowerCase() === "closed").length;
+    return { open: searchedReports.length - closed, closed };
+  }, [searchedReports, reportStatuses]);
+
   function setQuickRisk(value: OnboardingQuickRisk) {
     setSearch("");
-    if (value === "all") setFilters({ risk: [] });
-    if (value === "red") setFilters({ risk: ["Very High", "High"] });
-    if (value === "amber") setFilters({ risk: ["Moderate"] });
-    if (value === "green") setFilters({ risk: ["Low"] });
+    if (value === "all") setFilters((f) => ({ ...f, risk: [] }));
+    if (value === "red") setFilters((f) => ({ ...f, risk: ["Very High", "High"] }));
+    if (value === "amber") setFilters((f) => ({ ...f, risk: ["Moderate"] }));
+    if (value === "green") setFilters((f) => ({ ...f, risk: ["Low"] }));
   }
 
   const stats = useMemo(() => ({
@@ -2032,7 +2081,7 @@ export default function OnboardingTicketsView({ coachEmail }: { coachEmail?: str
     low: filtered.filter((r) => normaliseRisk(r.overall_risk_level) === "Low").length,
   }), [filtered]);
 
-  const activeFilterCount = filters.risk.length;
+  const activeFilterCount = filters.risk.length + (filters.status ? 1 : 0);
 
   function exportToExcel() {
     const rows = filtered.map((r) => ({
@@ -2282,11 +2331,42 @@ export default function OnboardingTicketsView({ coachEmail }: { coachEmail?: str
             </div>
           </div>
           <div className="mt-4 border-t border-[#EEE8F8] pt-4">
-            <OnboardingRiskQuickFilter
-              value={quickRiskValue}
-              onChange={setQuickRisk}
-              counts={quickRiskCounts}
-            />
+            <div className="flex flex-wrap items-center gap-3">
+              <OnboardingRiskQuickFilter
+                value={quickRiskValue}
+                onChange={setQuickRisk}
+                counts={quickRiskCounts}
+              />
+              <div className="h-6 w-px bg-[#E7E2F3] shrink-0" />
+              <div className="flex flex-wrap gap-2">
+                {(["open", "closed"] as const).map((sv) => {
+                  const isActive = filters.status === sv;
+                  const count = statusCounts[sv];
+                  const activeClass = sv === "open"
+                    ? "border-emerald-500 bg-emerald-500 text-white"
+                    : "border-slate-500 bg-slate-500 text-white";
+                  return (
+                    <button
+                      key={sv}
+                      type="button"
+                      onClick={() => setFilters((f) => ({ ...f, status: isActive ? "" : sv }))}
+                      className={`inline-flex h-9 items-center gap-2 rounded-xl border px-3 text-xs font-semibold transition ${
+                        isActive
+                          ? activeClass
+                          : "border-[#E7E2F3] bg-white text-[#241453] hover:bg-[#F8F5FF]"
+                      }`}
+                    >
+                      <span>{sv === "open" ? "Open" : "Closed"}</span>
+                      <span className={`rounded-full px-1.5 py-0.5 text-[10px] ${
+                        isActive ? "bg-white/20 text-current" : "bg-[#F4F0FC] text-[#644D93]"
+                      }`}>
+                        {count}
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
           </div>
         </div>
 
@@ -2294,7 +2374,7 @@ export default function OnboardingTicketsView({ coachEmail }: { coachEmail?: str
         <div className="mt-6 grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-5">
           {[
             { title: "Total Reports",   value: loading && reports.length === 0 ? "…" : stats.total,    icon: <FileText className="h-4 w-4" />,       color: "text-[#0F9B8E]",    bg: "bg-[#E6F7F6]" },
-            { title: "Very High Risk",  value: loading && reports.length === 0 ? "…" : stats.veryHigh, icon: <AlertTriangle className="h-4 w-4" />,  color: "text-[#8B2020]",    bg: "bg-[#F5E8E8]" },
+            { title: "Critical Cases",  value: loading && reports.length === 0 ? "…" : stats.veryHigh, icon: <AlertTriangle className="h-4 w-4" />,  color: "text-[#8B2020]",    bg: "bg-[#F5E8E8]" },
             { title: "High Risk",       value: loading && reports.length === 0 ? "…" : stats.high,     icon: <AlertTriangle className="h-4 w-4" />,  color: "text-[#C06060]",    bg: "bg-[#FEF0F0]" },
             { title: "Moderate Risk",   value: loading && reports.length === 0 ? "…" : stats.moderate, icon: <Users className="h-4 w-4" />,          color: "text-[#B08040]",    bg: "bg-[#FEF9EE]" },
             { title: "Low Risk",        value: loading && reports.length === 0 ? "…" : stats.low,      icon: <CheckCircle className="h-4 w-4" />,    color: "text-[#4A9068]",    bg: "bg-[#F2FAF6]" },
@@ -2325,7 +2405,19 @@ export default function OnboardingTicketsView({ coachEmail }: { coachEmail?: str
                   <th className="px-5 py-4 font-medium">Date</th>
                   <th className="px-5 py-4 font-medium">Notes</th>
                   <th className="px-5 py-4 font-medium">Evidence</th>
-                  <th className="px-5 py-4 font-medium">Status</th>
+                  <th className="px-5 py-4 font-medium">
+                    <button
+                      type="button"
+                      onClick={() => setSortStatus((v) => v === "open-first" ? "closed-first" : "open-first")}
+                      className="inline-flex items-center gap-1 rounded-lg hover:bg-[#F0EBF9] px-2 py-1 -ml-2 transition"
+                      title={sortStatus === "open-first" ? "Showing open first — click to show closed first" : "Showing closed first — click to show open first"}
+                    >
+                      Status
+                      <span className="text-[10px] text-[#9B8EC4]">
+                        {sortStatus === "open-first" ? "↑ Open" : "↓ Closed"}
+                      </span>
+                    </button>
+                  </th>
                   <th className="px-5 py-4 font-medium">View Report</th>
                 </tr>
               </thead>
@@ -2338,15 +2430,16 @@ export default function OnboardingTicketsView({ coachEmail }: { coachEmail?: str
                   <tr>
                     <td colSpan={12} className="px-5 py-10 text-center text-red-500">{error}</td>
                   </tr>
-                ) : filtered.length === 0 ? (
+                ) : sorted.length === 0 ? (
                   <tr>
                     <td colSpan={12} className="px-5 py-10 text-center text-slate-500">No reports found</td>
                   </tr>
                 ) : (
-                  filtered.map((r) => {
+                  sorted.map((r) => {
                     const nr = normaliseRisk(r.overall_risk_level);
+                    const isClosed = (reportStatuses.get(r.id) || r.status || "active").toLowerCase() === "closed";
                     return (
-                      <tr key={r.id} className="border-b border-[#F1EDF8] last:border-0 hover:bg-[#FDFCFF] transition">
+                      <tr key={r.id} className={`border-b border-[#F1EDF8] last:border-0 transition ${isClosed ? "bg-slate-50 opacity-70 hover:opacity-100 hover:bg-[#F8F5FF]" : "hover:bg-[#FDFCFF]"}`}>
                         <td className="px-5 py-4">
                           <div className="font-medium text-[#241453]">{r.learner_name || "—"}</div>
                           <div className="text-xs text-slate-500">{r.learner_email || ""}</div>
@@ -2488,7 +2581,7 @@ export default function OnboardingTicketsView({ coachEmail }: { coachEmail?: str
                               return (
                                 <button
                                   type="button"
-                                  onClick={() => setViewReport(r)}
+                                  onClick={() => setViewReport(normaliseOnboardingReportRow(r))}
                                   className="inline-flex h-8 items-center gap-1.5 rounded-xl bg-[#241453] px-3 text-xs font-semibold text-white hover:bg-[#362063] transition whitespace-nowrap"
                                 >
                                   View Report
