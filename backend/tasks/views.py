@@ -2937,17 +2937,21 @@ def _serialize_onboarding_report_summary(r):
         done = bool(raw_section) or bool(get_value(f"{col}_done", 0))
         if done:
             completed_count += 1
+        section_badge = _normalise_onboarding_risk(_first_present(
+            get_value(f"{col}_ui_badge"),
+            get_value(f"{col}_raw_risk_level"),
+        ))
         parsed_section = _parse_json_field(raw_section) if raw_section else {}
         if not parsed_section and done:
             parsed_section = {
                 "ui": {
-                    "badge": get_value(f"{col}_ui_badge"),
+                    "badge": section_badge,
                     "scoreDisplay": get_value(f"{col}_score_display"),
                     "adjustedPercentage": get_value(f"{col}_ui_adjusted_percentage"),
                 },
                 "raw": {
                     "aiOutput": {
-                        "riskLevel": get_value(f"{col}_raw_risk_level"),
+                        "riskLevel": section_badge,
                         "totalScore": get_value(f"{col}_raw_total_score"),
                         "maxScore": get_value(f"{col}_raw_max_score"),
                     }
@@ -2955,7 +2959,7 @@ def _serialize_onboarding_report_summary(r):
             }
         section_progress.append({
             "label": label,
-            "badge": None,
+            "badge": section_badge if done else None,
             "summary": None,
             "done": done,
             "data": None,
