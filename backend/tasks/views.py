@@ -901,6 +901,46 @@ def _active_question_map():
     return value
 
 
+def _question_ids_from_submission(submission_json):
+    if not submission_json:
+        return set()
+
+    data = submission_json
+    if isinstance(data, str):
+        try:
+            data = json.loads(data)
+        except Exception:
+            return set()
+
+    answers = data.get("answers") if isinstance(data, dict) else None
+    if not isinstance(answers, list):
+        return set()
+
+    question_ids = set()
+    for answer in answers:
+        if not isinstance(answer, dict):
+            continue
+        try:
+            question_ids.add(int(answer.get("question_id")))
+        except (TypeError, ValueError):
+            continue
+    return question_ids
+
+
+def _question_map_for_submissions(submissions):
+    question_ids = set()
+    for submission in submissions:
+        question_ids.update(_question_ids_from_submission(submission))
+
+    if not question_ids:
+        return {}
+
+    questions = SafeguardingQuestion.objects.using("wellbeing").filter(
+        id__in=question_ids,
+    ).exclude(is_active=False)
+    return {int(q.id): q for q in questions}
+
+
 def _clear_onboarding_reports_cache():
     _ONBOARDING_REPORTS_LIST_CACHE.clear()
 
@@ -1092,13 +1132,9 @@ def format_trigger_detail_line(item):
 
 def build_auto_ticket_details_from_monitoring(learner, triggered_questions):
     trigger_count = len(triggered_questions)
-    risk_label = risk_label_from_frontend(
-        derive_frontend_risk_level(
-            getattr(learner, "total_score", None),
-            getattr(learner, "safeguarding_vulnerability_score", None),
-            trigger_count,
-        )
-    )
+    context = derive_auto_ticket_context(learner, triggered_questions)
+    urgency = context.get("urgency")
+    risk_label = "High" if urgency in {"urgent", "high"} else "Medium" if urgency in {"medium", "moderate"} else "Low"
     programme = (getattr(learner, "programme", "") or "").strip() or "-"
     coach = (getattr(learner, "coach_name", "") or "").strip() or "-"
     total_score = _compact_number(getattr(learner, "total_score", None))
@@ -2163,6 +2199,8 @@ def support_tickets_list(request):
                 "total_score",
                 "safeguarding_vulnerability_score",
                 "trigger_count",
+                "submission_json",
+                "triggered_questions",
             )
             .filter(monitoring_filter)
         )
@@ -2176,6 +2214,20 @@ def support_tickets_list(request):
         email = (getattr(item, "learner_email", "") or "").strip().lower()
         if email and email not in monitoring_by_email:
             monitoring_by_email[email] = item
+
+    auto_submission_payloads = []
+    for row in rows:
+        row_learner_record = monitoring_by_id.get(getattr(row, "wellbeing_record_id", None))
+        if not row_learner_record:
+            row_learner_record = monitoring_by_email.get((getattr(row, "email", "") or "").strip().lower())
+        if (
+            row_learner_record
+            and (getattr(row, "details", "") or "").strip().startswith("Auto-generated ticket from wellbeing survey.")
+            and getattr(row_learner_record, "submission_json", None)
+        ):
+            auto_submission_payloads.append(getattr(row_learner_record, "submission_json", None))
+    auto_question_map = _question_map_for_submissions(auto_submission_payloads)
+
     tickets = []
     total = 0
     open_count = 0
@@ -2195,13 +2247,22 @@ def support_tickets_list(request):
             learner_record
             and (getattr(row, "details", "") or "").strip().startswith("Auto-generated ticket from wellbeing survey.")
         )
+        details_override = None
         if is_auto_wellbeing_ticket:
-            trigger_count = int(getattr(learner_record, "trigger_count", None) or 0)
-            total_score = getattr(learner_record, "total_score", None)
-            safeguarding_score = getattr(learner_record, "safeguarding_vulnerability_score", None)
-            urgency = derive_ticket_urgency(total_score, safeguarding_score, trigger_count)
-            ticket_type = "safeguarding" if trigger_count >= 5 or (_number_or_none(safeguarding_score) or 0) >= 8 else "wellbeing"
+            submission_json = getattr(learner_record, "submission_json", None)
+            if submission_json:
+                triggered_questions = compute_true_triggered_questions_from_submission(
+                    submission_json,
+                    auto_question_map,
+                )
+            else:
+                triggered_questions = extract_triggered_questions(getattr(learner_record, "triggered_questions", None))
+
+            context = derive_auto_ticket_context(learner_record, triggered_questions)
+            urgency = context["urgency"]
+            ticket_type = context["ticket_type"]
             subject = "Safeguarding risk review required" if ticket_type == "safeguarding" else "Wellbeing follow-up required"
+            details_override = build_auto_ticket_details_from_monitoring(learner_record, triggered_questions)
         status_value = (getattr(row, "status", "") or "").strip().lower()
 
         risk = "green"
@@ -2249,7 +2310,7 @@ def support_tickets_list(request):
             display_created_by = name_part or "-"
             display_source = "Coach" if name_part else "-"
 
-        details = (getattr(row, "details", "") or "").strip()
+        details = details_override or (getattr(row, "details", "") or "").strip()
 
         tickets.append({
             "id": row.id,

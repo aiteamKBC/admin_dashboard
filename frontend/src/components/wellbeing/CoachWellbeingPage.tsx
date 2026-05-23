@@ -722,10 +722,14 @@ function TriggeredQuestionsPopover({ questions, count }: { questions: TriggeredQ
                     const parsed = parseWellbeingTriggerLine(q.text);
                     const parsedRisk = numericRiskValue(parsed?.risk);
                     const answer = q.answer ?? q.score ?? parsed?.answer ?? null;
-                    const riskScore = q.riskScore ?? parsedRisk;
+                    const reason = triggerReasonLabel(q.note || parsed?.reason, q.level || parsed?.level);
+                    const riskScore = q.riskScore ?? parsedRisk ?? computedTriggerRiskScore({
+                      answer,
+                      reason,
+                      level: q.level || parsed?.level,
+                    });
                     const concernLabel = concernLabelFromScore(riskScore, q.level || parsed?.level);
                     const visuals = concernVisuals(concernLabel);
-                    const reason = triggerReasonLabel(q.note || parsed?.reason, q.level || parsed?.level);
                     const questionText = parsed?.text || q.text;
                     return (
                       <li key={i} className={`overflow-hidden rounded-2xl border ${visuals.card}`}>
@@ -883,6 +887,52 @@ function concernVisuals(label: string) {
 function scoreWidth(score?: number | null) {
   if (score == null || !Number.isFinite(Number(score))) return 0;
   return Math.max(0, Math.min(100, Number(score) * 10));
+}
+
+function scoreRiskPercentValue(score?: number | string | null) {
+  if (score == null || !Number.isFinite(Number(score))) return null;
+  const numeric = Number(score);
+  const percent = numeric <= 10 ? numeric * 10 : numeric;
+  return Math.max(0, Math.min(100, percent));
+}
+
+function triggerRiskPercentValue(triggerCount?: number | string | null) {
+  if (triggerCount == null || !Number.isFinite(Number(triggerCount))) return null;
+  const count = Number(triggerCount);
+  if (count <= 0) return 0;
+  // One trigger is already a follow-up case; five or more is high-risk.
+  return Math.max(0, Math.min(100, 60 + ((Math.min(count, 5) - 1) / 4) * 40));
+}
+
+function actualRiskPercentValue(input: {
+  totalScore?: number | string | null;
+  safeguardingScore?: number | string | null;
+  triggerCount?: number | string | null;
+  triggerScores?: Array<number | string | null | undefined>;
+}) {
+  const values = [
+    scoreRiskPercentValue(input.totalScore),
+    scoreRiskPercentValue(input.safeguardingScore),
+    triggerRiskPercentValue(input.triggerCount),
+    ...(input.triggerScores || []).map((score) => scoreRiskPercentValue(score ?? null)),
+  ].filter((value): value is number => value != null && Number.isFinite(value));
+
+  return values.length ? Math.max(...values) : null;
+}
+
+function percentRiskText(percent?: number | null) {
+  if (percent == null) return "-";
+  const rounded = Math.round(percent * 10) / 10;
+  return `${Number.isInteger(rounded) ? rounded.toFixed(0) : rounded.toFixed(1)}%`;
+}
+
+function actualRiskPercentText(input: {
+  totalScore?: number | string | null;
+  safeguardingScore?: number | string | null;
+  triggerCount?: number | string | null;
+  triggerScores?: Array<number | string | null | undefined>;
+}) {
+  return percentRiskText(actualRiskPercentValue(input));
 }
 
 function ReportSection({
@@ -1096,7 +1146,15 @@ function ApprenticeReportModal({
           <div className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
             {[
               { label: "Risk", value: learner.riskLevel, badge: true },
-              { label: "Total score", value: learner.totalScore != null ? learner.totalScore : "-" },
+              {
+                label: "Total score",
+                value: actualRiskPercentText({
+                  totalScore: learner.totalScore,
+                  safeguardingScore: learner.safeguardingScore,
+                  triggerCount: learner.triggerCount ?? triggeredQuestions.length,
+                  triggerScores: triggeredQuestions.map((item) => item.riskScore ?? item.score ?? item.answer),
+                }),
+              },
               { label: "Wellbeing", value: learner.wellbeingScore != null ? learner.wellbeingScore : "-" },
               { label: "Safeguarding", value: learner.safeguardingScore != null ? learner.safeguardingScore : "-" },
               { label: "Triggers", value: learner.triggerCount ?? triggeredQuestions.length },
@@ -1331,9 +1389,14 @@ function ApprenticeReportModal({
                         {triggeredQuestions.map((item, i) => {
                           const matched = responseForTrigger(item);
                           const answer = item.answer ?? item.score ?? matched?.answer;
-                          const concernLabel = concernLabelFromScore(item.riskScore, matched?.concernLevel || item.level);
-                          const visuals = concernVisuals(concernLabel);
                           const reason = triggerReasonLabel(item.note, item.level);
+                          const riskScore = item.riskScore ?? computedTriggerRiskScore({
+                            answer,
+                            reason,
+                            level: item.level,
+                          });
+                          const concernLabel = concernLabelFromScore(riskScore, matched?.concernLevel || item.level);
+                          const visuals = concernVisuals(concernLabel);
                           return (
                             <div key={`${item.text}-${i}`} className={`rounded-2xl border p-4 ${visuals.card}`}>
                               <div className="flex items-start justify-between gap-3">
@@ -1364,11 +1427,11 @@ function ApprenticeReportModal({
                                 <div className="rounded-xl bg-white/80 px-3 py-2 ring-1 ring-white">
                                   <div className="text-[10px] font-bold uppercase tracking-[0.12em] text-[#8B7AAF]">Concern score</div>
                                   <div className="mt-1 flex items-end gap-2">
-                                    <span className="text-lg font-black text-[#241453]">{item.riskScore ?? "-"}</span>
-                                    {item.riskScore != null && <span className="pb-0.5 text-xs text-slate-400">/ 10</span>}
+                                    <span className="text-lg font-black text-[#241453]">{riskScore ?? "-"}</span>
+                                    {riskScore != null && <span className="pb-0.5 text-xs text-slate-400">/ 10</span>}
                                   </div>
                                   <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-slate-100">
-                                    <div className={`h-full rounded-full ${visuals.bar}`} style={{ width: `${scoreWidth(item.riskScore)}%` }} />
+                                    <div className={`h-full rounded-full ${visuals.bar}`} style={{ width: `${scoreWidth(riskScore)}%` }} />
                                   </div>
                                 </div>
                                 <div className="rounded-xl bg-white/80 px-3 py-2 ring-1 ring-white">
@@ -1782,7 +1845,12 @@ function LearnerTable({
                     </td>
 
                     <td className="px-4 py-3 tabular-nums font-semibold text-[#241453]">
-                      {row.totalScore != null ? Number(row.totalScore).toFixed(2) : <span className="text-slate-300">—</span>}
+                      {hasLearnerWellbeingData(row) ? actualRiskPercentText({
+                        totalScore: row.totalScore,
+                        safeguardingScore: row.safeguardingScore,
+                        triggerCount: row.triggerCount ?? row.triggeredQuestions?.length,
+                        triggerScores: (row.triggeredQuestions || []).map((item) => item.riskScore ?? item.score ?? item.answer),
+                      }) : <span className="text-slate-300">—</span>}
                     </td>
 
                     <td className="px-4 py-3">
@@ -2184,14 +2252,30 @@ function parseWellbeingTicketDetails(details?: string | null): ParsedWellbeingDe
   return { isAutoGenerated, summary, triggers, notes, hiddenLegacyCount };
 }
 
-function numericRiskValue(value?: string) {
+function numericRiskValue(value?: string | number | null) {
   if (!value) return null;
   const parsed = Number(String(value).replace(/[^\d.]/g, ""));
   return Number.isFinite(parsed) ? parsed : null;
 }
 
-function triggerToneClass(trigger: ParsedWellbeingTrigger) {
+function computedTriggerRiskScore(trigger: {
+  risk?: string | number | null;
+  answer?: string | number | null;
+  reason?: string | null;
+  level?: string | null;
+}) {
   const risk = numericRiskValue(trigger.risk);
+  if (risk != null) return risk;
+
+  const answer = numericRiskValue(trigger.answer);
+  if (answer == null) return null;
+
+  const reason = triggerReasonLabel(trigger.reason, trigger.level).toLowerCase();
+  return reason.includes("low answer on a positive question") ? 11 - answer : answer;
+}
+
+function triggerToneClass(trigger: ParsedWellbeingTrigger) {
+  const risk = computedTriggerRiskScore(trigger);
   if (risk != null && risk >= 8) {
     return {
       border: "border-red-200",
@@ -2217,7 +2301,7 @@ function triggerToneClass(trigger: ParsedWellbeingTrigger) {
 }
 
 function parsedTriggerConcernLabel(trigger: ParsedWellbeingTrigger) {
-  const risk = numericRiskValue(trigger.risk);
+  const risk = computedTriggerRiskScore(trigger);
   if (risk != null) return concernLabelFromScore(risk);
   return "Flagged";
 }
@@ -2241,7 +2325,14 @@ function WellbeingTicketDetailsView({ details }: { details?: string | null }) {
 
   const summaryItems = [
     { label: "Risk Level", value: parsed.summary["Risk Level"] },
-    { label: "Total Score", value: parsed.summary["Total Score"] },
+    {
+      label: "Total Score",
+      value: parsed.summary["Total Score"] ? actualRiskPercentText({
+        totalScore: parsed.summary["Total Score"],
+        triggerCount: parsed.summary["Trigger Count"] || parsed.triggers.length,
+        triggerScores: parsed.triggers.map((trigger) => trigger.risk || trigger.answer),
+      }) : "",
+    },
     { label: "Trigger Count", value: parsed.summary["Trigger Count"] },
     { label: "Programme", value: parsed.summary["Programme"] },
     { label: "Coach", value: parsed.summary["Coach"] },
@@ -2315,8 +2406,8 @@ function WellbeingTicketDetailsView({ details }: { details?: string | null }) {
               const tone = triggerToneClass(trigger);
               const concernLabel = parsedTriggerConcernLabel(trigger);
               const visuals = concernVisuals(concernLabel);
-              const riskScore = numericRiskValue(trigger.risk);
               const reason = triggerReasonLabel(trigger.reason, trigger.level);
+              const riskScore = computedTriggerRiskScore({ ...trigger, reason });
               return (
                 <div
                   key={`${trigger.text}-${index}`}
@@ -2331,9 +2422,9 @@ function WellbeingTicketDetailsView({ details }: { details?: string | null }) {
                         <span className={`rounded-full px-2.5 py-1 text-[11px] font-bold ring-1 ${parsedTriggerConcernClass(trigger)}`}>
                           {concernLabel}
                         </span>
-                        {trigger.risk && (
+                        {riskScore != null && (
                           <span className={`rounded-full bg-white px-2.5 py-1 text-[11px] font-semibold ring-1 ring-current/20 ${tone.text}`}>
-                            Risk score {trigger.risk}/10
+                            Risk score {riskScore}/10
                           </span>
                         )}
                       </div>
@@ -2347,7 +2438,7 @@ function WellbeingTicketDetailsView({ details }: { details?: string | null }) {
                         </div>
                         <div className="rounded-xl bg-white/85 px-3 py-2 ring-1 ring-white">
                           <div className="text-[9px] font-bold uppercase tracking-[0.12em] text-[#8B7AAF]">Risk score</div>
-                          <div className="mt-1 text-lg font-black text-[#241453]">{trigger.risk || "Not supplied"}</div>
+                          <div className="mt-1 text-lg font-black text-[#241453]">{riskScore != null ? riskScore : "Not supplied"}</div>
                           {riskScore != null && (
                             <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-slate-100">
                               <div className={`h-full rounded-full ${visuals.bar}`} style={{ width: `${scoreWidth(riskScore)}%` }} />
@@ -3581,7 +3672,12 @@ async function exportApprenticeToPDF(learner: TicketableLearnerRow) {
 
   // Score card
   const scoreX = mx + cardW + cardGap;
-  const scoreVal = learner.totalScore != null ? `${learner.totalScore} / 10` : "-";
+  const scoreVal = actualRiskPercentText({
+    totalScore: learner.totalScore,
+    safeguardingScore: learner.safeguardingScore,
+    triggerCount: learner.triggerCount ?? learner.triggeredQuestions?.length,
+    triggerScores: (learner.triggeredQuestions || []).map((item) => item.riskScore ?? item.score ?? item.answer),
+  });
   doc.setFillColor(...C.purpleBg);
   doc.setDrawColor(...C.border);
   doc.roundedRect(scoreX, statsY, cardW, cardH, 3, 3, "FD");
@@ -3838,9 +3934,13 @@ async function exportApprenticeToPDF(learner: TicketableLearnerRow) {
           const parsed = parseWellbeingTriggerLine(item.text);
           const parsedRisk = numericRiskValue(parsed?.risk);
           const answer = item.answer ?? item.score ?? parsed?.answer ?? null;
-          const riskScore = item.riskScore ?? parsedRisk;
-          const concernLabel = concernLabelFromScore(riskScore, item.level || parsed?.level);
           const reason = triggerReasonLabel(item.note || parsed?.reason, item.level || parsed?.level);
+          const riskScore = item.riskScore ?? parsedRisk ?? computedTriggerRiskScore({
+            answer,
+            reason,
+            level: item.level || parsed?.level,
+          });
+          const concernLabel = concernLabelFromScore(riskScore, item.level || parsed?.level);
           const questionText = parsed?.text || item.text;
           const concernText = riskScore != null
             ? `${concernLabel} (${riskScore}/10). ${reason}`
