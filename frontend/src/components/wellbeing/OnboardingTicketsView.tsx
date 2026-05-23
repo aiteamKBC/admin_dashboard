@@ -149,6 +149,23 @@ function riskBadgeClass(level: string): string {
   return "bg-slate-100 text-slate-500 border border-slate-200";
 }
 
+function reportSectionButtonClass(level?: string | null): string {
+  const v = normaliseRisk(String(level || "")).toLowerCase();
+  if (v === "very high") return "border-[#D9AAAA] bg-[#F5E8E8] text-[#8B2020] hover:bg-[#EFDADA]";
+  if (v === "high") return "border-[#EDD5D5] bg-[#FEF0F0] text-[#B85858] hover:bg-[#F9E3E3]";
+  if (v === "moderate" || v === "medium") return "border-[#EDD8A8] bg-[#FEF9EE] text-[#9A7030] hover:bg-[#F7ECCE]";
+  if (v === "low") return "border-[#BDDECE] bg-[#F2FAF6] text-[#3D7A55] hover:bg-[#E2F3EA]";
+  return "border-[#DED5F3] bg-[#F4F0FC] text-[#241453] hover:bg-[#EAE3F8]";
+}
+
+function reportSectionDotClass(level?: string | null): string {
+  const v = normaliseRisk(String(level || "")).toLowerCase();
+  if (v === "very high" || v === "high") return "bg-red-500";
+  if (v === "moderate" || v === "medium") return "bg-amber-500";
+  if (v === "low") return "bg-emerald-500";
+  return "bg-slate-300";
+}
+
 type OnboardingQuickRisk = "all" | "red" | "amber" | "green";
 
 const ONBOARDING_QUICK_RISKS: Array<{
@@ -3196,15 +3213,11 @@ export default function OnboardingTicketsView({ coachEmail }: { coachEmail?: str
                                     type="button"
                                     onClick={() => openSectionDetail(r, s.label)}
                                     disabled={detailLoadingId === r.id}
-                                    className="inline-flex h-7 items-center gap-1 rounded-xl border border-[#DED5F3] bg-[#F4F0FC] px-2.5 text-[11px] font-semibold text-[#241453] transition hover:bg-[#EAE3F8] disabled:cursor-wait disabled:opacity-60"
+                                    className={`inline-flex h-7 items-center gap-1 rounded-xl border px-2.5 text-[11px] font-semibold transition disabled:cursor-wait disabled:opacity-60 ${reportSectionButtonClass(s.badge)}`}
                                     title={`View ${s.label} report`}
                                   >
                                     {s.badge && (
-                                      <span className={`h-1.5 w-1.5 rounded-full ${
-                                        s.badge === "Low" ? "bg-emerald-500" :
-                                        s.badge === "High" || s.badge === "Very High" ? "bg-red-500" :
-                                        "bg-amber-500"
-                                      }`} />
+                                      <span className={`h-1.5 w-1.5 rounded-full ${reportSectionDotClass(s.badge)}`} />
                                     )}
                                     {s.label.split(" ")[0]}
                                   </button>
