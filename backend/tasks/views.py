@@ -662,6 +662,38 @@ def risk_label_from_frontend(value):
     return "Low"
 
 
+MANUAL_URGENCY_OVERRIDE_RE = re.compile(
+    r"<!--\s*kbc_manual_urgency\s*:\s*(low|medium|high|urgent)\s*-->",
+    re.IGNORECASE,
+)
+
+
+def _extract_manual_urgency_override(details):
+    match = MANUAL_URGENCY_OVERRIDE_RE.search(str(details or ""))
+    return match.group(1).lower() if match else None
+
+
+def _strip_manual_urgency_override(details):
+    return MANUAL_URGENCY_OVERRIDE_RE.sub("", str(details or "")).strip()
+
+
+def _details_with_manual_urgency_override(details, urgency):
+    clean_details = _strip_manual_urgency_override(details)
+    clean_urgency = (urgency or "").strip().lower()
+    if clean_urgency not in {"low", "medium", "high", "urgent"}:
+        return clean_details
+    return f"{clean_details}\n<!-- kbc_manual_urgency:{clean_urgency} -->".strip()
+
+
+def _risk_label_from_urgency(urgency):
+    urgency = (urgency or "").strip().lower()
+    if urgency in {"urgent", "high"}:
+        return "High"
+    if urgency in {"medium", "moderate"}:
+        return "Medium"
+    return "Low"
+
+
 def compute_trend(history_json, current_overall_score=None):
     """Returns dict with trend ('up'/'down'/'stable') and delta for overall risk score."""
 
@@ -1130,11 +1162,13 @@ def format_trigger_detail_line(item):
     return f"{item.get('text', '').strip()} {score_text} [{level}]".strip()
 
 
-def build_auto_ticket_details_from_monitoring(learner, triggered_questions):
+def build_auto_ticket_details_from_monitoring(learner, triggered_questions, urgency_override=None):
     trigger_count = len(triggered_questions)
-    context = derive_auto_ticket_context(learner, triggered_questions)
-    urgency = context.get("urgency")
-    risk_label = "High" if urgency in {"urgent", "high"} else "Medium" if urgency in {"medium", "moderate"} else "Low"
+    if urgency_override:
+        risk_label = _risk_label_from_urgency(urgency_override)
+    else:
+        context = derive_auto_ticket_context(learner, triggered_questions)
+        risk_label = _risk_label_from_urgency(context.get("urgency"))
     programme = (getattr(learner, "programme", "") or "").strip() or "-"
     coach = (getattr(learner, "coach_name", "") or "").strip() or "-"
     total_score = _compact_number(getattr(learner, "total_score", None))
@@ -1995,6 +2029,9 @@ def update_support_ticket(request, ticket_id):
     if not ticket:
         return Response({"detail": "Ticket not found"}, status=status.HTTP_404_NOT_FOUND)
 
+    original_details = _strip_manual_urgency_override(getattr(ticket, "details", "") or "")
+    is_auto_ticket = original_details.startswith("Auto-generated ticket from wellbeing survey.")
+
     if request.method == "DELETE":
         if role != "qa":
             return Response({"detail": "Forbidden"}, status=status.HTTP_403_FORBIDDEN)
@@ -2068,7 +2105,7 @@ def update_support_ticket(request, ticket_id):
 
     new_details = request.data.get("details")
     if new_details is not None:
-        ticket.details = new_details.strip()
+        ticket.details = _strip_manual_urgency_override(new_details)
         update_fields.append("details")
         response_data["details"] = ticket.details
 
@@ -2092,6 +2129,12 @@ def update_support_ticket(request, ticket_id):
         ticket.assigned_owner = (request.data.get("assigned_owner") or "").strip()
         update_fields.append("assigned_owner")
         response_data["assigned_owner"] = ticket.assigned_owner
+
+    if new_urgency and is_auto_ticket:
+        ticket.details = _details_with_manual_urgency_override(ticket.details or original_details, new_urgency)
+        if "details" not in update_fields:
+            update_fields.append("details")
+        response_data["details"] = _strip_manual_urgency_override(ticket.details)
 
     if not update_fields:
         return Response({"detail": "No valid fields to update."}, status=status.HTTP_400_BAD_REQUEST)
@@ -2220,9 +2263,10 @@ def support_tickets_list(request):
         row_learner_record = monitoring_by_id.get(getattr(row, "wellbeing_record_id", None))
         if not row_learner_record:
             row_learner_record = monitoring_by_email.get((getattr(row, "email", "") or "").strip().lower())
+        row_details = _strip_manual_urgency_override(getattr(row, "details", "") or "")
         if (
             row_learner_record
-            and (getattr(row, "details", "") or "").strip().startswith("Auto-generated ticket from wellbeing survey.")
+            and row_details.startswith("Auto-generated ticket from wellbeing survey.")
             and getattr(row_learner_record, "submission_json", None)
         ):
             auto_submission_payloads.append(getattr(row_learner_record, "submission_json", None))
@@ -2243,9 +2287,12 @@ def support_tickets_list(request):
         urgency = (getattr(row, "urgency", "") or "").strip().lower()
         ticket_type = (getattr(row, "ticket_type", "") or "").strip()
         subject = (getattr(row, "subject", "") or "").strip()
+        raw_details = getattr(row, "details", "") or ""
+        manual_urgency_override = _extract_manual_urgency_override(raw_details)
+        stored_details = _strip_manual_urgency_override(raw_details)
         is_auto_wellbeing_ticket = (
             learner_record
-            and (getattr(row, "details", "") or "").strip().startswith("Auto-generated ticket from wellbeing survey.")
+            and stored_details.startswith("Auto-generated ticket from wellbeing survey.")
         )
         details_override = None
         if is_auto_wellbeing_ticket:
@@ -2259,10 +2306,14 @@ def support_tickets_list(request):
                 triggered_questions = extract_triggered_questions(getattr(learner_record, "triggered_questions", None))
 
             context = derive_auto_ticket_context(learner_record, triggered_questions)
-            urgency = context["urgency"]
+            urgency = manual_urgency_override or context["urgency"]
             ticket_type = context["ticket_type"]
             subject = "Safeguarding risk review required" if ticket_type == "safeguarding" else "Wellbeing follow-up required"
-            details_override = build_auto_ticket_details_from_monitoring(learner_record, triggered_questions)
+            details_override = build_auto_ticket_details_from_monitoring(
+                learner_record,
+                triggered_questions,
+                urgency_override=manual_urgency_override,
+            )
         status_value = (getattr(row, "status", "") or "").strip().lower()
 
         risk = "green"
@@ -2310,7 +2361,7 @@ def support_tickets_list(request):
             display_created_by = name_part or "-"
             display_source = "Coach" if name_part else "-"
 
-        details = details_override or (getattr(row, "details", "") or "").strip()
+        details = details_override or stored_details
 
         tickets.append({
             "id": row.id,
