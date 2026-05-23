@@ -132,6 +132,7 @@ class LearnerInclusivenessReport(models.Model):
     notes = models.JSONField(null=True, blank=True, default=list)
     evidence = models.JSONField(null=True, blank=True, default=list)
     status = models.TextField(null=True, blank=True, default="active")
+    is_archived = models.BooleanField(null=True, blank=True, default=False)
 
     class Meta:
         managed = False

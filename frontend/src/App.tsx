@@ -1,5 +1,5 @@
 import { Routes, Route, Navigate, useLocation } from "react-router-dom";
-import { useEffect, useState, useContext } from "react";
+import { lazy, Suspense, useEffect, useState, useContext } from "react";
 import { AuthContext } from "./context/AuthContext";
 
 import Sidebar from "./components/sidebar/sidebar";
@@ -8,9 +8,10 @@ import BookingsCalendarPage from "./components/calendar/BookingsCalendarPage";
 import AttendancePage from "./components/attendance/AttendancePage";
 import Login from "./login/Login";
 import RequireRole from "./components/auth/RequireRole";
-import CoachWellbeingPage from "./components/wellbeing/CoachWellbeingPage";
 
 import useMediaQuery from "./helpers/useMediaQuery";
+
+const CoachWellbeingPage = lazy(() => import("./components/wellbeing/CoachWellbeingPage"));
 
 function DashboardPage({ onOpenSidebar }: { onOpenSidebar: () => void }) {
   return <AnalyticsMeetings onOpenSidebar={onOpenSidebar} />;
@@ -118,10 +119,12 @@ export default function App() {
               path="/coach-wellbeing/*"
               element={
                 <RequireRole allow={["qa", "coach"]}>
-                  <CoachWellbeingPage
-                    setMobileOpen={setMobileOpen}
-                    isDesktop={isDesktop}
-                  />
+                  <Suspense fallback={<div className="min-h-screen rounded-3xl bg-white p-6 text-sm text-slate-500">Loading wellbeing...</div>}>
+                    <CoachWellbeingPage
+                      setMobileOpen={setMobileOpen}
+                      isDesktop={isDesktop}
+                    />
+                  </Suspense>
                 </RequireRole>
               }
             />

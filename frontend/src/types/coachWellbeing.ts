@@ -97,6 +97,8 @@ export type CoachWellbeingResponse = {
     greenRisk: number;
     nonResponders: number;
     openTickets: number;
+    surveyResponded?: number;
+    avgWellbeing?: number | null;
   };
   learners: CoachLearnerRow[];
   trends: CoachTrendPoint[];

@@ -1,7 +1,10 @@
 import { fetchWithAuth } from "./fetchWithAuth";
 
-export async function getCoachWellbeing(coachEmail?: string) {
-  const query = coachEmail ? `?coach_email=${encodeURIComponent(coachEmail)}` : "";
+export async function getCoachWellbeing(coachEmail?: string, compact = false) {
+  const params = new URLSearchParams();
+  if (coachEmail) params.set("coach_email", coachEmail);
+  if (compact) params.set("compact", "1");
+  const query = params.toString() ? `?${params.toString()}` : "";
   return await fetchWithAuth(`/coach-wellbeing-dashboard/${query}`);
 }
 
@@ -96,7 +99,7 @@ export async function uploadEvidenceFile(file: File) {
 
 export async function createTicketEvidence(
   ticketId: number,
-  payload: { description: string; file_url?: string; file_name?: string }
+  payload: { description: string; file_url?: string; file_name?: string; mime_type?: string; data_url?: string }
 ) {
   return await fetchWithAuth(`/support-tickets/${ticketId}/evidence/`, {
     method: "POST",
@@ -134,9 +137,16 @@ export async function getBookingAvailability(serviceId: string, date: string): P
   return await fetchWithAuth(`/bookings/availability/?service_id=${encodeURIComponent(serviceId)}&date=${date}`);
 }
 
-export async function getOnboardingReports(coachEmail?: string) {
-  const query = coachEmail ? `?coach_email=${encodeURIComponent(coachEmail)}` : "";
+export async function getOnboardingReports(coachEmail?: string, archived = false) {
+  const params = new URLSearchParams();
+  if (coachEmail) params.set("coach_email", coachEmail);
+  if (archived) params.set("archived", "1");
+  const query = params.toString() ? `?${params.toString()}` : "";
   return await fetchWithAuth(`/onboarding-reports/${query}`);
+}
+
+export async function getOnboardingReportDetail(reportId: string) {
+  return await fetchWithAuth(`/onboarding-reports/${encodeURIComponent(reportId)}/`);
 }
 
 export async function getOnboardingReportNotes(reportId: string) {
@@ -156,7 +166,7 @@ export async function getOnboardingReportEvidence(reportId: string) {
 
 export async function createOnboardingReportEvidence(
   reportId: string,
-  payload: { description: string; file_url?: string; file_name?: string }
+  payload: { description: string; file_url?: string; file_name?: string; mime_type?: string; data_url?: string }
 ) {
   return await fetchWithAuth(`/onboarding-reports/${reportId}/evidence/`, {
     method: "POST",
@@ -169,4 +179,12 @@ export async function updateOnboardingReport(reportId: string, payload: { status
     method: "PATCH",
     body: JSON.stringify(payload),
   });
+}
+
+export async function archiveOnboardingReport(reportId: string) {
+  return await fetchWithAuth(`/onboarding-reports/${reportId}/archive/`, { method: "POST" });
+}
+
+export async function restoreOnboardingReport(reportId: string) {
+  return await fetchWithAuth(`/onboarding-reports/${reportId}/restore/`, { method: "POST" });
 }

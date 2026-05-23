@@ -2,6 +2,10 @@ const API_ORIGIN =
   ((import.meta as any).env?.VITE_API_ORIGIN)?.toString().trim() || "";
 
 const API_BASE = `${API_ORIGIN}/tasks-api`;
+const DEFAULT_REQUEST_TIMEOUT_MS = 30_000;
+const inFlightGetRequests = new Map<string, Promise<any>>();
+const completedGetCache = new Map<string, { expiresAt: number; data: any }>();
+const COMPLETED_GET_CACHE_TTL_MS = 15_000;
 
 // Fix: use API_ORIGIN so refresh works locally (localhost:8000) AND in production (same-origin)
 const REFRESH_URL = API_ORIGIN
@@ -44,7 +48,7 @@ async function doRefresh(): Promise<string> {
   const refresh = getRefresh();
   if (!refresh) throw new Error("Missing refresh token");
 
-  const res = await fetch(REFRESH_URL, {
+  const res = await fetchWithTimeout(REFRESH_URL, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ refresh }),
@@ -106,7 +110,44 @@ function buildHeaders(token: string, init: RequestInit): Headers {
   return h;
 }
 
-export async function fetchWithAuth(input: string, init: RequestInit = {}) {
+async function fetchWithTimeout(url: string, init: RequestInit = {}, timeoutMs = DEFAULT_REQUEST_TIMEOUT_MS) {
+  const controller = new AbortController();
+  const parentSignal = init.signal;
+  let timedOut = false;
+  const timeoutId = window.setTimeout(() => {
+    timedOut = true;
+    controller.abort();
+  }, timeoutMs);
+
+  function abortFromParent() {
+    controller.abort();
+  }
+
+  if (parentSignal) {
+    if (parentSignal.aborted) {
+      controller.abort();
+    } else {
+      parentSignal.addEventListener("abort", abortFromParent, { once: true });
+    }
+  }
+
+  try {
+    return await fetch(url, {
+      ...init,
+      signal: controller.signal,
+    });
+  } catch (err: any) {
+    if (timedOut) {
+      throw new Error(`Request timed out after ${Math.round(timeoutMs / 1000)}s`);
+    }
+    throw err;
+  } finally {
+    window.clearTimeout(timeoutId);
+    parentSignal?.removeEventListener("abort", abortFromParent);
+  }
+}
+
+async function fetchWithAuthInner(input: string, init: RequestInit = {}) {
   let access = getAccess();
 
   // Proactively refresh if token expires within 30 seconds
@@ -119,7 +160,7 @@ export async function fetchWithAuth(input: string, init: RequestInit = {}) {
     }
   }
 
-  let res = await fetch(`${API_BASE}${input}`, {
+  let res = await fetchWithTimeout(`${API_BASE}${input}`, {
     ...init,
     headers: buildHeaders(access, init),
   });
@@ -148,7 +189,7 @@ export async function fetchWithAuth(input: string, init: RequestInit = {}) {
   }
 
   // Retry original request with new token
-  res = await fetch(`${API_BASE}${input}`, {
+  res = await fetchWithTimeout(`${API_BASE}${input}`, {
     ...init,
     headers: buildHeaders(newAccess, init),
   });
@@ -160,4 +201,43 @@ export async function fetchWithAuth(input: string, init: RequestInit = {}) {
 
   if (res.status === 204) return null;
   return res.json();
+}
+
+export async function fetchWithAuth(input: string, init: RequestInit = {}) {
+  const method = String(init.method || "GET").toUpperCase();
+  const canDedupe = method === "GET" && !init.body && !init.signal;
+  const key = canDedupe ? input : "";
+
+  if (canDedupe) {
+    const cached = completedGetCache.get(key);
+    if (cached && Date.now() < cached.expiresAt) {
+      return cached.data;
+    }
+    if (cached) completedGetCache.delete(key);
+
+    const existing = inFlightGetRequests.get(key);
+    if (existing) return existing;
+  } else if (method !== "GET") {
+    completedGetCache.clear();
+  }
+
+  const request = fetchWithAuthInner(input, init).then((data) => {
+    if (canDedupe) {
+      completedGetCache.set(key, {
+        expiresAt: Date.now() + COMPLETED_GET_CACHE_TTL_MS,
+        data,
+      });
+    }
+    return data;
+  });
+  if (canDedupe) {
+    inFlightGetRequests.set(key, request);
+    request.finally(() => {
+      if (inFlightGetRequests.get(key) === request) {
+        inFlightGetRequests.delete(key);
+      }
+    });
+  }
+
+  return request;
 }

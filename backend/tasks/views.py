@@ -12,11 +12,15 @@ from rest_framework_simplejwt.views import TokenObtainPairView
 from .jwt_serializers import EmailOrUsernameTokenObtainPairSerializer
 
 import uuid
+import time
+import base64
+import re
 
 # wellbeing
 from datetime import datetime
 from rest_framework.decorators import api_view, permission_classes
-from django.db.models import Q
+from django.db.models import Case, IntegerField, Q, Value, When
+from django.db.models.expressions import RawSQL
 
 # to read the json 
 import json
@@ -208,6 +212,22 @@ ALLOWED_EVIDENCE_TYPES = {
     "application/vnd.openxmlformats-officedocument.presentationml.presentation",
     "text/plain", "text/csv",
 }
+DB_PREVIEW_MAX_BYTES = 8 * 1024 * 1024
+DB_PREVIEW_TYPES = {
+    "image/jpeg", "image/png", "image/gif", "image/webp",
+    "application/pdf",
+    "text/plain", "text/csv",
+}
+
+def build_evidence_data_url(file_path, content_type, file_size):
+    if content_type not in DB_PREVIEW_TYPES or not file_path or file_size > DB_PREVIEW_MAX_BYTES:
+        return ""
+    try:
+        with open(file_path, "rb") as fh:
+            encoded = base64.b64encode(fh.read()).decode("ascii")
+        return f"data:{content_type};base64,{encoded}"
+    except Exception:
+        return ""
 
 class EvidenceUploadView(APIView):
     """
@@ -263,9 +283,21 @@ class EvidenceUploadView(APIView):
 
             url = fs.url(saved_path)  # "/media/evidence/..."
             absolute_url = request.build_absolute_uri(url)
+            saved_full_path = os.path.join(str(settings.MEDIA_ROOT), saved_path)
+            file_size = getattr(f, "size", 0) or 0
+            data_url = build_evidence_data_url(saved_full_path, content_type, file_size)
 
             return Response(
-                {"url": url, "absolute_url": absolute_url, "path": saved_path},
+                {
+                    "url": url,
+                    "absolute_url": absolute_url,
+                    "path": saved_path,
+                    "file_name": original,
+                    "mime_type": content_type,
+                    "size": file_size,
+                    "data_url": data_url,
+                    "stored_in_db": bool(data_url),
+                },
                 status=status.HTTP_201_CREATED
             )
 
@@ -321,14 +353,19 @@ class TicketFileUploadView(APIView):
             saved_path = fs.save(relative_path, f)
             file_url = fs.url(saved_path)
             file_size = f.size if hasattr(f, "size") else 0
+            saved_full_path = os.path.join(str(settings.MEDIA_ROOT), saved_path)
+            data_url = build_evidence_data_url(saved_full_path, content_type, file_size)
 
             evidence_entry = {
                 "id": uuid.uuid4().hex,
                 "url": file_url,
+                "file_url": file_url,
                 "filename": stored_name,
+                "file_name": original_name,
                 "original_name": original_name,
                 "mime_type": content_type,
                 "size": file_size,
+                "data_url": data_url,
                 "uploaded_by": "learner",
                 "created_at": timezone.now().isoformat(),
             }
@@ -338,6 +375,7 @@ class TicketFileUploadView(APIView):
             ticket.evidence = evidence_list
             ticket.updated_at = timezone.now()
             ticket.save(update_fields=["evidence", "updated_at"])
+            _clear_wellbeing_runtime_caches()
 
             return Response(evidence_entry, status=status.HTTP_201_CREATED)
 
@@ -451,12 +489,20 @@ def _title_from_local_part(value: str) -> str:
 @api_view(["GET"])
 @permission_classes([IsAuthenticated])
 def coach_options(request):
-    rows = (
-        WellbeingSafeguardingMonitoringSystem.objects.using("wellbeing")
-        .all()
-        .values("coach_name", "coach_email")
-        .order_by("coach_email")
-    )
+    now = time.monotonic()
+    cached = _COACH_OPTIONS_CACHE.get("data")
+    if cached is not None and now < float(_COACH_OPTIONS_CACHE.get("expires_at") or 0):
+        return Response(cached)
+
+    from django.contrib.auth import get_user_model
+    User = get_user_model()
+    rows = [
+        {
+            "coach_name": f"{user.first_name or ''} {user.last_name or ''}".strip() or user.username,
+            "coach_email": (user.email or "").strip().lower(),
+        }
+        for user in User.objects.filter(profile__role="coach").only("email", "username", "first_name", "last_name")
+    ]
 
     cleaned_rows = []
     seen_emails = set()
@@ -493,6 +539,10 @@ def coach_options(request):
             "value": email,
             "label": label,
         })
+
+    data.sort(key=lambda item: (item.get("label") or item.get("value") or "").lower())
+    _COACH_OPTIONS_CACHE["data"] = data
+    _COACH_OPTIONS_CACHE["expires_at"] = time.monotonic() + 300
 
     return Response(data)
 
@@ -831,9 +881,33 @@ def _risk_score_from_answer(answer, question):
     return raw_score
 
 
+_ACTIVE_QUESTION_MAP_CACHE = {"expires_at": 0.0, "value": None}
+_ONBOARDING_REPORTS_LIST_CACHE = {}
+_DASHBOARD_COMPACT_CACHE = {}
+_SUPPORT_TICKETS_LIST_CACHE = {}
+_COACH_OPTIONS_CACHE = {"expires_at": 0.0, "data": None}
+
+
 def _active_question_map():
+    now = time.monotonic()
+    cached = _ACTIVE_QUESTION_MAP_CACHE.get("value")
+    if cached is not None and now < float(_ACTIVE_QUESTION_MAP_CACHE.get("expires_at") or 0):
+        return cached
+
     questions = SafeguardingQuestion.objects.using("wellbeing").exclude(is_active=False)
-    return {int(q.id): q for q in questions}
+    value = {int(q.id): q for q in questions}
+    _ACTIVE_QUESTION_MAP_CACHE["value"] = value
+    _ACTIVE_QUESTION_MAP_CACHE["expires_at"] = now + 300
+    return value
+
+
+def _clear_onboarding_reports_cache():
+    _ONBOARDING_REPORTS_LIST_CACHE.clear()
+
+
+def _clear_wellbeing_runtime_caches():
+    _DASHBOARD_COMPACT_CACHE.clear()
+    _SUPPORT_TICKETS_LIST_CACHE.clear()
 
 
 def compute_true_triggered_questions_from_submission(submission_json, question_map=None):
@@ -1209,6 +1283,7 @@ def create_support_ticket(request):
         created_by=created_by_encoded,
         days_to_close=days_to_close,
     )
+    _clear_wellbeing_runtime_caches()
 
     return Response(
         {
@@ -1227,6 +1302,7 @@ def coach_wellbeing_dashboard(request):
     user = request.user
     profile = getattr(user, "profile", None)
     role = (getattr(profile, "role", "") or "").strip().lower()
+    compact = (request.query_params.get("compact") or "").strip().lower() in {"1", "true", "yes"}
 
     if role == "coach":
         requested_coach_email = (getattr(user, "email", "") or "").strip().lower()
@@ -1239,7 +1315,14 @@ def coach_wellbeing_dashboard(request):
     else:
         return Response({"detail": "Forbidden"}, status=status.HTTP_403_FORBIDDEN)
 
-    monitoring_qs = WellbeingSafeguardingMonitoringSystem.objects.using("wellbeing").only(
+    if compact:
+        cache_key = ("dashboard_compact_learners_v4", role, requested_coach_email)
+        cached = _DASHBOARD_COMPACT_CACHE.get(cache_key)
+        now = time.monotonic()
+        if cached and now < cached.get("expires_at", 0):
+            return Response(cached["data"])
+
+    monitoring_fields = [
         "id",
         "learner_name",
         "learner_email",
@@ -1247,27 +1330,198 @@ def coach_wellbeing_dashboard(request):
         "coach_email",
         "programme",
         "risk_level",
-        "history_json",
         "total_score",
         "emotional_stress_resilience_score",
         "personal_wellbeing_protective_factors_score",
         "provider_culture_support_score",
         "safeguarding_vulnerability_score",
-        "submission_json",
-        "triggered_questions",
         "trigger_count",
-    )
+    ]
+    if compact:
+        monitoring_fields.append("history_json")
+    else:
+        monitoring_fields.extend(["history_json", "submission_json", "triggered_questions"])
+
+    monitoring_qs = WellbeingSafeguardingMonitoringSystem.objects.using("wellbeing").only(*monitoring_fields)
 
     if requested_coach_email:
         monitoring_qs = monitoring_qs.filter(coach_email__iexact=requested_coach_email)
 
-    monitoring_rows = list(monitoring_qs.order_by("learner_name", "id"))
-    monitoring_ids = [row.id for row in monitoring_rows]
-    monitoring_emails = [
-        (getattr(row, "learner_email", "") or "").strip()
+    if compact:
+        monitoring_rows = list(monitoring_qs.order_by("learner_name", "id").values(*monitoring_fields))
+    else:
+        monitoring_rows = list(monitoring_qs)
+    monitoring_rows.sort(key=lambda row: (
+        ((row.get("learner_name") if isinstance(row, dict) else getattr(row, "learner_name", "")) or "").strip().lower(),
+        (row.get("id") if isinstance(row, dict) else getattr(row, "id", 0)) or 0,
+    ))
+    monitoring_ids = [
+        row.get("id") if isinstance(row, dict) else row.id
         for row in monitoring_rows
-        if (getattr(row, "learner_email", "") or "").strip()
     ]
+    monitoring_emails = [
+        ((row.get("learner_email") if isinstance(row, dict) else getattr(row, "learner_email", "")) or "").strip()
+        for row in monitoring_rows
+        if ((row.get("learner_email") if isinstance(row, dict) else getattr(row, "learner_email", "")) or "").strip()
+    ]
+
+    ticket_qs = SupportTicket.objects.using("wellbeing").filter(is_archived__in=[False, None])
+    ticket_filter = Q()
+    if monitoring_ids:
+        ticket_filter |= Q(wellbeing_record_id__in=monitoring_ids)
+    monitoring_email_values = _email_lookup_values(monitoring_emails)
+    if monitoring_email_values:
+        ticket_filter |= Q(email__in=monitoring_email_values)
+    ticket_qs = ticket_qs.filter(ticket_filter) if ticket_filter else ticket_qs.none()
+
+    open_ticket_rows = list(ticket_qs.values("wellbeing_record_id", "email", "status"))
+
+    open_ticket_counts = Counter()
+    closed_ticket_counts = Counter()
+
+    for ticket in open_ticket_rows:
+        record_id = str(ticket.get("wellbeing_record_id") or "").strip()
+        email_key = (ticket.get("email") or "").strip().lower()
+        target_counts = open_ticket_counts if is_active_ticket_status(ticket.get("status")) else closed_ticket_counts
+        if record_id:
+            target_counts[record_id] += 1
+            continue
+
+        if email_key:
+            target_counts[email_key] += 1
+
+    if compact:
+        learners = []
+        caseload = 0
+        at_risk = 0
+        green_risk = 0
+        non_responders = 0
+        open_tickets_total = 0
+        survey_responded = 0
+        wellbeing_score_total = 0
+        wellbeing_score_count = 0
+
+        for student_meta in monitoring_rows:
+            student_id = student_meta.get("id")
+            student_unique_key = str(student_id or "").strip()
+            if not student_unique_key:
+                continue
+
+            row_student_name = (student_meta.get("learner_name") or "").strip() or "Unknown learner"
+            row_student_email = (student_meta.get("learner_email") or "").strip()
+            row_coach_name = (student_meta.get("coach_name") or "").strip()
+            row_coach_email = (student_meta.get("coach_email") or "").strip().lower()
+            row_programme = (student_meta.get("programme") or "").strip()
+
+            row_open_tickets = open_ticket_counts.get(student_unique_key, 0)
+            row_closed_tickets = closed_ticket_counts.get(student_unique_key, 0)
+            if row_student_email:
+                email_key = row_student_email.strip().lower()
+                row_open_tickets += open_ticket_counts.get(email_key, 0)
+                row_closed_tickets += closed_ticket_counts.get(email_key, 0)
+
+            open_tickets_total += row_open_tickets
+
+            wellbeing_score = student_meta.get("emotional_stress_resilience_score")
+            engagement_score = student_meta.get("personal_wellbeing_protective_factors_score")
+            provider_support_score = student_meta.get("provider_culture_support_score")
+            safeguarding_score = student_meta.get("safeguarding_vulnerability_score")
+            total_score = student_meta.get("total_score")
+            trigger_count = student_meta.get("trigger_count") or 0
+            last_monitoring_survey_date = latest_history_date(student_meta.get("history_json"))
+
+            if wellbeing_score is not None:
+                try:
+                    score_value = float(wellbeing_score)
+                    if score_value > 0:
+                        wellbeing_score_total += score_value
+                        wellbeing_score_count += 1
+                except (TypeError, ValueError):
+                    pass
+
+            has_score_data = any(
+                value is not None
+                for value in [
+                    total_score,
+                    wellbeing_score,
+                    engagement_score,
+                    provider_support_score,
+                    safeguarding_score,
+                ]
+            ) or trigger_count > 0
+            stored_risk = map_db_risk_level(student_meta.get("risk_level"))
+            db_risk = derive_frontend_risk_level(total_score, safeguarding_score, trigger_count) if has_score_data else stored_risk
+            has_monitoring_data = has_score_data or db_risk is not None or last_monitoring_survey_date is not None
+
+            caseload += 1
+            if db_risk == "red":
+                at_risk += 1
+            elif db_risk == "green":
+                green_risk += 1
+
+            if last_monitoring_survey_date or has_monitoring_data:
+                survey_responded += 1
+            else:
+                non_responders += 1
+
+            learners.append({
+                "studentId": int(student_id),
+                "studentName": row_student_name,
+                "studentEmail": row_student_email,
+                "coachName": row_coach_name,
+                "coachEmail": row_coach_email,
+                "programme": row_programme,
+                "lastSurveyDate": last_monitoring_survey_date,
+                "wellbeingScore": wellbeing_score,
+                "engagementScore": engagement_score,
+                "providerSupportScore": provider_support_score,
+                "totalScore": total_score,
+                "safeguardingScore": safeguarding_score,
+                "riskLevel": db_risk or "green",
+                "trend": None,
+                "trendDelta": None,
+                "recommendedAction": (
+                    "Immediate safeguarding review required" if db_risk == "red"
+                    else "Wellbeing follow-up recommended" if db_risk == "amber"
+                    else "Routine monitoring" if has_monitoring_data
+                    else "No wellbeing data yet"
+                ),
+                "hasOpenTicket": row_open_tickets > 0,
+                "openTicketCount": row_open_tickets,
+                "closedTicketCount": row_closed_tickets,
+                "totalTicketCount": row_open_tickets + row_closed_tickets,
+                "nonResponder": not has_monitoring_data,
+                "followUpReason": "",
+                "safeguardingFlag": False,
+                "flaggedDomains": [],
+                "hasWellbeingData": has_monitoring_data,
+                "countedInSummary": has_monitoring_data,
+                "triggerCount": trigger_count,
+                "triggeredQuestions": [],
+                "surveyResponses": [],
+                "apprenticeDashboard": {},
+            })
+
+        data = {
+            "summary": {
+                "caseload": caseload,
+                "atRisk": at_risk,
+                "greenRisk": green_risk,
+                "nonResponders": non_responders,
+                "openTickets": open_tickets_total,
+                "surveyResponded": survey_responded,
+                "avgWellbeing": round(wellbeing_score_total / wellbeing_score_count, 1) if wellbeing_score_count else None,
+            },
+            "learners": learners,
+            "trends": [],
+            "followUps": [],
+            "suggestedActions": [],
+        }
+        _DASHBOARD_COMPACT_CACHE[("dashboard_compact_learners_v4", role, requested_coach_email)] = {
+            "expires_at": time.monotonic() + 60,
+            "data": data,
+        }
+        return Response(data)
 
     automation_qs = SafeguardingWellbeingAutomation.objects.using("wellbeing").only(
         "wellbeing_record_id",
@@ -1284,32 +1538,6 @@ def coach_wellbeing_dashboard(request):
     automation_rows = list(automation_qs.order_by("-updated_at", "-wellbeing_record_id"))
 
     latest_automation_by_learner_id = {}
-
-    ticket_qs = SupportTicket.objects.using("wellbeing").all()
-    ticket_filter = Q()
-    if monitoring_ids:
-        ticket_filter |= Q(wellbeing_record_id__in=monitoring_ids)
-    monitoring_email_values = _email_lookup_values(monitoring_emails)
-    if monitoring_email_values:
-        ticket_filter |= Q(email__in=monitoring_email_values)
-    ticket_qs = ticket_qs.filter(ticket_filter) if ticket_filter else ticket_qs.none()
-
-    open_ticket_rows = list(ticket_qs.values("wellbeing_record_id", "email", "status"))
-
-    open_ticket_counts = Counter()
-
-    for ticket in open_ticket_rows:
-        if not is_active_ticket_status(ticket.get("status")):
-            continue
-
-        record_id = str(ticket.get("wellbeing_record_id") or "").strip()
-        if record_id:
-            open_ticket_counts[record_id] += 1
-            continue
-
-        email_key = (ticket.get("email") or "").strip().lower()
-        if email_key:
-            open_ticket_counts[email_key] += 1
 
     for row in automation_rows:
         follow = parse_json_field(row.follow_up_by_coach, {})
@@ -1332,7 +1560,7 @@ def coach_wellbeing_dashboard(request):
             "apprentice": apprentice,
         }
 
-    question_map = _active_question_map()
+    question_map = {} if compact else _active_question_map()
 
     learners = []
     follow_ups = []
@@ -1343,6 +1571,9 @@ def coach_wellbeing_dashboard(request):
     green_risk = 0
     non_responders = 0
     open_tickets_total = 0
+    survey_responded = 0
+    wellbeing_score_total = 0
+    wellbeing_score_count = 0
 
     trend_buckets = {}
 
@@ -1380,17 +1611,31 @@ def coach_wellbeing_dashboard(request):
         provider_support_score = getattr(student_meta, "provider_culture_support_score", None)
         safeguarding_score = getattr(student_meta, "safeguarding_vulnerability_score", None)
         total_score = getattr(student_meta, "total_score", None)
-        submission_json_raw = getattr(student_meta, "submission_json", None)
-        survey_responses = extract_survey_responses_for_report(submission_json_raw, question_map)
-        triggered_questions = compute_true_triggered_questions_from_submission(
-            submission_json_raw,
-            question_map,
-        )
-        if submission_json_raw:
-            trigger_count = len(triggered_questions)
+        if wellbeing_score is not None:
+            try:
+                score_value = float(wellbeing_score)
+                if score_value > 0:
+                    wellbeing_score_total += score_value
+                    wellbeing_score_count += 1
+            except (TypeError, ValueError):
+                pass
+        if compact:
+            submission_json_raw = None
+            survey_responses = []
+            triggered_questions = []
+            trigger_count = getattr(student_meta, "trigger_count", None) or 0
         else:
-            triggered_questions = extract_triggered_questions(getattr(student_meta, "triggered_questions", None))
-            trigger_count = getattr(student_meta, "trigger_count", None) or len(triggered_questions)
+            submission_json_raw = getattr(student_meta, "submission_json", None)
+            survey_responses = extract_survey_responses_for_report(submission_json_raw, question_map)
+            triggered_questions = compute_true_triggered_questions_from_submission(
+                submission_json_raw,
+                question_map,
+            )
+            if submission_json_raw:
+                trigger_count = len(triggered_questions)
+            else:
+                triggered_questions = extract_triggered_questions(getattr(student_meta, "triggered_questions", None))
+                trigger_count = getattr(student_meta, "trigger_count", None) or len(triggered_questions)
         has_score_data = any(
             value is not None
             for value in [
@@ -1414,6 +1659,8 @@ def coach_wellbeing_dashboard(request):
         if not matched:
             if last_monitoring_survey_date is None:
                 non_responders += 1
+            else:
+                survey_responded += 1
 
             learners.append({
                 "studentId": int(student_meta.id),
@@ -1510,6 +1757,8 @@ def coach_wellbeing_dashboard(request):
 
         if last_survey_date is None:
             non_responders += 1
+        else:
+            survey_responded += 1
 
         learners.append({
             "studentId": int(student_meta.id),
@@ -1539,7 +1788,7 @@ def coach_wellbeing_dashboard(request):
             "triggerCount": trigger_count,
             "triggeredQuestions": triggered_questions,
             "surveyResponses": survey_responses,
-            "apprenticeDashboard": apprentice or {},
+            "apprenticeDashboard": {} if compact else (apprentice or {}),
         })
 
         followup_key = f"{student_unique_key}|{summary.get('cardTitle') or ''}|{summary.get('followUpReason') or ''}"
@@ -1674,19 +1923,27 @@ def coach_wellbeing_dashboard(request):
             "green": item["green_count"],
         })
 
-    return Response({
+    data = {
         "summary": {
             "caseload": caseload,
             "atRisk": at_risk,
             "greenRisk": green_risk,
             "nonResponders": non_responders,
             "openTickets": open_tickets_total,
+            "surveyResponded": survey_responded,
+            "avgWellbeing": round(wellbeing_score_total / wellbeing_score_count, 1) if wellbeing_score_count else None,
         },
         "learners": learners,
         "trends": trends,
         "followUps": follow_ups[:20],
         "suggestedActions": suggested_actions[:20],
-    })
+    }
+    if compact:
+        _DASHBOARD_COMPACT_CACHE[("dashboard_compact_learners_v2", role, requested_coach_email)] = {
+            "expires_at": time.monotonic() + 60,
+            "data": data,
+        }
+    return Response(data)
 
 @api_view(["PATCH", "DELETE"])
 @permission_classes([IsAuthenticated])
@@ -1711,6 +1968,7 @@ def update_support_ticket(request, ticket_id):
             WellbeingSafeguardingMonitoringSystem.objects.using("wellbeing").filter(
                 id=wellbeing_record_id
             ).delete()
+        _clear_wellbeing_runtime_caches()
         return Response({"detail": "Ticket deleted"}, status=status.HTTP_204_NO_CONTENT)
 
     if role == "coach":
@@ -1805,6 +2063,7 @@ def update_support_ticket(request, ticket_id):
     ticket.updated_at = timezone.now()
     update_fields.append("updated_at")
     ticket.save(update_fields=update_fields)
+    _clear_wellbeing_runtime_caches()
 
     return Response(response_data)
 
@@ -1819,6 +2078,16 @@ def support_tickets_list(request):
 
     if role not in ["qa", "coach"]:
         return Response({"detail": "Forbidden"}, status=status.HTTP_403_FORBIDDEN)
+
+    coach_email_filter = (request.query_params.get("coach_email") or "").strip().lower()
+    cache_key = (
+        role,
+        (getattr(user, "email", "") or "").strip().lower() if role == "coach" else coach_email_filter,
+    )
+    cached = _SUPPORT_TICKETS_LIST_CACHE.get(cache_key)
+    now = time.monotonic()
+    if cached and now < cached.get("expires_at", 0):
+        return Response(cached["data"])
 
     qs = SupportTicket.objects.using("wellbeing").filter(
         is_archived__in=[False, None]
@@ -1846,7 +2115,6 @@ def support_tickets_list(request):
             qs = qs.filter(ticket_filter) if ticket_filter else qs.none()
     else:
         # QA sees all tickets (admin-level). Optional filter by coach_email from query params.
-        coach_email_filter = (request.query_params.get("coach_email") or "").strip().lower()
         if coach_email_filter:
             learner_qs = WellbeingSafeguardingMonitoringSystem.objects.using("wellbeing").filter(
                 coach_email__iexact=coach_email_filter
@@ -1866,6 +2134,7 @@ def support_tickets_list(request):
             qs = qs.filter(ticket_filter) if ticket_filter else qs.none()
 
     rows = list(qs)
+    rows_by_id = {row.id: row for row in rows}
     ticket_record_ids = [
         row.wellbeing_record_id
         for row in rows
@@ -1885,43 +2154,39 @@ def support_tickets_list(request):
     monitoring_records = (
         list(
             WellbeingSafeguardingMonitoringSystem.objects.using("wellbeing")
+            .only(
+                "id",
+                "learner_name",
+                "learner_email",
+                "programme",
+                "coach_name",
+                "total_score",
+                "safeguarding_vulnerability_score",
+                "trigger_count",
+            )
             .filter(monitoring_filter)
-            .order_by("-id")
         )
         if monitoring_filter
         else []
     )
+    monitoring_records.sort(key=lambda item: getattr(item, "id", 0) or 0, reverse=True)
     monitoring_by_id = {item.id: item for item in monitoring_records}
     monitoring_by_email = {}
     for item in monitoring_records:
         email = (getattr(item, "learner_email", "") or "").strip().lower()
         if email and email not in monitoring_by_email:
             monitoring_by_email[email] = item
-    question_map = _active_question_map() if monitoring_records else {}
-
     tickets = []
     total = 0
     open_count = 0
     red_risk = 0
     escalated = 0
     closed = 0
-    computed_triggers_by_record_id = {}
 
     for row in rows:
         learner_record = monitoring_by_id.get(getattr(row, "wellbeing_record_id", None))
         if not learner_record:
             learner_record = monitoring_by_email.get((getattr(row, "email", "") or "").strip().lower())
-        computed_triggered_questions = []
-        if learner_record:
-            learner_cache_key = getattr(learner_record, "id", None)
-            if learner_cache_key in computed_triggers_by_record_id:
-                computed_triggered_questions = computed_triggers_by_record_id[learner_cache_key]
-            else:
-                computed_triggered_questions = compute_true_triggered_questions_from_submission(
-                    getattr(learner_record, "submission_json", None),
-                    question_map,
-                )
-                computed_triggers_by_record_id[learner_cache_key] = computed_triggered_questions
 
         urgency = (getattr(row, "urgency", "") or "").strip().lower()
         ticket_type = (getattr(row, "ticket_type", "") or "").strip()
@@ -1931,10 +2196,12 @@ def support_tickets_list(request):
             and (getattr(row, "details", "") or "").strip().startswith("Auto-generated ticket from wellbeing survey.")
         )
         if is_auto_wellbeing_ticket:
-            ticket_context = derive_auto_ticket_context(learner_record, computed_triggered_questions)
-            urgency = ticket_context["urgency"]
-            ticket_type = ticket_context["ticket_type"]
-            subject = ticket_context["subject"]
+            trigger_count = int(getattr(learner_record, "trigger_count", None) or 0)
+            total_score = getattr(learner_record, "total_score", None)
+            safeguarding_score = getattr(learner_record, "safeguarding_vulnerability_score", None)
+            urgency = derive_ticket_urgency(total_score, safeguarding_score, trigger_count)
+            ticket_type = "safeguarding" if trigger_count >= 5 or (_number_or_none(safeguarding_score) or 0) >= 8 else "wellbeing"
+            subject = "Safeguarding risk review required" if ticket_type == "safeguarding" else "Wellbeing follow-up required"
         status_value = (getattr(row, "status", "") or "").strip().lower()
 
         risk = "green"
@@ -1983,11 +2250,6 @@ def support_tickets_list(request):
             display_source = "Coach" if name_part else "-"
 
         details = (getattr(row, "details", "") or "").strip()
-        if is_auto_wellbeing_ticket and details.startswith("Auto-generated ticket from wellbeing survey."):
-            details = build_auto_ticket_details_from_monitoring(
-                learner_record,
-                computed_triggered_questions,
-            )
 
         tickets.append({
             "id": row.id,
@@ -2008,8 +2270,10 @@ def support_tickets_list(request):
             "details": details,
             "urgency": urgency or "medium",
             "preferredContact": (getattr(row, "preferred_contact", "") or "").strip(),
-            "notes": _ensure_list(getattr(row, "notes", None)),
-            "evidence": _ensure_list(getattr(row, "evidence", None)),
+            "notes": [],
+            "evidence": [],
+            "notesCount": len(_ensure_list(getattr(row, "notes", None))),
+            "evidenceCount": len(_ensure_list(getattr(row, "evidence", None))),
             "assignedOwner": (getattr(row, "assigned_owner", "") or "").strip(),
         })
 
@@ -2062,7 +2326,7 @@ def support_tickets_list(request):
         if dtc is not None and dtc >= 0:
             close_val = dtc
         else:
-            raw_row = rows[tickets.index(item)] if item in tickets else None
+            raw_row = rows_by_id.get(item.get("id"))
             updated_at_raw = getattr(raw_row, "updated_at", None) if raw_row else None
             if updated_at_raw:
                 try:
@@ -2098,7 +2362,7 @@ def support_tickets_list(request):
     avg_close_cur  = _avg_bucket(close_buckets, cur_year,        cur_month)
     avg_close_last = _avg_bucket(close_buckets, last_month_year, last_month)
 
-    return Response({
+    data = {
         "summary": {
             "total":         total,
             "open":          open_count,
@@ -2109,7 +2373,12 @@ def support_tickets_list(request):
             "avgCloseDelta": _delta(avg_close_cur, avg_close_last),
         },
         "tickets": tickets,
-    })
+    }
+    _SUPPORT_TICKETS_LIST_CACHE[cache_key] = {
+        "expires_at": time.monotonic() + 30,
+        "data": data,
+    }
+    return Response(data)
 
 
 def _check_ticket_access(request, ticket_id):
@@ -2145,6 +2414,7 @@ def archive_ticket(request, ticket_id):
         return err
     ticket.is_archived = True
     ticket.save(using="wellbeing", update_fields=["is_archived"])
+    _clear_wellbeing_runtime_caches()
     return Response({"detail": "Ticket archived"})
 
 
@@ -2156,6 +2426,7 @@ def restore_ticket(request, ticket_id):
         return err
     ticket.is_archived = False
     ticket.save(using="wellbeing", update_fields=["is_archived"])
+    _clear_wellbeing_runtime_caches()
     return Response({"detail": "Ticket restored"})
 
 
@@ -2284,6 +2555,7 @@ def ticket_notes(request, ticket_id):
     ticket.notes = notes
     ticket.updated_at = timezone.now()
     ticket.save(update_fields=["notes", "updated_at"])
+    _clear_wellbeing_runtime_caches()
 
     return Response(new_note, status=status.HTTP_201_CREATED)
 
@@ -2303,12 +2575,17 @@ def ticket_evidence(request, ticket_id):
     description = (request.data.get("description") or "").strip()
     file_url = (request.data.get("file_url") or "").strip()
     file_name = (request.data.get("file_name") or "").strip()
+    mime_type = (request.data.get("mime_type") or "").strip()
+    data_url = (request.data.get("data_url") or "").strip()
 
     new_ev = {
         "id": uuid.uuid4().hex,
         "description": description,
         "file_url": file_url,
+        "url": file_url,
         "file_name": file_name,
+        "mime_type": mime_type,
+        "data_url": data_url,
         "created_by": (getattr(request.user, "email", "") or "").strip(),
         "created_at": timezone.now().isoformat(),
     }
@@ -2316,6 +2593,7 @@ def ticket_evidence(request, ticket_id):
     ticket.evidence = evidence
     ticket.updated_at = timezone.now()
     ticket.save(update_fields=["evidence", "updated_at"])
+    _clear_wellbeing_runtime_caches()
 
     return Response(new_ev, status=status.HTTP_201_CREATED)
 
@@ -2411,6 +2689,8 @@ def _onboarding_section_metrics(section):
         data.get("overallScore"),
         data.get("overall_score"),
         raw_ai.get("total"),
+        raw_ai.get("totalScore"),
+        raw_ai.get("total_score"),
         raw_ai.get("score"),
         raw_ai.get("overallScore"),
         raw_ai.get("overall_score"),
@@ -2529,6 +2809,206 @@ def _derive_onboarding_overview(overview, section_progress):
     }
 
 
+def _extract_onboarding_overview_fast(master_report):
+    if not master_report:
+        return {}
+    if isinstance(master_report, dict):
+        overview = master_report.get("overview")
+        return overview if isinstance(overview, dict) else {}
+
+    text = str(master_report)
+    match = re.search(r'"overview"\s*:\s*\{(?P<body>.*?)\}\s*,\s*"', text, flags=re.S)
+    if not match:
+        match = re.search(r'"overview"\s*:\s*\{(?P<body>.*?)\}', text, flags=re.S)
+    if not match:
+        return {}
+    body = match.group("body")
+
+    def number_value(name):
+        item = re.search(rf'"{re.escape(name)}"\s*:\s*(-?\d+(?:\.\d+)?)', body)
+        if not item:
+            return None
+        return _compact_number(item.group(1))
+
+    def string_value(name):
+        item = re.search(rf'"{re.escape(name)}"\s*:\s*"([^"]*)"', body)
+        return item.group(1) if item else None
+
+    return {
+        "overallRiskLevel": string_value("overallRiskLevel") or string_value("riskLevel"),
+        "overallScore": number_value("overallScore"),
+        "overallMaxScore": number_value("overallMaxScore"),
+        "rawPercentage": number_value("rawPercentage"),
+        "adjustedPercentage": number_value("adjustedPercentage"),
+        "percentage": number_value("percentage"),
+    }
+
+
+ONBOARDING_SECTION_COLS = [
+    ("technology_report", "Technology"),
+    ("visual_hearing_report", "Visual & Hearing"),
+    ("dyslexia_report", "Dyslexia"),
+    ("adhd_report", "ADHD"),
+    ("social_anxiety_report", "Social Anxiety"),
+    ("mood_learning_capacity_report", "Mood & Learning"),
+]
+
+
+def _serialize_onboarding_report(r, include_detail=False):
+    master = _parse_json_field(r.master_report)
+    overview = master.get("overview", {}) if isinstance(master, dict) else {}
+    if not isinstance(overview, dict):
+        overview = {}
+
+    section_progress = []
+    response_section_progress = []
+    completed_count = 0
+    for col, label in ONBOARDING_SECTION_COLS:
+        raw = getattr(r, col, None)
+        if raw:
+            completed_count += 1
+            parsed = _parse_json_field(raw)
+            ui = parsed.get("ui", {}) if isinstance(parsed, dict) else {}
+            badge = ui.get("badge", "") if isinstance(ui, dict) else ""
+            summary_text = ui.get("summary", "") or ui.get("shortSummary", "") if isinstance(ui, dict) else ""
+            full_item = {
+                "label": label,
+                "badge": badge,
+                "summary": summary_text,
+                "done": True,
+                "data": parsed,
+            }
+            section_progress.append(full_item)
+            response_section_progress.append({
+                **full_item,
+                "data": parsed if include_detail else None,
+            })
+        else:
+            empty_item = {
+                "label": label,
+                "badge": None,
+                "summary": None,
+                "done": False,
+                "data": None,
+            }
+            section_progress.append(empty_item)
+            response_section_progress.append(empty_item)
+
+    derived_overview = _derive_onboarding_overview(overview, section_progress)
+
+    return {
+        "id": r.id,
+        "learner_id": r.learner_id,
+        "learner_name": r.learner_name or "",
+        "learner_email": r.learner_email or "",
+        "academic_email": r.academic_email or "",
+        "programme": r.programme or "",
+        "organization_name": r.organization_name or "",
+        "coach_name": r.coach_name or "",
+        "coach_email": r.coach_email or "",
+        "manager_name": r.manager_name or "",
+        "manager_email": r.manager_email or "",
+        "overall_risk_level": derived_overview.get("overallRiskLevel") or "",
+        "overall_score": derived_overview.get("overallScore"),
+        "overall_max_score": derived_overview.get("overallMaxScore"),
+        "percentage": derived_overview.get("percentage"),
+        "completed_reports": completed_count,
+        "expected_reports": len(ONBOARDING_SECTION_COLS),
+        "section_progress": response_section_progress,
+        "master_report": master if include_detail else {},
+        "status": r.status or "active",
+        "notes_count": len(r.notes) if isinstance(r.notes, list) else 0,
+        "evidence_count": len(r.evidence) if isinstance(r.evidence, list) else 0,
+        "created_at": r.created_at.isoformat() if r.created_at else None,
+        "updated_at": r.updated_at.isoformat() if r.updated_at else None,
+    }
+
+
+def _serialize_onboarding_report_summary(r):
+    is_dict = isinstance(r, dict)
+    get_value = r.get if is_dict else lambda key, default=None: getattr(r, key, default)
+    overview = _extract_onboarding_overview_fast(get_value("master_report"))
+
+    section_progress = []
+    metric_section_progress = []
+    completed_count = 0
+    for col, label in ONBOARDING_SECTION_COLS:
+        raw_section = get_value(col)
+        done = bool(raw_section) or bool(get_value(f"{col}_done", 0))
+        if done:
+            completed_count += 1
+        parsed_section = _parse_json_field(raw_section) if raw_section else {}
+        if not parsed_section and done:
+            parsed_section = {
+                "ui": {
+                    "badge": get_value(f"{col}_ui_badge"),
+                    "scoreDisplay": get_value(f"{col}_score_display"),
+                    "adjustedPercentage": get_value(f"{col}_ui_adjusted_percentage"),
+                },
+                "raw": {
+                    "aiOutput": {
+                        "riskLevel": get_value(f"{col}_raw_risk_level"),
+                        "totalScore": get_value(f"{col}_raw_total_score"),
+                        "maxScore": get_value(f"{col}_raw_max_score"),
+                    }
+                },
+            }
+        section_progress.append({
+            "label": label,
+            "badge": None,
+            "summary": None,
+            "done": done,
+            "data": None,
+        })
+        metric_section_progress.append({
+            "label": label,
+            "badge": None,
+            "summary": None,
+            "done": done,
+            "data": parsed_section if parsed_section else None,
+        })
+
+    derived_overview = _derive_onboarding_overview(overview, metric_section_progress)
+    if not derived_overview.get("overallRiskLevel"):
+        derived_overview = {
+            **derived_overview,
+            "percentage": derived_overview.get("percentage"),
+            "overallScore": completed_count,
+            "overallMaxScore": len(ONBOARDING_SECTION_COLS),
+        }
+    notes = get_value("notes") or []
+    evidence = get_value("evidence") or []
+    created_at = get_value("created_at")
+    updated_at = get_value("updated_at")
+
+    return {
+        "id": get_value("id"),
+        "learner_id": get_value("learner_id"),
+        "learner_name": get_value("learner_name") or "",
+        "learner_email": get_value("learner_email") or "",
+        "academic_email": get_value("academic_email") or "",
+        "programme": get_value("programme") or "",
+        "organization_name": get_value("organization_name") or "",
+        "coach_name": get_value("coach_name") or "",
+        "coach_email": get_value("coach_email") or "",
+        "manager_name": get_value("manager_name") or "",
+        "manager_email": get_value("manager_email") or "",
+        "overall_risk_level": derived_overview.get("overallRiskLevel") or "",
+        "overall_score": derived_overview.get("overallScore"),
+        "overall_max_score": derived_overview.get("overallMaxScore"),
+        "percentage": derived_overview.get("percentage"),
+        "completed_reports": completed_count,
+        "expected_reports": len(ONBOARDING_SECTION_COLS),
+        "section_progress": section_progress,
+        "master_report": {},
+        "status": get_value("status") or "active",
+        "notes_count": len(notes) if isinstance(notes, list) else 0,
+        "evidence_count": len(evidence) if isinstance(evidence, list) else 0,
+        "created_at": created_at.isoformat() if created_at else None,
+        "updated_at": updated_at.isoformat() if updated_at else None,
+    }
+
+
 @api_view(["GET"])
 @permission_classes([IsAuthenticated])
 def onboarding_reports_list(request):
@@ -2536,22 +3016,122 @@ def onboarding_reports_list(request):
     profile = getattr(user, "profile", None)
     role = (getattr(profile, "role", "") or "").strip().lower()
 
-    if role != "qa":
+    if role not in {"qa", "coach"}:
         return Response({"detail": "Forbidden"}, status=status.HTTP_403_FORBIDDEN)
-
-    SECTION_COLS = [
-        ("technology_report",          "Technology"),
-        ("visual_hearing_report",      "Visual & Hearing"),
-        ("dyslexia_report",            "Dyslexia"),
-        ("adhd_report",                "ADHD"),
-        ("social_anxiety_report",      "Social Anxiety"),
-        ("mood_learning_capacity_report", "Mood & Learning"),
-    ]
-    EXPECTED = len(SECTION_COLS)
 
     try:
         coach_email_filter = (request.query_params.get("coach_email") or "").strip().lower()
+        if role == "coach":
+            coach_email_filter = (getattr(user, "email", "") or "").strip().lower()
+            if not coach_email_filter:
+                return Response({"detail": "Coach email not found"}, status=status.HTTP_400_BAD_REQUEST)
+        archived_param = (request.query_params.get("archived") or "").strip().lower()
+        show_archived = archived_param in {"1", "true", "yes"}
+        cache_key = ("onboarding_list_v2", role, coach_email_filter, show_archived)
+        cached = _ONBOARDING_REPORTS_LIST_CACHE.get(cache_key)
+        now = time.monotonic()
+        if cached and now < cached.get("expires_at", 0):
+            return Response(cached["data"])
+
         qs = LearnerInclusivenessReport.objects.using("wellbeing").only(
+            "id",
+            "learner_id",
+            "learner_name",
+            "learner_email",
+            "academic_email",
+            "programme",
+            "organization_name",
+            "coach_name",
+            "coach_email",
+            "manager_name",
+            "manager_email",
+            "status",
+            "is_archived",
+            "notes",
+            "evidence",
+            "created_at",
+            "updated_at",
+        )
+        if coach_email_filter:
+            qs = qs.filter(coach_email__iexact=coach_email_filter)
+        if show_archived:
+            qs = qs.filter(is_archived=True)
+        else:
+            qs = qs.filter(is_archived__in=[False, None])
+        qs = qs.annotate(**{
+            f"{col}_done": Case(
+                When(**{f"{col}__isnull": False}, then=Value(1)),
+                default=Value(0),
+                output_field=IntegerField(),
+            )
+            for col, _label in ONBOARDING_SECTION_COLS
+        })
+        summary_annotations = {}
+        for col, _label in ONBOARDING_SECTION_COLS:
+            summary_annotations.update({
+                f"{col}_ui_badge": RawSQL(f"{col} #>> %s", (["ui", "badge"],)),
+                f"{col}_score_display": RawSQL(f"{col} #>> %s", (["ui", "scoreDisplay"],)),
+                f"{col}_ui_adjusted_percentage": RawSQL(f"{col} #>> %s", (["ui", "adjustedPercentage"],)),
+                f"{col}_raw_risk_level": RawSQL(f"{col} #>> %s", (["raw", "aiOutput", "riskLevel"],)),
+                f"{col}_raw_total_score": RawSQL(f"{col} #>> %s", (["raw", "aiOutput", "totalScore"],)),
+                f"{col}_raw_max_score": RawSQL(f"{col} #>> %s", (["raw", "aiOutput", "maxScore"],)),
+            })
+        qs = qs.annotate(**summary_annotations)
+        value_fields = [
+            "id",
+            "learner_id",
+            "learner_name",
+            "learner_email",
+            "academic_email",
+            "programme",
+            "organization_name",
+            "coach_name",
+            "coach_email",
+            "manager_name",
+            "manager_email",
+            "status",
+            "notes",
+            "evidence",
+            "created_at",
+            "updated_at",
+            *[f"{col}_done" for col, _label in ONBOARDING_SECTION_COLS],
+            *[
+                field
+                for col, _label in ONBOARDING_SECTION_COLS
+                for field in [
+                    f"{col}_ui_badge",
+                    f"{col}_score_display",
+                    f"{col}_ui_adjusted_percentage",
+                    f"{col}_raw_risk_level",
+                    f"{col}_raw_total_score",
+                    f"{col}_raw_max_score",
+                ]
+            ],
+        ]
+        qs = qs.order_by("-created_at", "-id").values(*value_fields)
+        rows = []
+
+        for r in qs:
+            rows.append(_serialize_onboarding_report_summary(r))
+
+        data = {"reports": rows, "total": len(rows)}
+        _ONBOARDING_REPORTS_LIST_CACHE[cache_key] = {
+            "expires_at": time.monotonic() + 60,
+            "data": data,
+        }
+        return Response(data)
+
+    except Exception as exc:
+        return Response({"detail": str(exc)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+def onboarding_report_detail(request, report_id: str):
+    report, err = _check_onboarding_report_access(
+        request,
+        report_id,
+        only_fields=[
             "id",
             "learner_id",
             "learner_name",
@@ -2575,87 +3155,20 @@ def onboarding_reports_list(request):
             "evidence",
             "created_at",
             "updated_at",
-        )
-        if coach_email_filter:
-            qs = qs.filter(coach_email__iexact=coach_email_filter)
-        qs = qs.order_by("-created_at", "-id")
-        rows = []
+        ],
+    )
+    if err:
+        return err
 
-        for r in qs:
-            master = _parse_json_field(r.master_report)
-            overview = master.get("overview", {}) if isinstance(master, dict) else {}
-            if not isinstance(overview, dict):
-                overview = {}
-
-            # Count completed sections directly from DB columns
-            section_progress = []
-            completed_count = 0
-            for col, label in SECTION_COLS:
-                raw = getattr(r, col, None)
-                if raw:
-                    completed_count += 1
-                    parsed = _parse_json_field(raw)
-                    ui = parsed.get("ui", {}) if isinstance(parsed, dict) else {}
-                    badge = ui.get("badge", "") if isinstance(ui, dict) else ""
-                    summary_text = ui.get("summary", "") or ui.get("shortSummary", "") if isinstance(ui, dict) else ""
-                    section_progress.append({
-                        "label": label,
-                        "badge": badge,
-                        "summary": summary_text,
-                        "done": True,
-                        "data": parsed,
-                    })
-                else:
-                    section_progress.append({
-                        "label": label,
-                        "badge": None,
-                        "summary": None,
-                        "done": False,
-                        "data": None,
-                    })
-
-            derived_overview = _derive_onboarding_overview(overview, section_progress)
-
-            rows.append({
-                "id": r.id,
-                "learner_id": r.learner_id,
-                "learner_name": r.learner_name or "",
-                "learner_email": r.learner_email or "",
-                "academic_email": r.academic_email or "",
-                "programme": r.programme or "",
-                "organization_name": r.organization_name or "",
-                "coach_name": r.coach_name or "",
-                "coach_email": r.coach_email or "",
-                "manager_name": r.manager_name or "",
-                "manager_email": r.manager_email or "",
-                "overall_risk_level": derived_overview.get("overallRiskLevel") or "",
-                "overall_score": derived_overview.get("overallScore"),
-                "overall_max_score": derived_overview.get("overallMaxScore"),
-                "percentage": derived_overview.get("percentage"),
-                "completed_reports": completed_count,
-                "expected_reports": EXPECTED,
-                "section_progress": section_progress,
-                "master_report": master,
-                "status": r.status or "active",
-                "notes_count": len(r.notes) if isinstance(r.notes, list) else 0,
-                "evidence_count": len(r.evidence) if isinstance(r.evidence, list) else 0,
-                "created_at": r.created_at.isoformat() if r.created_at else None,
-                "updated_at": r.updated_at.isoformat() if r.updated_at else None,
-            })
-
-        return Response({"reports": rows, "total": len(rows)})
-
-    except Exception as exc:
-        return Response({"detail": str(exc)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+    return Response({"report": _serialize_onboarding_report(report, include_detail=True)})
 
 
 @api_view(["GET", "POST"])
 @permission_classes([IsAuthenticated])
 def onboarding_report_notes(request, report_id: str):
-    try:
-        report = LearnerInclusivenessReport.objects.using("wellbeing").get(id=report_id)
-    except LearnerInclusivenessReport.DoesNotExist:
-        return Response({"detail": "Not found"}, status=status.HTTP_404_NOT_FOUND)
+    report, err = _check_onboarding_report_access(request, report_id)
+    if err:
+        return err
 
     if request.method == "GET":
         return Response({"notes": list(report.notes or [])})
@@ -2673,16 +3186,16 @@ def onboarding_report_notes(request, report_id: str):
     }
     notes.append(new_note)
     LearnerInclusivenessReport.objects.using("wellbeing").filter(id=report_id).update(notes=notes)
+    _clear_onboarding_reports_cache()
     return Response(new_note, status=status.HTTP_201_CREATED)
 
 
 @api_view(["GET", "POST"])
 @permission_classes([IsAuthenticated])
 def onboarding_report_evidence(request, report_id: str):
-    try:
-        report = LearnerInclusivenessReport.objects.using("wellbeing").get(id=report_id)
-    except LearnerInclusivenessReport.DoesNotExist:
-        return Response({"detail": "Not found"}, status=status.HTTP_404_NOT_FOUND)
+    report, err = _check_onboarding_report_access(request, report_id)
+    if err:
+        return err
 
     if request.method == "GET":
         return Response({"evidence": list(report.evidence or [])})
@@ -2693,21 +3206,23 @@ def onboarding_report_evidence(request, report_id: str):
         "description": (request.data.get("description") or "").strip(),
         "file_url": request.data.get("file_url") or "",
         "file_name": request.data.get("file_name") or "",
+        "mime_type": request.data.get("mime_type") or "",
+        "data_url": request.data.get("data_url") or "",
         "created_by": getattr(request.user, "email", "") or request.user.username,
         "created_at": timezone.now().isoformat(),
     }
     evidence_list.append(new_entry)
     LearnerInclusivenessReport.objects.using("wellbeing").filter(id=report_id).update(evidence=evidence_list)
+    _clear_onboarding_reports_cache()
     return Response(new_entry, status=status.HTTP_201_CREATED)
 
 
 @api_view(["PATCH"])
 @permission_classes([IsAuthenticated])
 def update_onboarding_report(request, report_id: str):
-    try:
-        LearnerInclusivenessReport.objects.using("wellbeing").get(id=report_id)
-    except LearnerInclusivenessReport.DoesNotExist:
-        return Response({"detail": "Not found"}, status=status.HTTP_404_NOT_FOUND)
+    _report, err = _check_onboarding_report_access(request, report_id)
+    if err:
+        return err
 
     update_kwargs = {}
     if "status" in request.data:
@@ -2715,6 +3230,51 @@ def update_onboarding_report(request, report_id: str):
 
     if update_kwargs:
         LearnerInclusivenessReport.objects.using("wellbeing").filter(id=report_id).update(**update_kwargs)
+        _clear_onboarding_reports_cache()
 
     return Response({"id": report_id, **update_kwargs})
+
+
+def _check_onboarding_report_access(request, report_id: str, only_fields=None):
+    profile = getattr(request.user, "profile", None)
+    role = (getattr(profile, "role", "") or "").strip().lower()
+    if role not in {"qa", "coach"}:
+        return None, Response({"detail": "Forbidden"}, status=status.HTTP_403_FORBIDDEN)
+    try:
+        qs = LearnerInclusivenessReport.objects.using("wellbeing")
+        if only_fields:
+            qs = qs.only(*only_fields)
+        report = qs.get(id=report_id)
+    except LearnerInclusivenessReport.DoesNotExist:
+        return None, Response({"detail": "Not found"}, status=status.HTTP_404_NOT_FOUND)
+    if role == "coach":
+        coach_email = (getattr(request.user, "email", "") or "").strip().lower()
+        report_coach_email = (getattr(report, "coach_email", "") or "").strip().lower()
+        if not coach_email or coach_email != report_coach_email:
+            return None, Response({"detail": "Forbidden"}, status=status.HTTP_403_FORBIDDEN)
+    return report, None
+
+
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+def archive_onboarding_report(request, report_id: str):
+    report, err = _check_onboarding_report_access(request, report_id)
+    if err:
+        return err
+    report.is_archived = True
+    report.save(using="wellbeing", update_fields=["is_archived"])
+    _clear_onboarding_reports_cache()
+    return Response({"detail": "Onboarding ticket archived"})
+
+
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+def restore_onboarding_report(request, report_id: str):
+    report, err = _check_onboarding_report_access(request, report_id)
+    if err:
+        return err
+    report.is_archived = False
+    report.save(using="wellbeing", update_fields=["is_archived"])
+    _clear_onboarding_reports_cache()
+    return Response({"detail": "Onboarding ticket restored"})
 

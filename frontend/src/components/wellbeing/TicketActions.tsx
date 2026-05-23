@@ -64,6 +64,7 @@ export type TicketEvidenceRow = {
   url?: string;
   original_name?: string;
   mime_type?: string;
+  data_url?: string;
 };
 
 export type SurveyResponseRow = {
@@ -95,6 +96,8 @@ export type SupportTicketRow = {
   preferredContact: string;
   notes?: TicketNoteRow[];
   evidence?: TicketEvidenceRow[];
+  notesCount?: number;
+  evidenceCount?: number;
   createdBy?: string;
   assignedOwner?: string;
 };
@@ -435,7 +438,7 @@ export function ActionModal({
   onClose: () => void;
   onConfirm: (newStatus?: string, extra?: { risk?: string; notesChanged?: boolean; evidenceChanged?: boolean }) => void;
   saveNote?: (note: string) => Promise<void>;
-  saveEvidence?: (payload: { description: string; file_url?: string; file_name?: string }) => Promise<void>;
+  saveEvidence?: (payload: { description: string; file_url?: string; file_name?: string; mime_type?: string; data_url?: string }) => Promise<void>;
 }) {
   const [note, setNote] = React.useState("");
   const [contactMethod, setContactMethod] = React.useState("email");
@@ -566,8 +569,19 @@ export function ActionModal({
           const uploaded = await uploadEvidenceFile(evidenceFile);
           fileUrl = resolveMediaUrl(uploaded?.absolute_url || uploaded?.url || "");
           fileName = evidenceFile.name;
+          const evidencePayload = {
+            description: note.trim(),
+            file_url: fileUrl,
+            file_name: fileName,
+            mime_type: uploaded?.mime_type || evidenceFile.type || "",
+            data_url: uploaded?.data_url || "",
+          };
+          if (saveEvidence) await saveEvidence(evidencePayload);
+          else await createTicketEvidence(ticket.id, evidencePayload);
+          onConfirm(undefined, { evidenceChanged: true });
+          return;
         }
-        const evidencePayload = { description: note.trim(), file_url: fileUrl, file_name: fileName };
+        const evidencePayload = { description: note.trim(), file_url: fileUrl, file_name: fileName, mime_type: "", data_url: "" };
         if (saveEvidence) await saveEvidence(evidencePayload);
         else await createTicketEvidence(ticket.id, evidencePayload);
         onConfirm(undefined, { evidenceChanged: true });
@@ -1176,7 +1190,7 @@ const ONBOARDING_ACTION_GROUPS: ActionGroup[] = [
     items: [
       { id: "mark_reviewed", label: "Mark as Reviewed", newStatus: "reviewed" },
       { id: "mark_flagged", label: "Flag for Attention", newStatus: "flagged" },
-      { id: "close_case", label: "Close / Archive", requiresModal: true, newStatus: "closed", danger: true },
+      { id: "close_case", label: "Close Case", requiresModal: true, newStatus: "closed", danger: true },
       { id: "reopen_case", label: "Reopen / Set Active", newStatus: "active", success: true },
     ],
   },

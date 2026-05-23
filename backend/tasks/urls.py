@@ -18,9 +18,12 @@ from .views import (
     ticket_evidence,
     ticket_survey_responses,
     onboarding_reports_list,
+    onboarding_report_detail,
     onboarding_report_notes,
     onboarding_report_evidence,
     update_onboarding_report,
+    archive_onboarding_report,
+    restore_onboarding_report,
 )
 from accounts.booking_views import CreateBookingView, BookingDiagnosticView, BookingServicesView, BookingAvailabilityView, BookingFixServiceView, BookingTestCreateView, BookingPublishView, BookingStaffView
 
@@ -51,7 +54,10 @@ path("support-tickets/<int:ticket_id>/", update_support_ticket, name="update-sup
     path("bookings/test-create/", BookingTestCreateView.as_view(), name="booking-test-create"),
     path("bookings/diagnostic/", BookingDiagnosticView.as_view(), name="booking-diagnostic"),
     path("onboarding-reports/", onboarding_reports_list, name="onboarding-reports"),
+    path("onboarding-reports/<str:report_id>/", onboarding_report_detail, name="onboarding-report-detail"),
     path("onboarding-reports/<str:report_id>/notes/", onboarding_report_notes, name="onboarding-report-notes"),
     path("onboarding-reports/<str:report_id>/evidence/", onboarding_report_evidence, name="onboarding-report-evidence"),
     path("onboarding-reports/<str:report_id>/update/", update_onboarding_report, name="update-onboarding-report"),
+    path("onboarding-reports/<str:report_id>/archive/", archive_onboarding_report, name="archive-onboarding-report"),
+    path("onboarding-reports/<str:report_id>/restore/", restore_onboarding_report, name="restore-onboarding-report"),
 ]

@@ -82,6 +82,8 @@ type CoachOption = {
 type TicketableLearnerRow = CoachLearnerRow & {
   hasOpenTicket?: boolean;
   openTicketCount?: number;
+  closedTicketCount?: number;
+  totalTicketCount?: number;
 };
 
 type SupportTicketFormState = {
@@ -165,6 +167,19 @@ function ticketMatchesLearner(ticket: SupportTicketRow, learner: TicketableLearn
   return Boolean(ticketName && learnerName && ticketName === learnerName);
 }
 
+function learnerMatchesTextSearch(learner: TicketableLearnerRow, query: string) {
+  if (!query) return true;
+  return (
+    String(learner.studentName || "").toLowerCase().includes(query) ||
+    String(learner.studentEmail || "").toLowerCase().includes(query) ||
+    String(learner.programme || "").toLowerCase().includes(query) ||
+    String(learner.coachName || "").toLowerCase().includes(query) ||
+    String(learner.coachEmail || "").toLowerCase().includes(query) ||
+    String(learner.riskLevel || "").toLowerCase().includes(query) ||
+    String(learner.recommendedAction || "").toLowerCase().includes(query)
+  );
+}
+
 function normaliseCoachIdentity(value: string | null | undefined) {
   const localPart = String(value || "").split("@")[0] || "";
   return localPart
@@ -215,12 +230,91 @@ function hasLearnerWellbeingData(row: TicketableLearnerRow) {
 
 
 function isLearnerEvidence(ev: TicketEvidenceRow) { return ev.uploaded_by === "learner"; }
-function evFileUrl(ev: TicketEvidenceRow) { return resolveMediaUrl(ev.file_url || ev.url || ""); }
+function evFileUrl(ev: TicketEvidenceRow) { return ev.data_url || resolveMediaUrl(ev.file_url || ev.url || ""); }
 function evFileName(ev: TicketEvidenceRow) { return ev.file_name || ev.original_name || ""; }
+function fileLooksLikeImage(url: string, name = "", mime = "") {
+  const value = `${name} ${url}`.toLowerCase();
+  return mime.startsWith("image/") || /\.(png|jpe?g|gif|webp|bmp|svg)(?:$|\?)/.test(value);
+}
+function fileLooksLikePdf(url: string, name = "", mime = "") {
+  const value = `${name} ${url}`.toLowerCase();
+  return mime === "application/pdf" || /\.pdf(?:$|\?)/.test(value);
+}
 function evIsImage(ev: TicketEvidenceRow) {
-  const mime = ev.mime_type || "";
-  const name = evFileName(ev).toLowerCase();
-  return mime.startsWith("image/") || /\.(png|jpe?g|gif|webp|bmp|svg)$/.test(name);
+  return fileLooksLikeImage(evFileUrl(ev), evFileName(ev), ev.mime_type || "");
+}
+
+function EvidencePreviewModal({
+  url,
+  name,
+  description,
+  createdBy,
+  createdAt,
+  mimeType = "",
+  onClose,
+}: {
+  url: string;
+  name?: string;
+  description?: string;
+  createdBy?: string;
+  createdAt?: string | null;
+  mimeType?: string;
+  onClose: () => void;
+}) {
+  const isImage = fileLooksLikeImage(url, name, mimeType);
+  const isPdf = fileLooksLikePdf(url, name, mimeType);
+  const displayName = name || "Evidence file";
+
+  return createPortal(
+    <div className="fixed inset-0 z-[150] flex items-center justify-center bg-black/50 p-4">
+      <button type="button" className="fixed inset-0 cursor-default" onClick={onClose} aria-label="Close evidence preview" />
+      <div className="relative z-[151] flex max-h-[90vh] w-full max-w-4xl flex-col overflow-hidden rounded-3xl bg-white shadow-2xl">
+        <div className="flex items-start justify-between gap-4 border-b border-[#ECE7F7] px-5 py-4">
+          <div className="min-w-0">
+            <h3 className="truncate text-base font-semibold text-[#241453]">{displayName}</h3>
+            {description && <p className="mt-1 text-sm text-[#7B6D9B]">{description}</p>}
+            <div className="mt-1 flex flex-wrap gap-2 text-[11px] text-[#9D8EC7]">
+              {createdBy && <span>{createdBy}</span>}
+              {createdAt && <span>{formatTicketDate(createdAt)}</span>}
+            </div>
+          </div>
+          <div className="flex shrink-0 items-center gap-2">
+            <a
+              href={url}
+              download={displayName}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="inline-flex h-9 items-center gap-2 rounded-xl bg-[#241453] px-3 text-xs font-semibold text-white hover:bg-[#362063]"
+            >
+              <FileDown className="h-3.5 w-3.5" />
+              Download
+            </a>
+            <button
+              type="button"
+              onClick={onClose}
+              className="inline-flex h-9 w-9 items-center justify-center rounded-xl border border-[#E7E2F3] text-[#7B6D9B] hover:bg-[#F8F5FF]"
+            >
+              <X className="h-4 w-4" />
+            </button>
+          </div>
+        </div>
+        <div className="custom-scroll flex-1 overflow-auto bg-[#F8F6FC] p-4">
+          {isImage ? (
+            <img src={url} alt={displayName} className="mx-auto max-h-[70vh] max-w-full rounded-2xl bg-white object-contain shadow-sm" />
+          ) : isPdf ? (
+            <iframe title={displayName} src={url} className="h-[70vh] w-full rounded-2xl border border-[#E7E2F3] bg-white" />
+          ) : (
+            <div className="flex min-h-[260px] flex-col items-center justify-center rounded-2xl border border-[#E7E2F3] bg-white p-8 text-center">
+              <FileText className="mb-3 h-10 w-10 text-[#8E82AA]" />
+              <p className="text-sm font-semibold text-[#241453]">Preview is not available for this file type.</p>
+              <p className="mt-1 text-xs text-[#7B6D9B]">Use Download to open it on your device.</p>
+            </div>
+          )}
+        </div>
+      </div>
+    </div>,
+    document.body
+  );
 }
 
 function makeInitialTicketForm(): SupportTicketFormState {
@@ -247,6 +341,8 @@ const emptyDashboard: CoachWellbeingResponse = {
     greenRisk: 0,
     nonResponders: 0,
     openTickets: 0,
+    surveyResponded: 0,
+    avgWellbeing: null,
   },
   learners: [],
   trends: [],
@@ -391,9 +487,29 @@ function StatCard({
 
 function LoadingBadge({ label = "Loading data..." }: { label?: string }) {
   return (
-    <div className="inline-flex items-center gap-2 rounded-full border border-[#E7E2F3] bg-white px-3 py-1.5 text-xs font-semibold text-[#644D93] shadow-sm">
-      <span className="h-2 w-2 animate-pulse rounded-full bg-[#8B6BC8]" />
+    <div className="inline-flex items-center gap-2 rounded-full border border-[#DCCFF6] bg-white px-3 py-1.5 text-xs font-semibold text-[#5A3EA6] shadow-sm">
+      <span className="relative flex h-2.5 w-2.5">
+        <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-[#8B6BC8] opacity-40" />
+        <span className="relative inline-flex h-2.5 w-2.5 rounded-full bg-[#8B6BC8]" />
+      </span>
       {label}
+    </div>
+  );
+}
+
+function ModernPageLoader({ title = "Loading page", subtitle = "Preparing the latest wellbeing data." }: { title?: string; subtitle?: string }) {
+  return (
+    <div className="mb-5 overflow-hidden rounded-3xl border border-[#E7E2F3] bg-white shadow-sm">
+      <div className="h-1.5 w-full overflow-hidden bg-[#F2ECFB]">
+        <div className="h-full w-1/3 animate-[pulse_1.4s_ease-in-out_infinite] rounded-r-full bg-[#8B6BC8]" />
+      </div>
+      <div className="flex flex-col gap-3 px-5 py-4 sm:flex-row sm:items-center sm:justify-between">
+        <div>
+          <p className="text-sm font-semibold text-[#241453]">{title}</p>
+          <p className="mt-0.5 text-xs text-[#7B6D9B]">{subtitle}</p>
+        </div>
+        <LoadingBadge label="Loading..." />
+      </div>
     </div>
   );
 }
@@ -1583,39 +1699,72 @@ function LearnerTable({
 }) {
   const [reportLearner, setReportLearner] = React.useState<TicketableLearnerRow | null>(null);
   const [referralLearner, setReferralLearner] = React.useState<TicketableLearnerRow | null>(null);
+  type LearnerSortKey = "learner" | "lastSurvey" | "totalScore" | "safeguarding" | "wellbeing" | "engagement" | "provider" | "risk" | "triggered" | "action" | "reports";
+  const [sortConfig, setSortConfig] = React.useState<{ key: LearnerSortKey; direction: SortDirection }>({
+    key: "lastSurvey",
+    direction: "desc",
+  });
+  function setSort(key: LearnerSortKey) {
+    setSortConfig((prev) => ({
+      key,
+      direction: prev.key === key && prev.direction === "desc" ? "asc" : "desc",
+    }));
+  }
+  const sortedRows = React.useMemo(() => {
+    const valueFor = (row: TicketableLearnerRow, key: LearnerSortKey) => {
+      if (key === "learner") return sortText(row.studentName || row.studentEmail);
+      if (key === "lastSurvey") return learnerSurveySortValue(row);
+      if (key === "totalScore") return sortNumber(row.totalScore);
+      if (key === "safeguarding") return sortNumber(row.safeguardingScore);
+      if (key === "wellbeing") return sortNumber(row.wellbeingScore);
+      if (key === "engagement") return sortNumber(row.engagementScore);
+      if (key === "provider") return sortNumber(row.providerSupportScore);
+      if (key === "risk") return sortText(row.riskLevel);
+      if (key === "triggered") return sortNumber(row.triggerCount ?? row.triggeredQuestions?.length ?? 0);
+      if (key === "action") return sortText(row.recommendedAction);
+      return sortNumber(row.totalTicketCount ?? row.openTicketCount ?? 0);
+    };
+    return [...rows].sort((a, b) => compareValues(valueFor(a, sortConfig.key), valueFor(b, sortConfig.key), sortConfig.direction));
+  }, [rows, sortConfig]);
+  const learnerHeader = (key: LearnerSortKey, label: string) => (
+    <SortHeaderButton label={label} active={sortConfig.key === key} direction={sortConfig.direction} onClick={() => setSort(key)} />
+  );
+
   return (
     <div className="overflow-hidden rounded-2xl border border-[#EEE8F8]">
       <div className="custom-scroll overflow-auto" style={{ maxHeight: "520px" }}>
         <table className="w-full min-w-[1280px] text-sm">
           <thead className="sticky top-0 z-10">
             <tr className="border-b border-[#EEE8F8] bg-[#FAFAFF] text-left text-xs font-semibold uppercase tracking-wide text-[#8E82AA]">
-              <th className="px-4 py-3 first:pl-5">Learner</th>
-              <th className="px-4 py-3 whitespace-nowrap">Last Survey</th>
-              <th className="px-4 py-3 whitespace-nowrap">Total Score</th>
-              <th className="px-4 py-3 whitespace-nowrap">Safeguarding</th>
-              <th className="px-4 py-3">Wellbeing</th>
-              <th className="px-4 py-3">Engagement</th>
-              <th className="px-4 py-3">Provider</th>
-              <th className="px-4 py-3">Risk</th>
+              <th className="px-4 py-3 first:pl-5">{learnerHeader("learner", "Learner")}</th>
+              <th className="px-4 py-3 whitespace-nowrap">{learnerHeader("lastSurvey", "Last Survey")}</th>
+              <th className="px-4 py-3 whitespace-nowrap">{learnerHeader("totalScore", "Total Score")}</th>
+              <th className="px-4 py-3 whitespace-nowrap">{learnerHeader("safeguarding", "Safeguarding")}</th>
+              <th className="px-4 py-3">{learnerHeader("wellbeing", "Wellbeing")}</th>
+              <th className="px-4 py-3">{learnerHeader("engagement", "Engagement")}</th>
+              <th className="px-4 py-3">{learnerHeader("provider", "Provider")}</th>
+              <th className="px-4 py-3">{learnerHeader("risk", "Risk")}</th>
               <th className="px-4 py-3">Trend</th>
-              <th className="px-4 py-3 whitespace-nowrap">Triggered</th>
-              <th className="px-4 py-3">Action</th>
-              <th className="px-4 py-3 whitespace-nowrap">Reports</th>
+              <th className="px-4 py-3 whitespace-nowrap">{learnerHeader("triggered", "Triggered")}</th>
+              <th className="px-4 py-3">{learnerHeader("action", "Action")}</th>
+              <th className="px-4 py-3 whitespace-nowrap">{learnerHeader("reports", "Reports")}</th>
               <th className="px-4 py-3 whitespace-nowrap">Referral</th>
               <th className="px-4 py-3 last:pr-5">Follow up</th>
             </tr>
           </thead>
 
           <tbody className="divide-y divide-[#F3EFF9]">
-            {rows.length === 0 ? (
+            {sortedRows.length === 0 ? (
               <tr>
                 <td colSpan={14} className="px-5 py-10 text-center text-sm text-slate-400">
                   No learners found
                 </td>
               </tr>
             ) : (
-              rows.map((row, index) => {
+              sortedRows.map((row, index) => {
                 const openTicketCount = Number(row.openTicketCount || 0);
+                const closedTicketCount = Number(row.closedTicketCount || 0);
+                const totalTicketCount = Number(row.totalTicketCount ?? (openTicketCount + closedTicketCount));
                 const noData = !row.hasWellbeingData;
 
                 return (
@@ -1629,7 +1778,7 @@ function LearnerTable({
                     </td>
 
                     <td className="px-4 py-3 whitespace-nowrap tabular-nums text-slate-500">
-                      {row.lastSurveyDate || <span className="text-slate-400 italic">No survey</span>}
+                      {learnerSurveyDisplay(row)}
                     </td>
 
                     <td className="px-4 py-3 tabular-nums font-semibold text-[#241453]">
@@ -1696,11 +1845,18 @@ function LearnerTable({
                     </td>
 
                     <td className="px-4 py-3 last:pr-5">
-                      {openTicketCount > 0 ? (
+                      {totalTicketCount > 0 ? (
                         <div className="flex items-center gap-2 whitespace-nowrap">
-                          <span className="inline-flex h-8 items-center rounded-lg border border-[#E1D8F4] bg-[#FBFAFE] px-2.5 text-xs font-semibold text-[#644D93]">
-                            {openTicketCount} open
-                          </span>
+                          {openTicketCount > 0 && (
+                            <span className="inline-flex h-8 items-center rounded-lg border border-emerald-200 bg-emerald-50 px-2.5 text-xs font-semibold text-emerald-700">
+                              {openTicketCount} open
+                            </span>
+                          )}
+                          {closedTicketCount > 0 && (
+                            <span className="inline-flex h-8 items-center rounded-lg border border-slate-200 bg-slate-50 px-2.5 text-xs font-semibold text-slate-600">
+                              {closedTicketCount} closed
+                            </span>
+                          )}
                           <button
                             type="button"
                             onClick={() => onViewTickets(row)}
@@ -2235,20 +2391,106 @@ function WellbeingTicketDetailsView({ details }: { details?: string | null }) {
 }
 
 
+type TicketStatusGroup = "all" | "open" | "closed";
+type TicketEvidenceFilter = "all" | "with" | "missing";
+
 type TicketFilters = {
+  statusGroup: TicketStatusGroup;
   status: string[];
   type: string[];
   risk: string[];
+  evidence: TicketEvidenceFilter;
 };
 
-const emptyFilters: TicketFilters = { status: [], type: [], risk: [] };
+const DEFAULT_TICKET_STATUS_GROUP: TicketStatusGroup = "open";
+const emptyFilters: TicketFilters = { statusGroup: DEFAULT_TICKET_STATUS_GROUP, status: [], type: [], risk: [], evidence: "all" };
+
+function ticketHasEvidence(ticket: SupportTicketRow): boolean {
+  return (ticket.evidenceCount ?? ticket.evidence?.length ?? 0) > 0 || (ticket.notesCount ?? ticket.notes?.length ?? 0) > 0;
+}
+
+type SortDirection = "asc" | "desc";
+
+function sortText(value: unknown): string {
+  return String(value ?? "").trim().toLowerCase();
+}
+
+function sortNumber(value: unknown): number {
+  const num = Number(value);
+  return Number.isFinite(num) ? num : -Infinity;
+}
+
+function sortDate(value: unknown): number {
+  if (!value) return 0;
+  const time = new Date(String(value)).getTime();
+  return Number.isFinite(time) ? time : 0;
+}
+
+function learnerSurveySortValue(row: TicketableLearnerRow): number {
+  if (row.lastSurveyDate) return 2_000_000_000_000 + sortDate(row.lastSurveyDate);
+  if (hasLearnerWellbeingData(row)) return 1_000_000_000_000;
+  return 0;
+}
+
+function learnerSurveyDisplay(row: TicketableLearnerRow) {
+  if (row.lastSurveyDate) return row.lastSurveyDate;
+  if (hasLearnerWellbeingData(row)) return <span className="font-medium text-emerald-600">Completed</span>;
+  return <span className="text-slate-400 italic">No survey</span>;
+}
+
+function compareValues(a: string | number, b: string | number, direction: SortDirection) {
+  const result = typeof a === "number" && typeof b === "number"
+    ? a - b
+    : String(a).localeCompare(String(b), undefined, { numeric: true, sensitivity: "base" });
+  return direction === "asc" ? result : -result;
+}
+
+function SortHeaderButton({
+  label,
+  active,
+  direction,
+  onClick,
+  className = "",
+}: {
+  label: string;
+  active: boolean;
+  direction: SortDirection;
+  onClick: () => void;
+  className?: string;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={`inline-flex items-center gap-1 rounded-lg px-1.5 py-1 text-left transition hover:bg-[#F0EBF9] hover:text-[#241453] ${className}`}
+    >
+      <span>{label}</span>
+      <span className={`text-[10px] ${active ? "text-[#241453]" : "text-[#B8AACC]"}`}>
+        {active ? (direction === "asc" ? "↑" : "↓") : "↕"}
+      </span>
+    </button>
+  );
+}
 
 
-function TicketNotesPopover({ notes }: { notes: TicketNoteRow[] }) {
+function TicketNotesPopover({ ticketId, count, initialNotes = [] }: { ticketId: number; count: number; initialNotes?: TicketNoteRow[] }) {
   const [open, setOpen] = React.useState(false);
+  const [notes, setNotes] = React.useState<TicketNoteRow[]>(initialNotes);
+  const [loading, setLoading] = React.useState(false);
   const btnRef = React.useRef<HTMLButtonElement>(null);
   const panelRef = React.useRef<HTMLDivElement>(null);
   const listRef = React.useRef<HTMLDivElement>(null);
+
+  React.useEffect(() => {
+    if (!open || notes.length > 0 || count === 0) return;
+    let mounted = true;
+    setLoading(true);
+    getTicketNotes(ticketId)
+      .then((rows) => { if (mounted) setNotes(Array.isArray(rows) ? rows : []); })
+      .catch(() => { if (mounted) setNotes([]); })
+      .finally(() => { if (mounted) setLoading(false); });
+    return () => { mounted = false; };
+  }, [open, notes.length, count, ticketId]);
 
   React.useLayoutEffect(() => {
     if (!open || !btnRef.current || !panelRef.current) return;
@@ -2296,7 +2538,7 @@ function TicketNotesPopover({ notes }: { notes: TicketNoteRow[] }) {
         className="inline-flex items-center gap-1 rounded-lg bg-[#F4F0FC] px-2.5 py-1 text-xs font-semibold text-[#6248BE] transition hover:bg-[#EDE7FB]"
       >
         <FileText className="h-3 w-3" />
-        {notes.length}
+        {count}
       </button>
 
       {open && createPortal(
@@ -2310,10 +2552,24 @@ function TicketNotesPopover({ notes }: { notes: TicketNoteRow[] }) {
           >
             <div className="flex items-center justify-between border-b border-[#F0EAFB] px-4 py-2.5">
               <p className="text-[10px] font-semibold uppercase tracking-wide text-[#7B6D9B]">Case Notes</p>
-              <span className="text-[10px] text-[#B8AACC]">{notes.length} note{notes.length !== 1 ? "s" : ""}</span>
+              <div className="flex items-center gap-2">
+                <span className="text-[10px] text-[#B8AACC]">{count} note{count !== 1 ? "s" : ""}</span>
+                <button
+                  type="button"
+                  onClick={() => setOpen(false)}
+                  className="inline-flex h-7 w-7 items-center justify-center rounded-lg text-[#8E82AA] hover:bg-[#F4F0FC] hover:text-[#241453]"
+                  aria-label="Close notes"
+                >
+                  <X className="h-3.5 w-3.5" />
+                </button>
+              </div>
             </div>
             <div ref={listRef} className="custom-scroll space-y-2 overflow-y-auto p-3">
-              {notes.map((n, i) => (
+              {loading ? (
+                <div className="py-6 text-center text-xs text-[#8E82AA]">Loading notes...</div>
+              ) : notes.length === 0 ? (
+                <div className="py-6 text-center text-xs text-slate-400">No notes found</div>
+              ) : notes.map((n, i) => (
                 <div key={n.id ?? i} className="rounded-xl border border-[#EEE8F8] p-3">
                   <div className="mb-1.5 flex items-center justify-between gap-2">
                     <span className="truncate text-[10px] font-medium text-[#8E82AA]">{n.created_by || "Coach"}</span>
@@ -2331,11 +2587,25 @@ function TicketNotesPopover({ notes }: { notes: TicketNoteRow[] }) {
   );
 }
 
-function TicketEvidencePopover({ evidence }: { evidence: TicketEvidenceRow[] }) {
+function TicketEvidencePopover({ ticketId, count, initialEvidence = [] }: { ticketId: number; count: number; initialEvidence?: TicketEvidenceRow[] }) {
   const [open, setOpen] = React.useState(false);
+  const [evidence, setEvidence] = React.useState<TicketEvidenceRow[]>(initialEvidence);
+  const [loading, setLoading] = React.useState(false);
+  const [previewEvidence, setPreviewEvidence] = React.useState<TicketEvidenceRow | null>(null);
   const btnRef = React.useRef<HTMLButtonElement>(null);
   const panelRef = React.useRef<HTMLDivElement>(null);
   const listRef = React.useRef<HTMLDivElement>(null);
+
+  React.useEffect(() => {
+    if (!open || evidence.length > 0 || count === 0) return;
+    let mounted = true;
+    setLoading(true);
+    getTicketEvidence(ticketId)
+      .then((rows) => { if (mounted) setEvidence(Array.isArray(rows) ? rows : []); })
+      .catch(() => { if (mounted) setEvidence([]); })
+      .finally(() => { if (mounted) setLoading(false); });
+    return () => { mounted = false; };
+  }, [open, evidence.length, count, ticketId]);
 
   React.useLayoutEffect(() => {
     if (!open || !btnRef.current || !panelRef.current) return;
@@ -2380,7 +2650,7 @@ function TicketEvidencePopover({ evidence }: { evidence: TicketEvidenceRow[] }) 
         className="inline-flex items-center gap-1 rounded-lg bg-[#F0FDF4] px-2.5 py-1 text-xs font-semibold text-[#047857] transition hover:bg-[#DCFCE7]"
       >
         <ImageIcon className="h-3 w-3" />
-        {evidence.length}
+        {count}
       </button>
 
       {open && createPortal(
@@ -2394,46 +2664,86 @@ function TicketEvidencePopover({ evidence }: { evidence: TicketEvidenceRow[] }) 
           >
             <div className="flex items-center justify-between border-b border-[#F0EAFB] px-4 py-2.5">
               <p className="text-[10px] font-semibold uppercase tracking-wide text-[#7B6D9B]">Evidence</p>
-              <span className="text-[10px] text-[#B8AACC]">{evidence.length} item{evidence.length !== 1 ? "s" : ""}</span>
+              <div className="flex items-center gap-2">
+                <span className="text-[10px] text-[#B8AACC]">{count} item{count !== 1 ? "s" : ""}</span>
+                <button
+                  type="button"
+                  onClick={() => setOpen(false)}
+                  className="inline-flex h-7 w-7 items-center justify-center rounded-lg text-[#8E82AA] hover:bg-[#F4F0FC] hover:text-[#241453]"
+                  aria-label="Close evidence"
+                >
+                  <X className="h-3.5 w-3.5" />
+                </button>
+              </div>
             </div>
             <div ref={listRef} className="custom-scroll space-y-3 overflow-y-auto p-3">
-              {evidence.map((ev, i) => (
-                <div key={ev.id ?? i} className="overflow-hidden rounded-xl border border-[#EEE8F8]">
-                  {ev.file_url && (
-                    <a href={resolveMediaUrl(ev.file_url)} target="_blank" rel="noopener noreferrer" onClick={(e) => e.stopPropagation()}>
-                      <img
-                        src={resolveMediaUrl(ev.file_url)}
-                        alt={ev.description || ev.file_name || "Evidence"}
-                        className="max-h-44 w-full object-cover transition hover:opacity-90"
-                        onError={(e) => { (e.target as HTMLImageElement).style.display = "none"; }}
-                      />
-                    </a>
-                  )}
-                  <div className="p-3">
-                    <div className="mb-1 flex items-center justify-between gap-2">
-                      <span className="truncate text-[10px] font-medium text-[#8E82AA]">{ev.created_by || "Coach"}</span>
-                      <span className="shrink-0 text-[10px] text-[#B8AACC]">{ev.created_at ? formatTicketDate(ev.created_at) : ""}</span>
-                    </div>
-                    {ev.description && <p className="text-sm text-[#241453]">{ev.description}</p>}
-                    {ev.file_url && (
-                      <a
-                        href={resolveMediaUrl(ev.file_url)}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        onClick={(e) => e.stopPropagation()}
-                        className="mt-1.5 inline-flex items-center gap-1 text-xs font-medium text-[#6248BE] hover:underline"
+              {loading ? (
+                <div className="py-6 text-center text-xs text-[#8E82AA]">Loading evidence...</div>
+              ) : evidence.length === 0 ? (
+                <div className="py-6 text-center text-xs text-slate-400">No evidence found</div>
+              ) : evidence.map((ev, i) => {
+                const fileUrl = evFileUrl(ev);
+                const fileName = evFileName(ev) || ev.file_name || "Evidence file";
+                const isImage = evIsImage(ev);
+                return (
+                  <div key={ev.id ?? i} className="overflow-hidden rounded-xl border border-[#EEE8F8]">
+                    {fileUrl && (
+                      <button
+                        type="button"
+                        onClick={() => setPreviewEvidence(ev)}
+                        className="block w-full bg-[#F8F6FC] text-left transition hover:opacity-90"
                       >
-                        <ImageIcon className="h-3 w-3" />
-                        {ev.file_name || "Open image"}
-                      </a>
+                        {isImage ? (
+                          <img
+                            src={fileUrl}
+                            alt={ev.description || fileName}
+                            className="max-h-44 w-full object-cover"
+                            onError={(e) => { (e.target as HTMLImageElement).style.display = "none"; }}
+                          />
+                        ) : (
+                          <span className="flex h-28 items-center justify-center gap-2 text-xs font-semibold text-[#6248BE]">
+                            <Paperclip className="h-4 w-4" />
+                            {fileName}
+                          </span>
+                        )}
+                      </button>
                     )}
+                    <div className="p-3">
+                      <div className="mb-1 flex items-center justify-between gap-2">
+                        <span className="truncate text-[10px] font-medium text-[#8E82AA]">{ev.created_by || "Coach"}</span>
+                        <span className="shrink-0 text-[10px] text-[#B8AACC]">{ev.created_at ? formatTicketDate(ev.created_at) : ""}</span>
+                      </div>
+                      {ev.description && <p className="text-sm text-[#241453]">{ev.description}</p>}
+                      {fileUrl && (
+                        <button
+                          type="button"
+                          onClick={() => setPreviewEvidence(ev)}
+                          className="mt-1.5 inline-flex items-center gap-1 text-xs font-medium text-[#6248BE] hover:underline"
+                        >
+                          <ImageIcon className="h-3 w-3" />
+                          Preview
+                        </button>
+                      )}
+                    </div>
                   </div>
-                </div>
-              ))}
+                );
+              })}
             </div>
           </div>
         </>,
         document.body
+      )}
+
+      {previewEvidence && (
+        <EvidencePreviewModal
+          url={evFileUrl(previewEvidence)}
+          name={evFileName(previewEvidence)}
+          description={previewEvidence.description}
+          createdBy={previewEvidence.created_by}
+          createdAt={previewEvidence.created_at}
+          mimeType={previewEvidence.mime_type}
+          onClose={() => setPreviewEvidence(null)}
+        />
       )}
     </>
   );
@@ -2448,7 +2758,7 @@ function FiltersPanel({
   onChange: (f: TicketFilters) => void;
   onReset: () => void;
 }) {
-  function toggle(key: keyof TicketFilters, value: string) {
+  function toggle(key: "status" | "type" | "risk", value: string) {
     const current = filters[key];
     onChange({
       ...filters,
@@ -2456,7 +2766,12 @@ function FiltersPanel({
     });
   }
 
-  const activeCount = filters.status.length + filters.type.length + filters.risk.length;
+  const activeCount =
+    (filters.statusGroup !== DEFAULT_TICKET_STATUS_GROUP ? 1 : 0) +
+    filters.status.length +
+    filters.type.length +
+    filters.risk.length +
+    (filters.evidence !== "all" ? 1 : 0);
 
   return (
     <div className="absolute right-0 top-full z-50 mt-2 w-72 rounded-2xl border border-[#E6DDF8] bg-white p-4 shadow-[0_12px_30px_rgba(36,20,83,0.12)]">
@@ -2474,7 +2789,7 @@ function FiltersPanel({
       </div>
 
       <div className="mb-4">
-        <div className="mb-2 text-[10px] font-semibold uppercase tracking-wide text-[#7B6D9B]">Status</div>
+        <div className="mb-2 text-[10px] font-semibold uppercase tracking-wide text-[#7B6D9B]">Workflow Status</div>
         <div className="flex flex-wrap gap-1.5">
           {["open", "new", "under review", "assigned", "awaiting information", "action in progress", "follow-up scheduled", "support plan active", "escalated", "external referral made", "outcome recorded", "closed", "reopened"].map((s) => (
             <button
@@ -4157,9 +4472,10 @@ function TicketDetailPanel({
   const [evidence, setEvidence] = React.useState<TicketEvidenceRow[]>([]);
   const [notesLoading, setNotesLoading] = React.useState(false);
   const [showAllAnswers, setShowAllAnswers] = React.useState(false);
+  const [previewEvidence, setPreviewEvidence] = React.useState<TicketEvidenceRow | null>(null);
 
   React.useEffect(() => {
-    if (!ticket) { setNotes([]); setEvidence([]); return; }
+    if (!ticket) { setNotes([]); setEvidence([]); setPreviewEvidence(null); return; }
     const ticketId = ticket.id;
     let mounted = true;
 
@@ -4187,7 +4503,7 @@ function TicketDetailPanel({
   if (!ticket) return null;
 
   const isUpdating = statusUpdating === ticket.id;
-  const isClosed = String(ticket.status || "").toLowerCase() === "closed";
+  const isClosed = !isActiveTicketStatus(ticket.status);
 
   const statusActions = [
     { value: "under review", label: "Under Review" },
@@ -4432,16 +4748,14 @@ function TicketDetailPanel({
                           </div>
                           {ev.description && <p className="text-sm text-[#241453]">{ev.description}</p>}
                           {ev.file_url && (
-                            <a
-                              href={resolveMediaUrl(ev.file_url)}
-                              target="_blank"
-                              rel="noopener noreferrer"
-                              onClick={(e) => e.stopPropagation()}
+                            <button
+                              type="button"
+                              onClick={() => setPreviewEvidence(ev)}
                               className="mt-2 flex items-center gap-1.5 text-xs font-medium text-[#6248BE] hover:underline"
                             >
                               <ImageIcon className="h-3.5 w-3.5" />
-                              {ev.file_name || "View file"}
-                            </a>
+                              Preview
+                            </button>
                           )}
                         </div>
                       ))}
@@ -4471,14 +4785,14 @@ function TicketDetailPanel({
                       return (
                         <div key={ev.id ?? i} className="overflow-hidden rounded-xl border border-[#E8F4FF] bg-[#F5FAFF]">
                           {isImg && fileUrl && (
-                            <a href={fileUrl} target="_blank" rel="noopener noreferrer">
+                            <button type="button" onClick={() => setPreviewEvidence(ev)} className="block w-full text-left">
                               <img
                                 src={fileUrl}
                                 alt={fileName || "Learner evidence"}
                                 className="max-h-44 w-full object-cover transition hover:opacity-90"
                                 onError={(e) => { (e.target as HTMLImageElement).style.display = "none"; }}
                               />
-                            </a>
+                            </button>
                           )}
                           <div className="p-3">
                             <div className="mb-2 flex items-center gap-1.5">
@@ -4492,25 +4806,14 @@ function TicketDetailPanel({
                             )}
                             {fileUrl && (
                               <div className="flex items-center gap-2">
-                                <a
-                                  href={fileUrl}
-                                  target="_blank"
-                                  rel="noopener noreferrer"
+                                <button
+                                  type="button"
+                                  onClick={() => setPreviewEvidence(ev)}
                                   className="inline-flex items-center gap-1 rounded-lg bg-[#EEF4FF] px-2.5 py-1.5 text-xs font-medium text-[#2563EB] hover:bg-[#DBEAFE] transition"
                                 >
                                   <ImageIcon className="h-3 w-3" />
-                                  View
-                                </a>
-                                <a
-                                  href={fileUrl}
-                                  download={fileName || true}
-                                  className="inline-flex items-center gap-1 rounded-lg bg-[#F0FDF4] px-2.5 py-1.5 text-xs font-medium text-[#047857] hover:bg-[#DCFCE7] transition"
-                                >
-                                  <svg className="h-3 w-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                                    <path strokeLinecap="round" strokeLinejoin="round" d="M4 16v2a2 2 0 002 2h12a2 2 0 002-2v-2M7 10l5 5 5-5M12 4v11" />
-                                  </svg>
-                                  Download
-                                </a>
+                                  Preview
+                                </button>
                               </div>
                             )}
                           </div>
@@ -4547,6 +4850,17 @@ function TicketDetailPanel({
           )}
         </div>
       </div>
+      {previewEvidence && (
+        <EvidencePreviewModal
+          url={evFileUrl(previewEvidence)}
+          name={evFileName(previewEvidence)}
+          description={previewEvidence.description}
+          createdBy={previewEvidence.created_by}
+          createdAt={previewEvidence.created_at}
+          mimeType={previewEvidence.mime_type}
+          onClose={() => setPreviewEvidence(null)}
+        />
+      )}
     </>
   );
 }
@@ -5093,6 +5407,8 @@ function TicketsManagementView({
   onSearchChange,
   ticketsData,
   riskCounts,
+  evidenceCounts,
+  statusCounts,
   onView,
   onStatusChange,
   statusUpdating,
@@ -5119,6 +5435,8 @@ function TicketsManagementView({
   onSearchChange: (value: string) => void;
   ticketsData: SupportTicketsResponse | null;
   riskCounts: Partial<Record<RiskQuickValue, number>>;
+  evidenceCounts: Record<TicketEvidenceFilter, number>;
+  statusCounts: Record<TicketStatusGroup, number>;
   onView: (ticket: SupportTicketRow) => void;
   onStatusChange: (ticketId: number, newStatus: string) => void;
   statusUpdating: number | null;
@@ -5146,21 +5464,153 @@ function TicketsManagementView({
   const isQA = canView;
   const tickets = ticketsData?.tickets || [];
   const hasTickets = tickets.length > 0;
+  type TicketSortKey = "ticket" | "learner" | "type" | "risk" | "source" | "created" | "createdBy" | "status" | "owner" | "days" | "notes" | "evidence";
+  const [sortConfig, setSortConfig] = React.useState<{ key: TicketSortKey; direction: SortDirection }>({
+    key: "created",
+    direction: "desc",
+  });
+  function setSort(key: TicketSortKey) {
+    setSortConfig((prev) => ({
+      key,
+      direction: prev.key === key && prev.direction === "desc" ? "asc" : "desc",
+    }));
+  }
+  const sortedTickets = React.useMemo(() => {
+    const valueFor = (ticket: SupportTicketRow, key: TicketSortKey) => {
+      if (key === "ticket") return sortText(ticket.ticketCode || `TKT-${ticket.id}`);
+      if (key === "learner") return sortText(ticket.learnerName || ticket.learnerEmail);
+      if (key === "type") return sortText(ticket.type);
+      if (key === "risk") return sortText(ticket.risk);
+      if (key === "source") return sortText(ticket.createdBy === "learner" ? "Dashboard" : ticket.source);
+      if (key === "created") return sortDate(ticket.createdAt);
+      if (key === "createdBy") return sortText(ticket.createdBy);
+      if (key === "status") return sortText(ticketStatusLabel(ticket.status) || ticket.status);
+      if (key === "owner") return sortText(ticket.assignedOwner);
+      if (key === "days") return sortNumber(ticket.daysToClose ?? ticket.daysOpen ?? 0);
+      if (key === "notes") return sortNumber(ticket.notesCount ?? ticket.notes?.length ?? 0);
+      return sortNumber(ticket.evidenceCount ?? ticket.evidence?.length ?? 0);
+    };
+    return [...tickets].sort((a, b) => compareValues(valueFor(a, sortConfig.key), valueFor(b, sortConfig.key), sortConfig.direction));
+  }, [tickets, sortConfig]);
+  const ticketHeader = (key: TicketSortKey, label: string) => (
+    <SortHeaderButton label={label} active={sortConfig.key === key} direction={sortConfig.direction} onClick={() => setSort(key)} />
+  );
   const isInitialTicketLoad = loading && !hasTickets;
-  const activeFilterCount = filters.status.length + filters.type.length + filters.risk.length;
+  const activeFilterCount =
+    (filters.statusGroup !== DEFAULT_TICKET_STATUS_GROUP ? 1 : 0) +
+    filters.status.length +
+    filters.type.length +
+    filters.risk.length +
+    (filters.evidence !== "all" ? 1 : 0);
   const selectedRiskFilter = filters.risk[0] ?? "";
   const ticketQuickRiskValue = filters.risk.length === 0
     ? "all"
     : filters.risk.length === 1 && ["red", "amber", "green"].includes(selectedRiskFilter)
       ? selectedRiskFilter as RiskLevel
       : undefined;
+  const summary = ticketsData?.summary;
+  const currentStatusLabel =
+    filters.statusGroup === "closed"
+      ? "Closed Tickets"
+      : filters.statusGroup === "open"
+        ? "Open Tickets"
+        : "Total Tickets";
+  const statusStatSource =
+    filters.statusGroup === "closed"
+      ? "Closed or outcome recorded tickets currently shown."
+      : filters.statusGroup === "open"
+        ? "Active tickets currently shown."
+        : "Count of tickets currently shown after search and filters.";
+  const statCards = [
+    {
+      title: currentStatusLabel,
+      value: isInitialTicketLoad ? "…" : summary?.total ?? 0,
+      icon: filters.statusGroup === "closed" ? <ClipboardCheck className="h-4 w-4" /> : <Ticket className="h-4 w-4" />,
+      source: statusStatSource,
+    },
+    ...(filters.statusGroup === "all" ? [
+      {
+        title: "Open Tickets",
+        value: isInitialTicketLoad ? "…" : summary?.open ?? 0,
+        icon: <ClipboardList className="h-4 w-4" />,
+        source: "Shown tickets whose status is not closed or outcome recorded.",
+      },
+      {
+        title: "Closed Tickets",
+        value: isInitialTicketLoad ? "…" : summary?.closed ?? 0,
+        icon: <ClipboardCheck className="h-4 w-4" />,
+        source: "Shown tickets with closed or outcome recorded status.",
+      },
+    ] : []),
+    {
+      title: "Red Risk",
+      value: isInitialTicketLoad ? "…" : riskCounts.red ?? 0,
+      icon: <AlertTriangle className="h-4 w-4" />,
+      valueColor: "text-red-500",
+      iconBg: "bg-red-50",
+      iconColor: "text-red-500",
+      source: "Shown tickets where risk is red.",
+    },
+    {
+      title: "Amber Risk",
+      value: isInitialTicketLoad ? "…" : riskCounts.amber ?? 0,
+      icon: <AlertTriangle className="h-4 w-4" />,
+      valueColor: "text-amber-500",
+      iconBg: "bg-amber-50",
+      iconColor: "text-amber-500",
+      source: "Shown tickets where risk is amber.",
+    },
+    {
+      title: "Green Risk",
+      value: isInitialTicketLoad ? "…" : riskCounts.green ?? 0,
+      icon: <Shield className="h-4 w-4" />,
+      valueColor: "text-emerald-600",
+      iconBg: "bg-emerald-50",
+      iconColor: "text-emerald-600",
+      source: "Shown tickets where risk is green.",
+    },
+    ...(filters.statusGroup === "closed" || filters.statusGroup === "all" ? [
+      {
+        title: "Avg Close Time",
+        value: isInitialTicketLoad ? "…" : summary?.avgCloseDays ?? "—",
+        unit: !loading && summary?.avgCloseDays != null ? "days" : undefined,
+        delta: summary?.avgCloseDelta ?? null,
+        icon: <ClipboardCheck className="h-4 w-4" />,
+        trendPositiveIsGood: false,
+        source: "Average days to close for closed tickets currently shown.",
+      },
+    ] : []),
+    ...(filters.statusGroup === "open" || filters.statusGroup === "all" ? [
+      {
+        title: "Escalated",
+        value: isInitialTicketLoad ? "…" : summary?.escalated ?? 0,
+        icon: <AlertTriangle className="h-4 w-4" />,
+        valueColor: "text-amber-500",
+        iconBg: "bg-amber-50",
+        iconColor: "text-amber-500",
+        source: "Shown tickets with escalated status.",
+      },
+    ] : []),
+  ];
 
   function setTicketQuickRisk(value: RiskQuickValue) {
     onSearchChange("");
-    onFiltersChange(value === "all" ? emptyFilters : {
-      ...emptyFilters,
-      risk: [value],
+    onFiltersChange({
+      ...filters,
+      risk: value === "all" ? [] : [value],
     });
+  }
+
+  function setEvidenceFilter(value: TicketEvidenceFilter) {
+    onSearchChange("");
+    onFiltersChange({
+      ...filters,
+      evidence: value,
+    });
+  }
+
+  if (isInitialTicketLoad) {
+    return <TicketPageContentSkeleton title="Safeguarding Tickets" />;
   }
 
   return (
@@ -5168,7 +5618,7 @@ function TicketsManagementView({
       <div className="rounded-3xl bg-white p-5 shadow-sm sm:p-6">
         <div className="mb-6 flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
           <div>
-            <h2 className="text-[20px] font-semibold text-[#241453]">Ticket Management</h2>
+            <h2 className="text-[20px] font-semibold text-[#241453]">Safeguarding Tickets</h2>
             <p className="mt-1 text-sm text-[#7B6D9B]">
               {isQA ? "Manage safeguarding and wellbeing cases" : "Manage your learner wellbeing cases"}
             </p>
@@ -5313,12 +5763,102 @@ function TicketsManagementView({
             </div>
           </div>
           <div className="mt-4 border-t border-[#EEE8F8] pt-4">
-            <RiskQuickFilter
-              value={ticketQuickRiskValue}
-              onChange={setTicketQuickRisk}
-              allLabel="All tickets"
-              counts={riskCounts}
-            />
+            <div className="grid gap-3">
+              <div className="grid gap-3 lg:grid-cols-3">
+                {(["all", "open", "closed"] as const).map((group) => {
+                  const isActive = filters.statusGroup === group;
+                  const Icon = group === "all" ? Ticket : group === "open" ? ClipboardList : ClipboardCheck;
+                  return (
+                    <button
+                      key={group}
+                      type="button"
+                      onClick={() => onFiltersChange({ ...filters, statusGroup: group })}
+                      className={`flex min-h-[74px] items-center justify-between gap-4 rounded-2xl border px-4 py-3 text-left transition ${
+                        isActive
+                          ? group === "all"
+                            ? "border-[#BFAFEA] bg-[#F8F5FF] text-[#241453] shadow-sm"
+                            : group === "open"
+                              ? "border-emerald-300 bg-emerald-50 text-emerald-800 shadow-sm"
+                              : "border-slate-300 bg-slate-100 text-slate-800 shadow-sm"
+                          : "border-[#E7E2F3] bg-white text-[#241453] hover:bg-[#F8F5FF]"
+                      }`}
+                    >
+                      <span className="flex min-w-0 items-center gap-3">
+                        <span className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-xl ${
+                          isActive
+                            ? group === "all" ? "bg-white text-[#6248BE]" : group === "open" ? "bg-emerald-100 text-emerald-700" : "bg-white text-slate-600"
+                            : "bg-[#F4F0FC] text-[#644D93]"
+                        }`}>
+                          <Icon className="h-4 w-4" />
+                        </span>
+                        <span className="min-w-0">
+                          <span className="block text-sm font-semibold">
+                            {group === "all" ? "All Tickets" : group === "open" ? "Open Tickets" : "Closed Tickets"}
+                          </span>
+                          <span className="mt-0.5 block text-xs text-[#7B6D9B]">
+                            {group === "all" ? "Every case" : group === "open" ? "Active cases" : "Resolved cases"}
+                          </span>
+                        </span>
+                      </span>
+                      <span className={`rounded-full px-2.5 py-1 text-xs font-semibold ${
+                        isActive
+                          ? group === "all" ? "bg-white text-[#6248BE]" : group === "open" ? "bg-emerald-100 text-emerald-700" : "bg-white text-slate-600"
+                          : "bg-[#F4F0FC] text-[#644D93]"
+                      }`}>
+                        {statusCounts[group]}
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
+
+              <div className="rounded-2xl border border-[#E9E3F5] bg-[#FCFBFE] p-3">
+                <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+                  <span className="text-xs font-semibold uppercase tracking-wide text-[#7B6D9B]">
+                    {filters.statusGroup === "all" ? "All ticket RAG" : filters.statusGroup === "open" ? "Open ticket RAG" : "Closed ticket RAG"}
+                  </span>
+                  <span className="rounded-full bg-white px-2.5 py-1 text-[11px] font-semibold text-[#644D93]">
+                    {tickets.length} shown
+                  </span>
+                </div>
+                <RiskQuickFilter
+                  value={ticketQuickRiskValue}
+                  onChange={setTicketQuickRisk}
+                  allLabel="All tickets"
+                  counts={riskCounts}
+                />
+                <div className="mt-3 border-t border-[#EEE8F8] pt-3">
+                  <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-[#7B6D9B]">Notes / Evidence</div>
+                  <div className="flex flex-wrap gap-2">
+                    {([
+                      ["with", "Has notes/evidence"],
+                      ["missing", "Missing notes/evidence"],
+                    ] as const).map(([value, label]) => {
+                      const isActive = filters.evidence === value;
+                      return (
+                        <button
+                          key={value}
+                          type="button"
+                          onClick={() => setEvidenceFilter(isActive ? "all" : value)}
+                          className={`inline-flex h-9 items-center gap-2 rounded-xl border px-3 text-xs font-semibold transition ${
+                            isActive
+                              ? "border-[#241453] bg-[#241453] text-white"
+                              : "border-[#E7E2F3] bg-white text-[#241453] hover:bg-[#F8F5FF]"
+                          }`}
+                        >
+                          <span>{label}</span>
+                          <span className={`rounded-full px-1.5 py-0.5 text-[10px] ${
+                            isActive ? "bg-white/20 text-current" : "bg-[#F4F0FC] text-[#644D93]"
+                          }`}>
+                            {evidenceCounts[value]}
+                          </span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              </div>
+            </div>
           </div>
         </div>
 
@@ -5328,52 +5868,22 @@ function TicketsManagementView({
           </div>
         ) : null}
 
-        <div className="mt-6 grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-6">
-          <StatCard
-            title="Total"
-            value={isInitialTicketLoad ? "…" : ticketsData?.summary?.total ?? 0}
-            icon={<Ticket className="h-4 w-4" />}
-            source="Count of tickets currently shown after search and filters."
-          />
-          <StatCard
-            title="Open"
-            value={isInitialTicketLoad ? "…" : ticketsData?.summary?.open ?? 0}
-            icon={<ClipboardList className="h-4 w-4" />}
-            source="Shown tickets whose status is not closed or outcome recorded."
-          />
-          <StatCard
-            title="Red Risk"
-            value={isInitialTicketLoad ? "…" : ticketsData?.summary?.redRisk ?? 0}
-            icon={<AlertTriangle className="h-4 w-4" />}
-            valueColor="text-red-500"
-            iconBg="bg-red-50"
-            iconColor="text-red-500"
-            source="Shown tickets where risk is red."
-          />
-          <StatCard
-            title="Escalated"
-            value={isInitialTicketLoad ? "…" : ticketsData?.summary?.escalated ?? 0}
-            icon={<AlertTriangle className="h-4 w-4" />}
-            valueColor="text-amber-500"
-            iconBg="bg-amber-50"
-            iconColor="text-amber-500"
-            source="Shown tickets with escalated status."
-          />
-          <StatCard
-            title="Closed"
-            value={isInitialTicketLoad ? "…" : ticketsData?.summary?.closed ?? 0}
-            icon={<ClipboardList className="h-4 w-4" />}
-            source="Shown tickets with closed or outcome recorded status."
-          />
-          <StatCard
-            title="Avg Close Time"
-            value={isInitialTicketLoad ? "…" : ticketsData?.summary?.avgCloseDays ?? "—"}
-            unit={!loading && ticketsData?.summary?.avgCloseDays != null ? "days" : undefined}
-            delta={ticketsData?.summary?.avgCloseDelta ?? null}
-            icon={<ClipboardList className="h-4 w-4" />}
-            trendPositiveIsGood={false}
-            source="Average days to close for closed tickets currently shown."
-          />
+        <div className="mt-6 grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
+          {statCards.map((card) => (
+            <StatCard
+              key={card.title}
+              title={card.title}
+              value={card.value}
+              unit={card.unit}
+              delta={card.delta}
+              icon={card.icon}
+              valueColor={card.valueColor}
+              iconBg={card.iconBg}
+              iconColor={card.iconColor}
+              trendPositiveIsGood={card.trendPositiveIsGood}
+              source={card.source}
+            />
+          ))}
         </div>
 
         <div className="mt-6 overflow-hidden rounded-3xl border border-[#E9E3F5]">
@@ -5381,18 +5891,18 @@ function TicketsManagementView({
             <table className="w-full min-w-[1420px] text-sm">
               <thead className="sticky top-0 z-10 bg-[#FCFBFE]">
                 <tr className="border-b border-[#EEE8F8] text-left text-[#7B6D9B]">
-                  <th className="px-5 py-4 font-medium">Ticket</th>
-                  <th className="px-5 py-4 font-medium">Learner</th>
-                  <th className="px-5 py-4 font-medium">Type</th>
-                  <th className="px-5 py-4 font-medium">Risk</th>
-                  <th className="px-5 py-4 font-medium">Source</th>
-                  <th className="px-5 py-4 font-medium">Created</th>
-                  <th className="px-5 py-4 font-medium">Created By</th>
-                  <th className="px-5 py-4 font-medium">Status</th>
-                  <th className="px-5 py-4 font-medium">Assigned Owner</th>
-                  <th className="px-5 py-4 font-medium">Days</th>
-                  <th className="px-5 py-4 font-medium">Notes</th>
-                  <th className="px-5 py-4 font-medium">Evidence</th>
+                  <th className="px-5 py-4 font-medium">{ticketHeader("ticket", "Ticket")}</th>
+                  <th className="px-5 py-4 font-medium">{ticketHeader("learner", "Learner")}</th>
+                  <th className="px-5 py-4 font-medium">{ticketHeader("type", "Type")}</th>
+                  <th className="px-5 py-4 font-medium">{ticketHeader("risk", "Risk")}</th>
+                  <th className="px-5 py-4 font-medium">{ticketHeader("source", "Source")}</th>
+                  <th className="px-5 py-4 font-medium">{ticketHeader("created", "Created")}</th>
+                  <th className="px-5 py-4 font-medium">{ticketHeader("createdBy", "Created By")}</th>
+                  <th className="px-5 py-4 font-medium">{ticketHeader("status", "Status")}</th>
+                  <th className="px-5 py-4 font-medium">{ticketHeader("owner", "Assigned Owner")}</th>
+                  <th className="px-5 py-4 font-medium">{ticketHeader("days", "Days")}</th>
+                  <th className="px-5 py-4 font-medium">{ticketHeader("notes", "Notes")}</th>
+                  <th className="px-5 py-4 font-medium">{ticketHeader("evidence", "Evidence")}</th>
                   <th className="px-5 py-4 font-medium">Actions</th>
                   <th className="px-5 py-4 font-medium">Edit</th>
                   {isQA && <th className="px-5 py-4 font-medium">Delete</th>}
@@ -5407,14 +5917,14 @@ function TicketsManagementView({
                       Loading tickets...
                     </td>
                   </tr>
-                ) : tickets.length === 0 ? (
+                ) : sortedTickets.length === 0 ? (
                   <tr>
                     <td colSpan={(canView ? 1 : 0) + (isQA ? 1 : 0) + 14} className="px-5 py-8 text-center text-slate-500">
                       No tickets found
                     </td>
                   </tr>
                 ) : (
-                  tickets.map((item) => (
+                  sortedTickets.map((item) => (
                     <tr key={item.id} className="border-b border-[#F1EDF8] last:border-0">
                       <td className="px-5 py-4 font-semibold text-[#0F9B8E]">{item.ticketCode}</td>
 
@@ -5448,8 +5958,8 @@ function TicketsManagementView({
                       <td className="px-5 py-4 text-[#241453]">{item.daysToClose ?? item.daysOpen ?? 0}</td>
 
                       <td className="px-5 py-4">
-                        {(item.notes?.length ?? 0) > 0 ? (
-                          <TicketNotesPopover notes={item.notes!} />
+                        {(item.notesCount ?? item.notes?.length ?? 0) > 0 ? (
+                          <TicketNotesPopover ticketId={item.id} count={item.notesCount ?? item.notes?.length ?? 0} initialNotes={item.notes} />
                         ) : (
                           <span className="text-slate-300">—</span>
                         )}
@@ -5457,9 +5967,9 @@ function TicketsManagementView({
 
                       <td className="px-5 py-4">
                         {(() => {
-                          const coachEv = (item.evidence ?? []).filter(e => !isLearnerEvidence(e));
-                          return coachEv.length > 0 ? (
-                            <TicketEvidencePopover evidence={coachEv} />
+                          const evidenceCount = item.evidenceCount ?? item.evidence?.length ?? 0;
+                          return evidenceCount > 0 ? (
+                            <TicketEvidencePopover ticketId={item.id} count={evidenceCount} initialEvidence={item.evidence} />
                           ) : (
                             <span className="text-slate-300">—</span>
                           );
@@ -5581,6 +6091,437 @@ function wellbeingViewFromPath(pathname: string, search = "", hash = ""): Wellbe
   return "dashboard";
 }
 
+function SkeletonBlock({ className = "" }: { className?: string }) {
+  return <div className={`animate-pulse rounded-xl bg-[#EDE8F8] ${className}`} />;
+}
+
+function DashboardContentSkeleton() {
+  return (
+    <>
+      <ModernPageLoader
+        title="Loading dashboard"
+        subtitle="Collecting learners, survey risk, and ticket counts."
+      />
+
+      <div className="mb-6 grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
+        {[0, 1, 2, 3, 4, 5].map((item) => (
+          <div key={item} className="rounded-2xl border border-[#E7E2F3] bg-white p-5 shadow-sm">
+            <div className="flex items-start justify-between gap-4">
+              <div className="space-y-3">
+                <SkeletonBlock className="h-3 w-28" />
+                <SkeletonBlock className="h-8 w-16" />
+                {item < 2 ? <SkeletonBlock className="h-3 w-24 bg-[#F3EFFC]" /> : null}
+              </div>
+              <SkeletonBlock className="h-10 w-10 bg-[#F3EFFC]" />
+            </div>
+          </div>
+        ))}
+      </div>
+
+      <div className="mb-6 rounded-3xl bg-white p-4 shadow-sm sm:p-6">
+        <div className="mb-5 flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+          <div className="space-y-2">
+            <SkeletonBlock className="h-5 w-48" />
+            <SkeletonBlock className="h-3 w-32 bg-[#F3EFFC]" />
+          </div>
+          <div className="flex flex-wrap gap-2">
+            {[0, 1, 2, 3].map((item) => <SkeletonBlock key={item} className="h-9 w-24 bg-[#F3EFFC]" />)}
+          </div>
+        </div>
+        <TableRowsSkeleton rows={6} columns={7} />
+      </div>
+
+      <div className="grid grid-cols-1 gap-6 xl:grid-cols-2">
+        {[0, 1].map((panel) => (
+          <div key={panel} className="rounded-3xl bg-white p-4 shadow-sm sm:p-6 xl:h-[420px]">
+            <SkeletonBlock className="mb-5 h-5 w-44" />
+            <div className="space-y-4">
+              {[0, 1, 2, 3].map((item) => (
+                <div key={item} className="rounded-2xl border border-[#ECE7F7] bg-[#FCFBFE] p-4">
+                  <div className="flex gap-3">
+                    <SkeletonBlock className="h-7 w-16 bg-[#F3EFFC]" />
+                    <div className="flex-1 space-y-2">
+                      <SkeletonBlock className="h-4 w-48" />
+                      <SkeletonBlock className="h-3 w-36 bg-[#F3EFFC]" />
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        ))}
+      </div>
+    </>
+  );
+}
+
+function TicketPageContentSkeleton({ title }: { title: string }) {
+  return (
+    <div className="space-y-6">
+      <div className="rounded-3xl bg-white p-5 shadow-sm sm:p-6">
+        <ModernPageLoader
+          title={`Loading ${title}`}
+          subtitle="Fetching the latest cases, filters, and table rows."
+        />
+
+        <div className="mb-6 flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+          <div>
+            <h2 className="text-[20px] font-semibold text-[#241453]">{title}</h2>
+            <SkeletonBlock className="mt-2 h-3.5 w-64 bg-[#F3EFFC]" />
+          </div>
+          {title === "Safeguarding Tickets" ? <SkeletonBlock className="h-11 w-36 bg-[#F3EFFC]" /> : null}
+        </div>
+
+        <div className="rounded-3xl border border-[#E9E3F5] p-4">
+          <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
+            <SkeletonBlock className="h-12 w-full max-w-[680px] bg-[#F5F7FB]" />
+            <div className="flex items-center gap-3">
+              <SkeletonBlock className="h-10 w-28 bg-[#F3EFFC]" />
+              <SkeletonBlock className="h-10 w-24 bg-[#F3EFFC]" />
+              <SkeletonBlock className="h-10 w-28 bg-[#F3EFFC]" />
+            </div>
+          </div>
+          <div className="mt-4 border-t border-[#EEE8F8] pt-4">
+            <div className="grid gap-3">
+              <div className="grid gap-3 sm:grid-cols-2">
+                <SkeletonBlock className="h-[74px] bg-emerald-50" />
+                <SkeletonBlock className="h-[74px] bg-[#F8F6FC]" />
+              </div>
+              <div className="rounded-2xl border border-[#E9E3F5] bg-[#FCFBFE] p-3">
+                <div className="mb-3 flex items-center justify-between">
+                  <SkeletonBlock className="h-3 w-32" />
+                  <SkeletonBlock className="h-6 w-20 bg-white" />
+                </div>
+                <div className="flex flex-wrap gap-2">
+                  {[0, 1, 2, 3].map((item) => <SkeletonBlock key={item} className="h-9 w-24 bg-white" />)}
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div className={`mt-6 grid gap-4 ${title === "Safeguarding Tickets" ? "grid-cols-1 sm:grid-cols-2 xl:grid-cols-6" : "grid-cols-2 sm:grid-cols-3 lg:grid-cols-5"}`}>
+          {[0, 1, 2, 3, 4, 5].slice(0, title === "Safeguarding Tickets" ? 6 : 5).map((item) => (
+            <div key={item} className="rounded-2xl border border-[#E7E2F3] bg-white p-5 shadow-sm">
+              <div className="mb-3 flex items-center justify-between">
+                <SkeletonBlock className="h-3 w-20" />
+                <SkeletonBlock className="h-8 w-8 bg-[#F3EFFC]" />
+              </div>
+              <SkeletonBlock className="h-8 w-14" />
+            </div>
+          ))}
+        </div>
+
+        <div className="mt-6 overflow-hidden rounded-3xl border border-[#E9E3F5]">
+          <TableRowsSkeleton rows={7} columns={title === "Safeguarding Tickets" ? 9 : 8} />
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function DashboardTicketsTable({
+  tickets,
+  loading,
+  onView,
+}: {
+  tickets: SupportTicketRow[];
+  loading: boolean;
+  onView: (ticket: SupportTicketRow) => void;
+}) {
+  type DashboardTicketSortKey = "ticket" | "learner" | "type" | "risk" | "created" | "status" | "owner" | "days";
+  const [sortConfig, setSortConfig] = React.useState<{ key: DashboardTicketSortKey; direction: SortDirection }>({
+    key: "created",
+    direction: "desc",
+  });
+  function setSort(key: DashboardTicketSortKey) {
+    setSortConfig((prev) => ({
+      key,
+      direction: prev.key === key && prev.direction === "desc" ? "asc" : "desc",
+    }));
+  }
+  const sortedTickets = React.useMemo(() => {
+    const valueFor = (ticket: SupportTicketRow, key: DashboardTicketSortKey) => {
+      if (key === "ticket") return sortText(ticket.ticketCode || `TKT-${ticket.id}`);
+      if (key === "learner") return sortText(ticket.learnerName || ticket.learnerEmail);
+      if (key === "type") return sortText(ticket.type);
+      if (key === "risk") return sortText(ticket.risk);
+      if (key === "created") return sortDate(ticket.createdAt);
+      if (key === "status") return sortText(ticketStatusLabel(ticket.status) || ticket.status);
+      if (key === "owner") return sortText(ticket.assignedOwner);
+      return sortNumber(ticket.daysToClose ?? ticket.daysOpen ?? 0);
+    };
+    return [...tickets].sort((a, b) => compareValues(valueFor(a, sortConfig.key), valueFor(b, sortConfig.key), sortConfig.direction));
+  }, [tickets, sortConfig]);
+  const ticketHeader = (key: DashboardTicketSortKey, label: string) => (
+    <SortHeaderButton label={label} active={sortConfig.key === key} direction={sortConfig.direction} onClick={() => setSort(key)} />
+  );
+
+  return (
+    <div className="mt-4 overflow-hidden rounded-2xl border border-[#E9E3F5]">
+      <div className="custom-scroll overflow-auto" style={{ maxHeight: "430px" }}>
+        <table className="w-full min-w-[1040px] text-sm">
+          <thead className="sticky top-0 z-10 bg-[#FCFBFE]">
+            <tr className="border-b border-[#EEE8F8] text-left text-xs font-semibold uppercase tracking-wide text-[#8E82AA]">
+              <th className="px-4 py-3 first:pl-5">{ticketHeader("ticket", "Ticket")}</th>
+              <th className="px-4 py-3">{ticketHeader("learner", "Learner")}</th>
+              <th className="px-4 py-3">{ticketHeader("type", "Type")}</th>
+              <th className="px-4 py-3">{ticketHeader("risk", "Risk")}</th>
+              <th className="px-4 py-3">{ticketHeader("created", "Created")}</th>
+              <th className="px-4 py-3">{ticketHeader("status", "Status")}</th>
+              <th className="px-4 py-3">{ticketHeader("owner", "Owner")}</th>
+              <th className="px-4 py-3">{ticketHeader("days", "Days")}</th>
+              <th className="px-4 py-3 last:pr-5">View</th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-[#F1EDF8]">
+            {loading && tickets.length === 0 ? (
+              <tr>
+                <td colSpan={9} className="px-5 py-8 text-center text-sm text-slate-500">
+                  Loading tickets...
+                </td>
+              </tr>
+            ) : sortedTickets.length === 0 ? (
+              <tr>
+                <td colSpan={9} className="px-5 py-8 text-center text-sm text-slate-500">
+                  No tickets found
+                </td>
+              </tr>
+            ) : (
+              sortedTickets.map((ticket) => (
+                <tr key={ticket.id} className="transition hover:bg-[#FAFAFF]">
+                  <td className="px-4 py-3 first:pl-5 font-semibold text-[#0F9B8E]">
+                    {ticket.ticketCode || `TKT-${ticket.id}`}
+                  </td>
+                  <td className="px-4 py-3">
+                    <div className="font-medium text-[#241453]">{ticket.learnerName || "-"}</div>
+                    <div className="mt-0.5 text-xs text-slate-400">{ticket.learnerEmail || ""}</div>
+                  </td>
+                  <td className="px-4 py-3 capitalize text-[#241453]">{ticket.type || "-"}</td>
+                  <td className="px-4 py-3">
+                    <span className={`inline-flex rounded-md px-3 py-1 text-xs font-medium capitalize ${ticketRiskBadgeClass(ticket.risk)}`}>
+                      {ticket.risk || "-"}
+                    </span>
+                  </td>
+                  <td className="px-4 py-3 text-slate-600">{formatTicketDate(ticket.createdAt)}</td>
+                  <td className="px-4 py-3">
+                    <span className={`inline-flex rounded-full px-3 py-1 text-xs font-medium capitalize ${ticketStatusBadgeClass(ticket.status)}`}>
+                      {ticketStatusLabel(ticket.status) || "-"}
+                    </span>
+                  </td>
+                  <td className="px-4 py-3 text-[#241453]">{ticket.assignedOwner || "-"}</td>
+                  <td className="px-4 py-3 tabular-nums text-[#241453]">{ticket.daysToClose ?? ticket.daysOpen ?? 0}</td>
+                  <td className="px-4 py-3 last:pr-5">
+                    <button
+                      type="button"
+                      onClick={() => onView(ticket)}
+                      className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-[#D9CFF3] bg-[#F5F1FC] px-3 text-xs font-semibold text-[#6248BE] hover:bg-[#EEE7FB]"
+                    >
+                      <Eye className="h-3.5 w-3.5" />
+                      View
+                    </button>
+                  </td>
+                </tr>
+              ))
+            )}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+function DashboardTicketOverview({
+  statusGroup,
+  onStatusGroupChange,
+  riskValue,
+  onRiskChange,
+  statusCounts,
+  riskCounts,
+  shownCount,
+  tickets,
+  learners,
+  loading,
+  onView,
+  onCreateFollowUp,
+  onViewLearnerTickets,
+  onOpenTicketsPage,
+}: {
+  statusGroup: TicketStatusGroup;
+  onStatusGroupChange: (value: TicketStatusGroup) => void;
+  riskValue?: RiskQuickValue;
+  onRiskChange: (value: RiskQuickValue) => void;
+  statusCounts: Record<TicketStatusGroup, number>;
+  riskCounts: Partial<Record<RiskQuickValue, number>>;
+  shownCount: number;
+  tickets: SupportTicketRow[];
+  learners: TicketableLearnerRow[];
+  loading: boolean;
+  onView: (ticket: SupportTicketRow) => void;
+  onCreateFollowUp: (row: TicketableLearnerRow) => void;
+  onViewLearnerTickets: (row: TicketableLearnerRow) => void;
+  onOpenTicketsPage: () => void;
+}) {
+  const showingLearners = statusGroup === "all";
+
+  return (
+    <div className="mb-6 rounded-3xl bg-white p-4 shadow-sm sm:p-6">
+      <div className="mb-4 flex flex-col gap-2 sm:flex-row sm:items-end sm:justify-between">
+        <div>
+          <h2 className="text-md font-semibold text-[#241453]">Ticket Status Overview</h2>
+          <p className="mt-1 text-sm text-[#7B6D9B]">Students and safeguarding tickets grouped by status and RAG.</p>
+        </div>
+        <div className="flex flex-wrap items-center gap-2">
+          {loading && (
+            <span className="inline-flex items-center gap-2 rounded-full border border-[#E7E2F3] bg-[#FBFAFE] px-3 py-1.5 text-xs font-semibold text-[#644D93]">
+              <span className="h-2 w-2 animate-pulse rounded-full bg-[#8B6BC8]" />
+              Loading tickets...
+            </span>
+          )}
+          <button
+            type="button"
+            onClick={onOpenTicketsPage}
+            className="inline-flex h-9 items-center gap-1.5 rounded-xl border border-[#D9CFF3] bg-white px-3 text-xs font-semibold text-[#6248BE] hover:bg-[#F5F1FC]"
+          >
+            Manage tickets
+            <ChevronRight className="h-3.5 w-3.5" />
+          </button>
+        </div>
+      </div>
+
+      <div className="rounded-3xl border border-[#E9E3F5] p-4">
+        <div className="grid gap-3 lg:grid-cols-3">
+          {(["all", "open", "closed"] as const).map((group) => {
+            const isActive = statusGroup === group;
+            const Icon = group === "all" ? Users : group === "open" ? ClipboardList : ClipboardCheck;
+            return (
+              <button
+                key={group}
+                type="button"
+                onClick={() => onStatusGroupChange(group)}
+                className={`flex min-h-[74px] items-center justify-between gap-4 rounded-2xl border px-4 py-3 text-left transition ${
+                  isActive
+                    ? group === "all"
+                      ? "border-[#BFAFEA] bg-[#F8F5FF] text-[#241453] shadow-sm"
+                      : group === "open"
+                        ? "border-emerald-300 bg-emerald-50 text-emerald-800 shadow-sm"
+                        : "border-slate-300 bg-slate-100 text-slate-800 shadow-sm"
+                    : "border-[#E7E2F3] bg-white text-[#241453] hover:bg-[#F8F5FF]"
+                }`}
+              >
+                <span className="flex min-w-0 items-center gap-3">
+                  <span className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-xl ${
+                    isActive
+                      ? group === "all" ? "bg-white text-[#6248BE]" : group === "open" ? "bg-emerald-100 text-emerald-700" : "bg-white text-slate-600"
+                      : "bg-[#F4F0FC] text-[#644D93]"
+                  }`}>
+                    <Icon className="h-4 w-4" />
+                  </span>
+                  <span className="min-w-0">
+                    <span className="block text-sm font-semibold">
+                            {group === "all" ? "All Active Students" : group === "open" ? "Open Tickets" : "Closed Tickets"}
+                    </span>
+                    <span className="mt-0.5 block text-xs text-[#7B6D9B]">
+                      {group === "all" ? "Current caseload" : group === "open" ? "Active ticket cases" : "Resolved ticket cases"}
+                    </span>
+                  </span>
+                </span>
+                <span className={`rounded-full px-2.5 py-1 text-xs font-semibold ${
+                  isActive
+                    ? group === "all" ? "bg-white text-[#6248BE]" : group === "open" ? "bg-emerald-100 text-emerald-700" : "bg-white text-slate-600"
+                    : "bg-[#F4F0FC] text-[#644D93]"
+                }`}>
+                  {statusCounts[group]}
+                </span>
+              </button>
+            );
+          })}
+        </div>
+
+        <div className="mt-3 rounded-2xl border border-[#E9E3F5] bg-[#FCFBFE] p-3">
+          <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+            <span className="text-xs font-semibold uppercase tracking-wide text-[#7B6D9B]">
+              {showingLearners ? "Student RAG" : statusGroup === "open" ? "Open ticket RAG" : "Closed ticket RAG"}
+            </span>
+            <span className="rounded-full bg-white px-2.5 py-1 text-[11px] font-semibold text-[#644D93]">
+              {shownCount} shown
+            </span>
+          </div>
+          <RiskQuickFilter
+            value={riskValue}
+            onChange={onRiskChange}
+            allLabel={showingLearners ? "All learners" : "All tickets"}
+            counts={riskCounts}
+          />
+        </div>
+
+        {showingLearners ? (
+          <div className="mt-4">
+            <LearnerTable
+              rows={learners}
+              onCreateFollowUp={onCreateFollowUp}
+              onViewTickets={onViewLearnerTickets}
+            />
+          </div>
+        ) : (
+          <DashboardTicketsTable
+            tickets={tickets}
+            loading={loading}
+            onView={onView}
+          />
+        )}
+      </div>
+    </div>
+  );
+}
+
+function TableRowsSkeleton({ rows, columns }: { rows: number; columns: number }) {
+  return (
+    <div className="overflow-hidden">
+      <div className="grid gap-4 border-b border-[#EEE8F8] bg-[#FCFBFE] px-5 py-4" style={{ gridTemplateColumns: `repeat(${columns}, minmax(90px, 1fr))` }}>
+        {[...Array(columns)].map((_, i) => <SkeletonBlock key={i} className="h-3 w-20" />)}
+      </div>
+      <div className="divide-y divide-[#F1EDF8]">
+        {[...Array(rows)].map((_, row) => (
+          <div key={row} className="grid gap-4 px-5 py-4" style={{ gridTemplateColumns: `repeat(${columns}, minmax(90px, 1fr))`, opacity: 1 - row * 0.07 }}>
+            {[...Array(columns)].map((_, col) => (
+              <div key={col} className="space-y-2">
+                <SkeletonBlock className="h-3.5 w-full max-w-[120px]" />
+                {col < 2 ? <SkeletonBlock className="h-3 w-20 bg-[#F3EFFC]" /> : null}
+              </div>
+            ))}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function WellbeingPageSkeleton({ view }: { view: WellbeingActiveView }) {
+  return (
+    <div id="report-area" className="min-h-screen bg-[#F8F6FC] p-3 sm:p-6">
+      <div className="mb-6 rounded-[28px] bg-white p-4 shadow-sm sm:p-6">
+        <div className="flex flex-col gap-5 2xl:flex-row 2xl:items-center 2xl:justify-between">
+          <div className="space-y-2">
+            <h1 className="text-[24px] font-semibold leading-tight text-[#241453] sm:text-xl">
+              Safeguarding & Wellbeing Dashboard
+            </h1>
+            <SkeletonBlock className="h-3.5 w-72 bg-[#F3EFFC]" />
+          </div>
+          <div className="flex flex-col gap-3 lg:flex-row lg:items-center">
+            <SkeletonBlock className="h-12 w-full min-w-[260px] bg-[#F3EFFC] lg:w-[300px]" />
+            {view !== "dashboard" ? <SkeletonBlock className="h-12 w-44 bg-[#241453]/10" /> : <SkeletonBlock className="h-12 w-52 bg-[#F3EFFC]" />}
+          </div>
+        </div>
+      </div>
+
+      {view === "dashboard" ? <DashboardContentSkeleton /> : null}
+      {view === "tickets" ? <TicketPageContentSkeleton title="Safeguarding Tickets" /> : null}
+      {view === "onboarding" ? <TicketPageContentSkeleton title="Onboarding Tickets" /> : null}
+    </div>
+  );
+}
+
 export default function CoachWellbeingPage({ setMobileOpen, isDesktop }: CoachWellbeingPageProps) {
   const location = useLocation();
   const navigate = useNavigate();
@@ -5589,13 +6530,14 @@ export default function CoachWellbeingPage({ setMobileOpen, isDesktop }: CoachWe
   const [data, setData] = useState<CoachWellbeingResponse | null>(null);
   const [optionsLoading, setOptionsLoading] = useState(role === "qa");
   const [search, setSearch] = useState("");
-  const [dashboardRiskFilter, setDashboardRiskFilter] = useState<RiskQuickValue>("all");
+  const [dashboardTicketStatusGroup, setDashboardTicketStatusGroup] = useState<TicketStatusGroup>("all");
+  const [dashboardTicketRiskFilter, setDashboardTicketRiskFilter] = useState<RiskQuickValue>("all");
   const [followUpExpanded, setFollowUpExpanded] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [coachOptions, setCoachOptions] = useState<CoachOption[]>([]);
   const [selectedCoachEmail, setSelectedCoachEmail] = useState<string>(
-    () => localStorage.getItem("wb_coach_email") || ""
+    () => localStorage.getItem("wb_coach_email") || (role === "qa" ? "__all__" : "")
   );
 
   const [ticketModalOpen, setTicketModalOpen] = useState(false);
@@ -5666,6 +6608,7 @@ export default function CoachWellbeingPage({ setMobileOpen, isDesktop }: CoachWe
         console.error("Failed to load coach options", err);
         if (mounted) {
           setCoachOptions([]);
+          setSelectedCoachEmail((prev) => prev || "__all__");
         }
       } finally {
         if (mounted) {
@@ -5691,9 +6634,13 @@ export default function CoachWellbeingPage({ setMobileOpen, isDesktop }: CoachWe
   const wellbeingBackTarget = activeView !== "dashboard" ? previousWellbeingView || "dashboard" : undefined;
   const wellbeingBackLabel = wellbeingBackTarget ? `Back to ${WELLBEING_VIEW_LABELS[wellbeingBackTarget]}` : "Back to Dashboard";
 
-  function handleDashboardRiskFilter(value: RiskQuickValue) {
-    setSearch("");
-    setDashboardRiskFilter(value);
+  function handleDashboardTicketStatusGroup(value: TicketStatusGroup) {
+    setDashboardTicketStatusGroup(value);
+    setDashboardTicketRiskFilter("all");
+  }
+
+  function handleDashboardTicketRiskFilter(value: RiskQuickValue) {
+    setDashboardTicketRiskFilter(value);
   }
 
   function navigateWellbeingView(nextView: WellbeingActiveView) {
@@ -5740,7 +6687,8 @@ export default function CoachWellbeingPage({ setMobileOpen, isDesktop }: CoachWe
       setActiveViewHistory([]);
       setTicketsSearch("");
       setTicketFilters(emptyFilters);
-      setDashboardRiskFilter("all");
+      setDashboardTicketStatusGroup("all");
+      setDashboardTicketRiskFilter("all");
       setViewTicket(null);
     }
   }, [activeView]);
@@ -5752,11 +6700,9 @@ export default function CoachWellbeingPage({ setMobileOpen, isDesktop }: CoachWe
     let mounted = true;
 
     async function loadTickets() {
-      if (activeView !== "tickets" && activeView !== "onboarding") return;
       if (activeView === "onboarding") return;
 
       if (role === "qa") {
-        if (optionsLoading) return;
         if (selectedCoachEmail === "") return;
       }
 
@@ -5788,7 +6734,7 @@ export default function CoachWellbeingPage({ setMobileOpen, isDesktop }: CoachWe
     return () => {
       mounted = false;
     };
-  }, [activeView, role, selectedCoachEmail, optionsLoading]);
+  }, [activeView, role, selectedCoachEmail]);
 
   async function handleCreateTicketFromManagement(learnerId: string | number, form: SupportTicketFormState) {
     try {
@@ -5953,7 +6899,7 @@ export default function CoachWellbeingPage({ setMobileOpen, isDesktop }: CoachWe
       setTicketsData((prev) => {
         if (!prev) return prev;
         const updated = prev.tickets.map((t) =>
-          t.id === ticketId ? { ...t, notes: Array.isArray(updatedNotes) ? updatedNotes : t.notes } : t
+          t.id === ticketId ? { ...t, notes: Array.isArray(updatedNotes) ? updatedNotes : t.notes, notesCount: Array.isArray(updatedNotes) ? updatedNotes.length : t.notesCount } : t
         );
         return { ...prev, tickets: updated };
       });
@@ -5969,7 +6915,7 @@ export default function CoachWellbeingPage({ setMobileOpen, isDesktop }: CoachWe
       setTicketsData((prev) => {
         if (!prev) return prev;
         const updated = prev.tickets.map((t) =>
-          t.id === ticketId ? { ...t, evidence: Array.isArray(updatedEvidence) ? updatedEvidence : t.evidence } : t
+          t.id === ticketId ? { ...t, evidence: Array.isArray(updatedEvidence) ? updatedEvidence : t.evidence, evidenceCount: Array.isArray(updatedEvidence) ? updatedEvidence.length : t.evidenceCount } : t
         );
         return { ...prev, tickets: updated };
       });
@@ -6058,7 +7004,7 @@ export default function CoachWellbeingPage({ setMobileOpen, isDesktop }: CoachWe
   function handleViewLearnerTickets(row: TicketableLearnerRow) {
     const searchTerm = String(row.studentEmail || row.studentName || row.studentId || "").trim();
     setTicketsSearch(searchTerm);
-    setTicketFilters(emptyFilters);
+    setTicketFilters({ ...emptyFilters, statusGroup: "all" });
     navigateWellbeingView("tickets");
   }
 
@@ -6106,10 +7052,17 @@ export default function CoachWellbeingPage({ setMobileOpen, isDesktop }: CoachWe
       const refreshEmailParam2 = selectedCoachEmail === "__all__" ? undefined : selectedCoachEmail;
       const refreshed =
         role === "qa"
-          ? await getCoachWellbeing(refreshEmailParam2)
-          : await getCoachWellbeing();
+          ? await getCoachWellbeing(refreshEmailParam2, true)
+          : await getCoachWellbeing(undefined, true);
+      const refreshedTickets =
+        role === "qa"
+          ? await getSupportTickets(refreshEmailParam2)
+          : await getSupportTickets();
 
       setData(refreshed || emptyDashboard);
+      if (refreshedTickets?.tickets) {
+        setTicketsData(refreshedTickets);
+      }
       resetTicketModal();
     } catch (err: any) {
       console.error("create support ticket error", err);
@@ -6123,8 +7076,13 @@ export default function CoachWellbeingPage({ setMobileOpen, isDesktop }: CoachWe
     let mounted = true;
 
     async function loadDashboard() {
+      if (activeView !== "dashboard") {
+        setLoading(false);
+        setData((prev) => prev || emptyDashboard);
+        return;
+      }
+
       if (role === "qa") {
-        if (optionsLoading) return;
         if (selectedCoachEmail === "") return;
       }
 
@@ -6135,8 +7093,8 @@ export default function CoachWellbeingPage({ setMobileOpen, isDesktop }: CoachWe
         const dashEmailParam = selectedCoachEmail === "__all__" ? undefined : selectedCoachEmail;
         const res =
           role === "qa"
-            ? await getCoachWellbeing(dashEmailParam)
-            : await getCoachWellbeing();
+            ? await getCoachWellbeing(dashEmailParam, true)
+            : await getCoachWellbeing(undefined, true);
 
         if (!mounted) return;
 
@@ -6157,7 +7115,7 @@ export default function CoachWellbeingPage({ setMobileOpen, isDesktop }: CoachWe
     return () => {
       mounted = false;
     };
-  }, [role, selectedCoachEmail, optionsLoading]);
+  }, [activeView, role, selectedCoachEmail]);
 
   const coachScope = useMemo(() => {
     if (role === "coach") return storedUserCoachScope();
@@ -6174,78 +7132,42 @@ export default function CoachWellbeingPage({ setMobileOpen, isDesktop }: CoachWe
     return learners.filter((learner) => learnerMatchesCoachScope(learner, coachScope));
   }, [data, coachScope]);
 
-  const filteredLearners = useMemo<TicketableLearnerRow[]>(() => {
-    const learners = scopedLearners;
-    const q = search.trim().toLowerCase();
-
-    const searched = q ? learners.filter((item) => {
-      const studentName = String(item.studentName || "").toLowerCase();
-      const studentEmail = String(item.studentEmail || "").toLowerCase();
-      const recommendedAction = String(item.recommendedAction || "").toLowerCase();
-      const programme = String((item as any).programme || "").toLowerCase();
-      const followUpReason = String(item.followUpReason || "").toLowerCase();
-
-      return (
-        studentName.includes(q) ||
-        studentEmail.includes(q) ||
-        recommendedAction.includes(q) ||
-        programme.includes(q) ||
-        followUpReason.includes(q)
-      );
-    }) : learners;
-
-    const filtered = dashboardRiskFilter === "all"
-      ? searched
-      : searched.filter((item) => String(item.riskLevel || "").toLowerCase() === dashboardRiskFilter);
-
-    return [...filtered].sort((a, b) => {
-      const aHasData = hasLearnerWellbeingData(a);
-      const bHasData = hasLearnerWellbeingData(b);
-      if (aHasData !== bHasData) return aHasData ? -1 : 1;
-
-      const riskOrder: Record<string, number> = { red: 0, amber: 1, green: 2 };
-      const aRisk = riskOrder[String(a.riskLevel || "").toLowerCase()] ?? 3;
-      const bRisk = riskOrder[String(b.riskLevel || "").toLowerCase()] ?? 3;
-      if (aRisk !== bRisk) return aRisk - bRisk;
-
-      const aTickets = Number(a.openTicketCount ?? 0);
-      const bTickets = Number(b.openTicketCount ?? 0);
-      if (aTickets !== bTickets) return bTickets - aTickets;
-
-      return String(a.studentName || "").localeCompare(String(b.studentName || ""));
-    });
-  }, [scopedLearners, search, dashboardRiskFilter]);
-
-  const dashboardRiskCounts = useMemo<Partial<Record<RiskQuickValue, number>>>(() => {
-    const learners = scopedLearners;
-    return {
-      all: learners.length,
-      red: learners.filter((row) => String(row.riskLevel || "").toLowerCase() === "red").length,
-      amber: learners.filter((row) => String(row.riskLevel || "").toLowerCase() === "amber").length,
-      green: learners.filter((row) => String(row.riskLevel || "").toLowerCase() === "green").length,
-    };
-  }, [scopedLearners]);
-
   const dashboardSummary = useMemo(() => {
     const learners = scopedLearners;
+    const apiSummary = data?.summary;
+    if (apiSummary && learners.length === 0) {
+      return {
+        caseload: apiSummary.caseload ?? 0,
+        openTickets: apiSummary.openTickets ?? 0,
+        atRisk: apiSummary.atRisk ?? 0,
+        greenRisk: apiSummary.greenRisk ?? 0,
+        nonResponders: apiSummary.nonResponders ?? 0,
+      };
+    }
     return {
       caseload: learners.length,
       openTickets: learners.reduce((sum, row) => sum + Number(row.openTicketCount ?? 0), 0),
-      atRisk: dashboardRiskCounts.red ?? 0,
-      greenRisk: dashboardRiskCounts.green ?? 0,
+      atRisk: learners.filter((row) => String(row.riskLevel || "").toLowerCase() === "red").length,
+      greenRisk: learners.filter((row) => String(row.riskLevel || "").toLowerCase() === "green").length,
       nonResponders: learners.filter((row) => !hasLearnerWellbeingData(row)).length,
     };
-  }, [scopedLearners, dashboardRiskCounts]);
+  }, [scopedLearners, data?.summary]);
 
   const surveyResponsePct = useMemo(() => {
+    const summaryCaseload = Number(data?.summary?.caseload ?? NaN);
+    const summaryResponded = Number(data?.summary?.surveyResponded ?? NaN);
+    if (Number.isFinite(summaryCaseload) && summaryCaseload > 0 && Number.isFinite(summaryResponded)) {
+      return Math.round((summaryResponded / summaryCaseload) * 100);
+    }
     const learners = scopedLearners;
     const total = learners.length;
     if (!total) return 0;
-    const responded = learners.filter((row) => (row.surveyResponses?.length ?? 0) > 0).length;
+    const responded = learners.filter((row) => (row.surveyResponses?.length ?? 0) > 0 || Boolean(row.lastSurveyDate)).length;
     return Math.round((responded / total) * 100);
-  }, [scopedLearners]);
+  }, [scopedLearners, data?.summary]);
 
   const avgWellbeing = useMemo(() => {
+    if (data?.summary?.avgWellbeing != null) return data.summary.avgWellbeing;
     const learners = scopedLearners;
     const scores = learners
       .filter((l) => (l.surveyResponses?.length ?? 0) > 0)
@@ -6253,23 +7175,109 @@ export default function CoachWellbeingPage({ setMobileOpen, isDesktop }: CoachWe
       .filter((s): s is number => s != null && s > 0);
     if (!scores.length) return null;
     return Math.round((scores.reduce((a, b) => a + b, 0) / scores.length) * 10) / 10;
-  }, [scopedLearners]);
+  }, [scopedLearners, data?.summary?.avgWellbeing]);
 
   const scopedTicketRows = useMemo<SupportTicketRow[]>(() => {
-    const tickets = ticketsData?.tickets || [];
-    if (!coachScope.email && coachScope.keys.length === 0) return tickets;
-    if (scopedLearners.length === 0) return [];
-    return tickets.filter((ticket) => (
-      scopedLearners.some((learner) => ticketMatchesLearner(ticket, learner))
+    return ticketsData?.tickets || [];
+  }, [ticketsData]);
+
+  const dashboardLearnerSearchRows = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    const searched = q
+      ? scopedLearners.filter((learner) => learnerMatchesTextSearch(learner, q))
+      : scopedLearners;
+
+    return searched.map((learner) => {
+      const matchedTickets = scopedTicketRows.filter((ticket) => ticketMatchesLearner(ticket, learner));
+      const openCountFromTickets = matchedTickets.filter((ticket) => isActiveTicketStatus(ticket.status)).length;
+      const closedCountFromTickets = matchedTickets.length - openCountFromTickets;
+      const fallbackOpenCount = Number(learner.openTicketCount || 0);
+      const openTicketCount = matchedTickets.length > 0 ? openCountFromTickets : fallbackOpenCount;
+      const closedTicketCount = matchedTickets.length > 0 ? closedCountFromTickets : Number(learner.closedTicketCount || 0);
+
+      return {
+        ...learner,
+        hasOpenTicket: openTicketCount > 0 || Boolean(learner.hasOpenTicket),
+        openTicketCount,
+        closedTicketCount,
+        totalTicketCount: openTicketCount + closedTicketCount,
+      };
+    });
+  }, [scopedLearners, scopedTicketRows, search]);
+
+  const dashboardTotalTicketStatusCounts = useMemo<Record<TicketStatusGroup, number>>(() => {
+    const closed = scopedTicketRows.filter((ticket) => !isActiveTicketStatus(ticket.status)).length;
+    return {
+      all: scopedLearners.length,
+      open: scopedTicketRows.length - closed,
+      closed,
+    };
+  }, [scopedLearners.length, scopedTicketRows]);
+
+  const dashboardTicketSearchRows = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    if (!q) return scopedTicketRows;
+    return scopedTicketRows.filter((ticket) => ticketMatchesTextSearch(ticket, q));
+  }, [scopedTicketRows, search]);
+
+  const dashboardTicketStatusCounts = useMemo<Record<TicketStatusGroup, number>>(() => {
+    const closed = dashboardTicketSearchRows.filter((ticket) => !isActiveTicketStatus(ticket.status)).length;
+    return {
+      all: dashboardLearnerSearchRows.length,
+      open: dashboardTicketSearchRows.length - closed,
+      closed,
+    };
+  }, [dashboardLearnerSearchRows.length, dashboardTicketSearchRows]);
+
+  const dashboardTicketStatusRows = useMemo(() => {
+    if (dashboardTicketStatusGroup === "all") return dashboardTicketSearchRows;
+    return dashboardTicketSearchRows.filter((ticket) => {
+      const isClosed = !isActiveTicketStatus(ticket.status);
+      return dashboardTicketStatusGroup === "closed" ? isClosed : !isClosed;
+    });
+  }, [dashboardTicketSearchRows, dashboardTicketStatusGroup]);
+
+  const dashboardLearnerRiskCounts = useMemo<Partial<Record<RiskQuickValue, number>>>(() => {
+    return {
+      all: dashboardLearnerSearchRows.length,
+      red: dashboardLearnerSearchRows.filter((learner) => String(learner.riskLevel || "").toLowerCase() === "red").length,
+      amber: dashboardLearnerSearchRows.filter((learner) => String(learner.riskLevel || "").toLowerCase() === "amber").length,
+      green: dashboardLearnerSearchRows.filter((learner) => String(learner.riskLevel || "").toLowerCase() === "green").length,
+    };
+  }, [dashboardLearnerSearchRows]);
+
+  const dashboardLearnerRows = useMemo(() => {
+    if (dashboardTicketRiskFilter === "all") return dashboardLearnerSearchRows;
+    return dashboardLearnerSearchRows.filter((learner) => (
+      String(learner.riskLevel || "").toLowerCase() === dashboardTicketRiskFilter
     ));
-  }, [ticketsData, scopedLearners, coachScope]);
+  }, [dashboardLearnerSearchRows, dashboardTicketRiskFilter]);
+
+  const dashboardTicketRiskCounts = useMemo<Partial<Record<RiskQuickValue, number>>>(() => {
+    return {
+      all: dashboardTicketStatusRows.length,
+      red: dashboardTicketStatusRows.filter((ticket) => String(ticket.risk || "").toLowerCase() === "red").length,
+      amber: dashboardTicketStatusRows.filter((ticket) => String(ticket.risk || "").toLowerCase() === "amber").length,
+      green: dashboardTicketStatusRows.filter((ticket) => String(ticket.risk || "").toLowerCase() === "green").length,
+    };
+  }, [dashboardTicketStatusRows]);
+
+  const dashboardOverviewRiskCounts = dashboardTicketStatusGroup === "all"
+    ? dashboardLearnerRiskCounts
+    : dashboardTicketRiskCounts;
+
+  const dashboardTicketRows = useMemo(() => {
+    if (dashboardTicketRiskFilter === "all") return dashboardTicketStatusRows;
+    return dashboardTicketStatusRows.filter((ticket) => (
+      String(ticket.risk || "").toLowerCase() === dashboardTicketRiskFilter
+    ));
+  }, [dashboardTicketStatusRows, dashboardTicketRiskFilter]);
+
+  const dashboardTicketShownCount = dashboardTicketStatusGroup === "all"
+    ? dashboardLearnerRows.length
+    : dashboardTicketRows.length;
 
   const filteredTicketsData = useMemo<SupportTicketsResponse>(() => {
-    const raw = ticketsData || {
-      summary: { total: 0, open: 0, redRisk: 0, escalated: 0, closed: 0, avgCloseDays: null, avgCloseDelta: null },
-      tickets: [],
-    };
-
     const q = ticketsSearch.trim().toLowerCase();
 
     const baseTickets = scopedTicketRows;
@@ -6277,34 +7285,51 @@ export default function CoachWellbeingPage({ setMobileOpen, isDesktop }: CoachWe
     const tickets = baseTickets.filter((item) => {
       if (!ticketMatchesTextSearch(item, q)) return false;
 
+      const statusValue = String(item.status || "open").toLowerCase();
+      const isClosed = CLOSED_TICKET_STATUSES.has(statusValue);
+      if (ticketFilters.statusGroup === "closed" && !isClosed) return false;
+      if (ticketFilters.statusGroup === "open" && isClosed) return false;
       if (ticketFilters.status.length > 0 && !ticketFilters.status.includes(String(item.status || "").toLowerCase())) return false;
       if (ticketFilters.type.length > 0 && !ticketFilters.type.includes(String(item.type || "").toLowerCase())) return false;
       if (ticketFilters.risk.length > 0 && !ticketFilters.risk.includes(String(item.risk || "").toLowerCase())) return false;
+      if (ticketFilters.evidence === "with" && !ticketHasEvidence(item)) return false;
+      if (ticketFilters.evidence === "missing" && ticketHasEvidence(item)) return false;
 
       return true;
     });
 
-    const isFiltered =
-      Boolean(q) ||
-      ticketFilters.status.length > 0 ||
-      ticketFilters.type.length > 0 ||
-      ticketFilters.risk.length > 0;
-
     return {
-      summary: calculateTicketSummaryFromRows(
-        tickets,
-        isFiltered ? null : raw.summary.avgCloseDelta ?? null,
-      ),
+      summary: calculateTicketSummaryFromRows(tickets, null),
       tickets,
     };
   }, [ticketsData, scopedTicketRows, ticketsSearch, ticketFilters]);
 
-  const ticketRiskCounts = useMemo<Partial<Record<RiskQuickValue, number>>>(() => {
+  const ticketStatusCounts = useMemo<Record<TicketStatusGroup, number>>(() => {
     const q = ticketsSearch.trim().toLowerCase();
     const countBase = scopedTicketRows.filter((item) => {
       if (!ticketMatchesTextSearch(item, q)) return false;
       if (ticketFilters.status.length > 0 && !ticketFilters.status.includes(String(item.status || "").toLowerCase())) return false;
       if (ticketFilters.type.length > 0 && !ticketFilters.type.includes(String(item.type || "").toLowerCase())) return false;
+      if (ticketFilters.evidence === "with" && !ticketHasEvidence(item)) return false;
+      if (ticketFilters.evidence === "missing" && ticketHasEvidence(item)) return false;
+      return true;
+    });
+    const closed = countBase.filter((ticket) => CLOSED_TICKET_STATUSES.has(String(ticket.status || "open").toLowerCase())).length;
+    return { all: countBase.length, open: countBase.length - closed, closed };
+  }, [scopedTicketRows, ticketsSearch, ticketFilters.status, ticketFilters.type, ticketFilters.evidence]);
+
+  const ticketRiskCounts = useMemo<Partial<Record<RiskQuickValue, number>>>(() => {
+    const q = ticketsSearch.trim().toLowerCase();
+    const countBase = scopedTicketRows.filter((item) => {
+      if (!ticketMatchesTextSearch(item, q)) return false;
+      const statusValue = String(item.status || "open").toLowerCase();
+      const isClosed = CLOSED_TICKET_STATUSES.has(statusValue);
+      if (ticketFilters.statusGroup === "closed" && !isClosed) return false;
+      if (ticketFilters.statusGroup === "open" && isClosed) return false;
+      if (ticketFilters.status.length > 0 && !ticketFilters.status.includes(String(item.status || "").toLowerCase())) return false;
+      if (ticketFilters.type.length > 0 && !ticketFilters.type.includes(String(item.type || "").toLowerCase())) return false;
+      if (ticketFilters.evidence === "with" && !ticketHasEvidence(item)) return false;
+      if (ticketFilters.evidence === "missing" && ticketHasEvidence(item)) return false;
       return true;
     });
 
@@ -6314,7 +7339,28 @@ export default function CoachWellbeingPage({ setMobileOpen, isDesktop }: CoachWe
       amber: countBase.filter((ticket) => String(ticket.risk || "").toLowerCase() === "amber").length,
       green: countBase.filter((ticket) => String(ticket.risk || "").toLowerCase() === "green").length,
     };
-  }, [scopedTicketRows, ticketsSearch, ticketFilters.status, ticketFilters.type]);
+  }, [scopedTicketRows, ticketsSearch, ticketFilters.statusGroup, ticketFilters.status, ticketFilters.type, ticketFilters.evidence]);
+
+  const ticketEvidenceCounts = useMemo<Record<TicketEvidenceFilter, number>>(() => {
+    const q = ticketsSearch.trim().toLowerCase();
+    const countBase = scopedTicketRows.filter((item) => {
+      if (!ticketMatchesTextSearch(item, q)) return false;
+      const statusValue = String(item.status || "open").toLowerCase();
+      const isClosed = CLOSED_TICKET_STATUSES.has(statusValue);
+      if (ticketFilters.statusGroup === "closed" && !isClosed) return false;
+      if (ticketFilters.statusGroup === "open" && isClosed) return false;
+      if (ticketFilters.status.length > 0 && !ticketFilters.status.includes(statusValue)) return false;
+      if (ticketFilters.type.length > 0 && !ticketFilters.type.includes(String(item.type || "").toLowerCase())) return false;
+      if (ticketFilters.risk.length > 0 && !ticketFilters.risk.includes(String(item.risk || "").toLowerCase())) return false;
+      return true;
+    });
+    const withEvidence = countBase.filter(ticketHasEvidence).length;
+    return {
+      all: countBase.length,
+      with: withEvidence,
+      missing: countBase.length - withEvidence,
+    };
+  }, [scopedTicketRows, ticketsSearch, ticketFilters.statusGroup, ticketFilters.status, ticketFilters.type, ticketFilters.risk]);
 
   const workflowLearnerKeys = useMemo(() => {
     const names = new Set<string>();
@@ -6393,121 +7439,7 @@ export default function CoachWellbeingPage({ setMobileOpen, isDesktop }: CoachWe
   }, [data]);
 
   if (loading && !data) {
-    return (
-      <div id="report-area" className="min-h-screen bg-[#F8F6FC] p-4 sm:p-6">
-        {/* Header skeleton */}
-        <div className="mb-6 flex items-center justify-between rounded-3xl bg-white px-6 py-4 shadow-sm">
-          <div className="space-y-2">
-            <div className="h-5 w-56 animate-pulse rounded-xl bg-[#EDE8F8]" />
-            <div className="h-3.5 w-80 animate-pulse rounded-xl bg-[#F3EFFC]" />
-          </div>
-          <div className="flex items-center gap-3">
-            <div className="h-10 w-44 animate-pulse rounded-2xl bg-[#EDE8F8]" />
-            <div className="h-10 w-36 animate-pulse rounded-2xl bg-[#241453]/10" />
-          </div>
-        </div>
-
-        {/* Summary cards skeleton */}
-        <div className="mb-6 grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-5">
-          {[
-            "bg-[#E6F7F6]", "bg-[#F5E8E8]", "bg-[#FEF9EE]", "bg-[#F0EBF9]", "bg-[#F2FAF6]"
-          ].map((bg, i) => (
-            <div key={i} className="rounded-3xl border border-[#ECE7F7] bg-white p-5 shadow-sm">
-              <div className="mb-3 flex items-center justify-between">
-                <div className="h-3 w-20 animate-pulse rounded-lg bg-[#EDE8F8]" />
-                <div className={`h-8 w-8 animate-pulse rounded-xl ${bg}`} />
-              </div>
-              <div className="h-8 w-14 animate-pulse rounded-xl bg-[#EDE8F8]" />
-            </div>
-          ))}
-        </div>
-
-        {/* Main content skeleton */}
-        <div className="grid gap-6 lg:grid-cols-3">
-          {/* Table skeleton */}
-          <div className="lg:col-span-2 rounded-3xl bg-white p-6 shadow-sm">
-            <div className="mb-4 flex items-center justify-between">
-              <div className="h-5 w-40 animate-pulse rounded-xl bg-[#EDE8F8]" />
-              <div className="h-9 w-24 animate-pulse rounded-2xl bg-[#EDE8F8]" />
-            </div>
-            <div className="mb-4 h-10 w-full animate-pulse rounded-2xl bg-[#F3EFFC]" />
-            <div className="space-y-3">
-              {[...Array(6)].map((_, i) => (
-                <div key={i} className="flex items-center gap-4 rounded-2xl border border-[#F1EDF8] p-3"
-                  style={{ opacity: 1 - i * 0.12 }}>
-                  <div className="h-8 w-8 shrink-0 animate-pulse rounded-full bg-[#EDE8F8]" />
-                  <div className="flex-1 space-y-1.5">
-                    <div className="h-3.5 w-32 animate-pulse rounded-lg bg-[#EDE8F8]" />
-                    <div className="h-3 w-48 animate-pulse rounded-lg bg-[#F3EFFC]" />
-                  </div>
-                  <div className="h-6 w-14 animate-pulse rounded-xl bg-[#F3EFFC]" />
-                  <div className="h-6 w-16 animate-pulse rounded-xl bg-[#EDE8F8]" />
-                  <div className="h-8 w-8 animate-pulse rounded-xl bg-[#F3EFFC]" />
-                </div>
-              ))}
-            </div>
-          </div>
-
-          {/* Side panel skeleton */}
-          <div className="space-y-6">
-            <div className="rounded-3xl bg-white p-6 shadow-sm">
-              <div className="mb-4 h-5 w-32 animate-pulse rounded-xl bg-[#EDE8F8]" />
-              <div className="flex items-center justify-center py-4">
-                <div className="relative flex items-center justify-center">
-                  <svg className="h-32 w-32 -rotate-90" viewBox="0 0 120 120">
-                    <circle cx="60" cy="60" r="50" fill="none" stroke="#EDE8F8" strokeWidth="10" />
-                    <circle cx="60" cy="60" r="50" fill="none" stroke="#C4B5E8" strokeWidth="10"
-                      strokeDasharray="100 214" strokeLinecap="round"
-                      className="animate-pulse" />
-                  </svg>
-                  <div className="absolute inset-0 flex flex-col items-center justify-center gap-1">
-                    <div className="h-7 w-12 animate-pulse rounded-xl bg-[#EDE8F8]" />
-                    <div className="h-3 w-8 animate-pulse rounded-lg bg-[#F3EFFC]" />
-                  </div>
-                </div>
-              </div>
-              <div className="mt-2 space-y-2">
-                {[...Array(3)].map((_, i) => (
-                  <div key={i} className="flex items-center justify-between rounded-xl bg-[#FAF8FF] px-3 py-2">
-                    <div className="h-3 w-20 animate-pulse rounded-lg bg-[#EDE8F8]" />
-                    <div className="h-5 w-10 animate-pulse rounded-lg bg-[#EDE8F8]" />
-                  </div>
-                ))}
-              </div>
-            </div>
-            <div className="rounded-3xl bg-white p-6 shadow-sm">
-              <div className="mb-4 h-5 w-36 animate-pulse rounded-xl bg-[#EDE8F8]" />
-              <div className="space-y-3">
-                {[...Array(3)].map((_, i) => (
-                  <div key={i} className="rounded-2xl border border-[#F1EDF8] p-3 space-y-1.5"
-                    style={{ opacity: 1 - i * 0.2 }}>
-                    <div className="h-3.5 w-40 animate-pulse rounded-lg bg-[#EDE8F8]" />
-                    <div className="h-3 w-28 animate-pulse rounded-lg bg-[#F3EFFC]" />
-                  </div>
-                ))}
-              </div>
-            </div>
-          </div>
-        </div>
-
-        {/* Centered brand badge */}
-        <div className="fixed inset-0 pointer-events-none flex items-end justify-center pb-8">
-          <div className="inline-flex items-center gap-2.5 rounded-full border border-[#DDD5F5] bg-white/90 px-4 py-2 shadow-lg backdrop-blur-sm">
-            <span className="relative flex h-2.5 w-2.5">
-              <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-[#8B6BC8] opacity-60" />
-              <span className="relative inline-flex h-2.5 w-2.5 rounded-full bg-[#644D93]" />
-            </span>
-            <span className="text-xs font-semibold text-[#241453]">Loading wellbeing dashboard</span>
-            <span className="flex gap-0.5">
-              {[0, 1, 2].map((i) => (
-                <span key={i} className="h-1 w-1 rounded-full bg-[#9B8EC4] animate-bounce"
-                  style={{ animationDelay: `${i * 150}ms` }} />
-              ))}
-            </span>
-          </div>
-        </div>
-      </div>
-    );
+    return <WellbeingPageSkeleton view={activeView} />;
   }
 
   if (error && !data?.learners?.length && !data?.followUps?.length && !data?.suggestedActions?.length) {
@@ -6520,16 +7452,10 @@ export default function CoachWellbeingPage({ setMobileOpen, isDesktop }: CoachWe
 
   const isPageBootstrapping =
     data === null ||
-    (role === "qa" && (optionsLoading || selectedCoachEmail === ""));
+    (role === "qa" && selectedCoachEmail === "");
 
   if (isPageBootstrapping) {
-    return (
-      <div className="min-h-screen bg-[#F8F6FC] p-4 sm:p-6">
-        <div className="flex min-h-[70vh] items-center justify-center rounded-3xl bg-white shadow-sm">
-          <LoadingBadge label={optionsLoading ? "Loading coach list..." : "Loading dashboard..."} />
-        </div>
-      </div>
-    );
+    return <WellbeingPageSkeleton view={activeView} />;
   }
 
   return (
@@ -6616,7 +7542,7 @@ export default function CoachWellbeingPage({ setMobileOpen, isDesktop }: CoachWe
                 <input
                   value={search}
                   onChange={(e) => setSearch(e.target.value)}
-                  placeholder="Search learners, programme, action..."
+                  placeholder="Search tickets, learners, programme, action..."
                   className="w-full bg-transparent text-sm outline-none"
                 />
               </div>
@@ -6658,30 +7584,30 @@ export default function CoachWellbeingPage({ setMobileOpen, isDesktop }: CoachWe
             />
             <StatCard
               title="Open Tickets"
-              value={dashboardSummary.openTickets}
+              value={ticketsLoading && !ticketsData ? "…" : ticketsData ? dashboardTotalTicketStatusCounts.open : dashboardSummary.openTickets}
               icon={<ClipboardList className="h-4 w-4" />}
               valueColor="text-amber-500"
               iconBg="bg-amber-50"
               iconColor="text-amber-500"
-              source="Sum of active ticket counts on the current learner rows."
+              source="Currently loaded safeguarding tickets whose status is not closed or outcome recorded."
             />
             <StatCard
-              title="Red Risk Cases"
+              title="Red Risk Learners"
               value={dashboardSummary.atRisk}
               icon={<AlertTriangle className="h-4 w-4" />}
               valueColor="text-red-500"
               iconBg="bg-red-50"
               iconColor="text-red-500"
-              source="Learner rows where riskLevel is red."
+              source="Learners where riskLevel is red."
             />
             <StatCard
-              title="Green Risk Cases"
+              title="Green Risk Learners"
               value={dashboardSummary.greenRisk}
               icon={<Shield className="h-4 w-4" />}
               valueColor="text-[#3D7A55]"
               iconBg="bg-[#F2FAF6]"
               iconColor="text-[#3D7A55]"
-              source="Learner rows where riskLevel is green."
+              source="Learners where riskLevel is green."
             />
             <StatCard
               title="Avg Wellbeing"
@@ -6694,25 +7620,22 @@ export default function CoachWellbeingPage({ setMobileOpen, isDesktop }: CoachWe
             />
           </div>
 
-          <div className="mb-6 rounded-3xl bg-white p-4 shadow-sm sm:p-6">
-            <div className="mb-5 flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
-              <div>
-                <h2 className="text-md font-semibold text-[#241453]">Caseload Risk Overview <span className="text-sm font-normal text-[#7B6D9B]"> ( Higher risk score = more concern )</span></h2>
-                <span className="mt-1 block text-xs text-[#8E82AA]">{filteredLearners.length} learner{filteredLearners.length !== 1 ? "s" : ""} shown</span>
-              </div>
-              <RiskQuickFilter
-                value={dashboardRiskFilter}
-                onChange={handleDashboardRiskFilter}
-                allLabel="All learners"
-                counts={dashboardRiskCounts}
-              />
-            </div>
-            <LearnerTable
-              rows={filteredLearners}
-              onCreateFollowUp={handleCreateFollowUp}
-              onViewTickets={handleViewLearnerTickets}
-            />
-          </div>
+          <DashboardTicketOverview
+            statusGroup={dashboardTicketStatusGroup}
+            onStatusGroupChange={handleDashboardTicketStatusGroup}
+            riskValue={dashboardTicketRiskFilter}
+            onRiskChange={handleDashboardTicketRiskFilter}
+            statusCounts={dashboardTicketStatusCounts}
+            riskCounts={dashboardOverviewRiskCounts}
+            shownCount={dashboardTicketShownCount}
+            tickets={dashboardTicketRows}
+            learners={dashboardLearnerRows}
+            loading={ticketsLoading}
+            onView={setViewTicket}
+            onCreateFollowUp={handleCreateFollowUp}
+            onViewLearnerTickets={handleViewLearnerTickets}
+            onOpenTicketsPage={openSafeguardingTicketsView}
+          />
 
           <div className="grid grid-cols-1 gap-6 xl:grid-cols-2">
             <div className="rounded-3xl bg-white p-4 shadow-sm sm:p-6 xl:h-[420px]">
@@ -6947,6 +7870,8 @@ export default function CoachWellbeingPage({ setMobileOpen, isDesktop }: CoachWe
             onSearchChange={setTicketsSearch}
             ticketsData={filteredTicketsData}
             riskCounts={ticketRiskCounts}
+            evidenceCounts={ticketEvidenceCounts}
+            statusCounts={ticketStatusCounts}
             onView={setViewTicket}
             onStatusChange={handleStatusChange}
             statusUpdating={statusUpdating}

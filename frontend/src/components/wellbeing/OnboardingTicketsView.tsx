@@ -23,12 +23,21 @@ import {
   MessageSquare,
   Paperclip,
   ExternalLink,
+  Archive,
+  ArchiveRestore,
 } from "lucide-react";
 import { jsPDF } from "jspdf";
 import autoTable from "jspdf-autotable";
 import * as XLSX from "xlsx";
 import kbcLogoSrc from "@/assets/logo-icon.png";
-import { getOnboardingReports, getOnboardingReportNotes, getOnboardingReportEvidence } from "@/services/coachWellbeing";
+import {
+  getOnboardingReports,
+  getOnboardingReportDetail,
+  getOnboardingReportNotes,
+  getOnboardingReportEvidence,
+  archiveOnboardingReport,
+  restoreOnboardingReport,
+} from "@/services/coachWellbeing";
 import { OnboardingActionsDropdown, resolveMediaUrl } from "@/components/wellbeing/TicketActions";
 
 // ── Types ──────────────────────────────────────────────────────────────────
@@ -64,10 +73,61 @@ export type OnboardingReport = {
 
 type OnboardingFilters = {
   risk: string[];
-  status: "" | "open" | "closed";
+  status: "all" | "open" | "closed";
+  evidence: "all" | "with" | "missing";
 };
 
-const emptyFilters: OnboardingFilters = { risk: [], status: "" };
+const DEFAULT_ONBOARDING_STATUS: OnboardingFilters["status"] = "open";
+const emptyFilters: OnboardingFilters = { risk: [], status: DEFAULT_ONBOARDING_STATUS, evidence: "all" };
+
+type SortDirection = "asc" | "desc";
+
+function sortText(value: unknown): string {
+  return String(value ?? "").trim().toLowerCase();
+}
+
+function sortNumber(value: unknown): number {
+  const num = Number(value);
+  return Number.isFinite(num) ? num : -Infinity;
+}
+
+function sortDate(value: unknown): number {
+  if (!value) return 0;
+  const time = new Date(String(value)).getTime();
+  return Number.isFinite(time) ? time : 0;
+}
+
+function compareValues(a: string | number, b: string | number, direction: SortDirection) {
+  const result = typeof a === "number" && typeof b === "number"
+    ? a - b
+    : String(a).localeCompare(String(b), undefined, { numeric: true, sensitivity: "base" });
+  return direction === "asc" ? result : -result;
+}
+
+function SortHeaderButton({
+  label,
+  active,
+  direction,
+  onClick,
+}: {
+  label: string;
+  active: boolean;
+  direction: SortDirection;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className="inline-flex items-center gap-1 rounded-lg px-1.5 py-1 text-left transition hover:bg-[#F0EBF9] hover:text-[#241453]"
+    >
+      <span>{label}</span>
+      <span className={`text-[10px] ${active ? "text-[#241453]" : "text-[#B8AACC]"}`}>
+        {active ? (direction === "asc" ? "↑" : "↓") : "↕"}
+      </span>
+    </button>
+  );
+}
 
 // ── Helpers ────────────────────────────────────────────────────────────────
 
@@ -96,7 +156,7 @@ const ONBOARDING_QUICK_RISKS: Array<{
   label: string;
   activeClass: string;
 }> = [
-  { value: "all", label: "All tickets", activeClass: "border-[#241453] bg-[#241453] text-white" },
+  { value: "all", label: "All reports", activeClass: "border-[#241453] bg-[#241453] text-white" },
   { value: "red", label: "Red", activeClass: "border-red-500 bg-red-500 text-white" },
   { value: "amber", label: "Amber", activeClass: "border-amber-500 bg-amber-500 text-white" },
   { value: "green", label: "Green", activeClass: "border-emerald-500 bg-emerald-500 text-white" },
@@ -972,13 +1032,16 @@ function OnboardingFiltersPanel({
   onChange: (f: OnboardingFilters) => void;
   onReset: () => void;
 }) {
-  const activeCount = filters.risk.length + (filters.status ? 1 : 0);
+  const activeCount =
+    filters.risk.length +
+    (filters.status !== DEFAULT_ONBOARDING_STATUS ? 1 : 0) +
+    (filters.evidence !== "all" ? 1 : 0);
   function toggleRisk(r: string) {
     const cur = filters.risk;
     onChange({ ...filters, risk: cur.includes(r) ? cur.filter((v) => v !== r) : [...cur, r] });
   }
-  function toggleStatus(s: "open" | "closed") {
-    onChange({ ...filters, status: filters.status === s ? "" : s });
+  function toggleStatus(s: OnboardingFilters["status"]) {
+    onChange({ ...filters, status: s });
   }
 
   return (
@@ -1012,20 +1075,44 @@ function OnboardingFiltersPanel({
         <div>
           <div className="mb-2 text-[10px] font-semibold uppercase tracking-wide text-[#7B6D9B]">Status</div>
           <div className="flex gap-1.5">
-            {(["open", "closed"] as const).map((s) => (
+            {(["all", "open", "closed"] as const).map((s) => (
               <button
                 key={s}
                 type="button"
                 onClick={() => toggleStatus(s)}
                 className={`rounded-xl px-2.5 py-1 text-xs font-medium capitalize transition ${
                   filters.status === s
-                    ? s === "open"
+                    ? s === "all"
+                      ? "border border-[#241453] bg-[#241453] text-white"
+                      : s === "open"
                       ? "border border-emerald-500 bg-emerald-500 text-white"
                       : "border border-slate-500 bg-slate-500 text-white"
                     : "border border-[#E7E2F3] text-[#241453] hover:bg-[#F8F5FF]"
                 }`}
               >
-                {s === "open" ? "Open" : "Closed"}
+                {s === "all" ? "All" : s === "open" ? "Open" : "Closed"}
+              </button>
+            ))}
+          </div>
+        </div>
+        <div>
+          <div className="mb-2 text-[10px] font-semibold uppercase tracking-wide text-[#7B6D9B]">Notes / Evidence</div>
+          <div className="flex flex-wrap gap-1.5">
+            {([
+              ["with", "Has"],
+              ["missing", "Missing"],
+            ] as const).map(([value, label]) => (
+              <button
+                key={value}
+                type="button"
+                onClick={() => onChange({ ...filters, evidence: filters.evidence === value ? "all" : value })}
+                className={`rounded-xl px-2.5 py-1 text-xs font-medium transition ${
+                  filters.evidence === value
+                    ? "border border-[#241453] bg-[#241453] text-white"
+                    : "border border-[#E7E2F3] text-[#241453] hover:bg-[#F8F5FF]"
+                }`}
+              >
+                {label}
               </button>
             ))}
           </div>
@@ -1856,7 +1943,83 @@ function OnboardingReportDetailPanel({
 // ── NotesEvidenceModal ────────────────────────────────────────────────────
 
 type NoteItem = { id: string; note: string; created_by: string; created_at: string | null };
-type EvidenceItem = { id: string; description: string; file_url: string; file_name: string; created_by: string; created_at: string | null };
+type EvidenceItem = { id: string; description: string; file_url: string; file_name: string; created_by: string; created_at: string | null; mime_type?: string; data_url?: string };
+
+function onboardingFileLooksLikeImage(url: string, name = "") {
+  return `${name} ${url}`.toLowerCase().match(/\.(png|jpe?g|gif|webp|bmp|svg)(?:$|\?)/);
+}
+
+function reportHasEvidence(report: OnboardingReport): boolean {
+  return (report.evidence_count ?? 0) > 0 || (report.notes_count ?? 0) > 0;
+}
+
+function onboardingFileLooksLikePdf(url: string, name = "") {
+  return `${name} ${url}`.toLowerCase().match(/\.pdf(?:$|\?)/);
+}
+
+function OnboardingEvidencePreviewModal({
+  item,
+  onClose,
+}: {
+  item: EvidenceItem;
+  onClose: () => void;
+}) {
+  const url = item.data_url || resolveMediaUrl(item.file_url);
+  const name = item.file_name || "Evidence file";
+  const isImage = Boolean(item.mime_type?.startsWith("image/") || onboardingFileLooksLikeImage(url, name));
+  const isPdf = Boolean(item.mime_type === "application/pdf" || onboardingFileLooksLikePdf(url, name));
+
+  return createPortal(
+    <div className="fixed inset-0 z-[160] flex items-center justify-center bg-black/50 p-4">
+      <button type="button" className="fixed inset-0 cursor-default" onClick={onClose} aria-label="Close evidence preview" />
+      <div className="relative z-[161] flex max-h-[90vh] w-full max-w-4xl flex-col overflow-hidden rounded-3xl bg-white shadow-2xl">
+        <div className="flex items-start justify-between gap-4 border-b border-[#ECE7F7] px-5 py-4">
+          <div className="min-w-0">
+            <h3 className="truncate text-base font-semibold text-[#241453]">{name}</h3>
+            {item.description && <p className="mt-1 text-sm text-[#7B6D9B]">{item.description}</p>}
+            <div className="mt-1 flex flex-wrap gap-2 text-[11px] text-[#9D8EC7]">
+              {item.created_by && <span>{item.created_by}</span>}
+              {item.created_at && <span>{formatDate(item.created_at)}</span>}
+            </div>
+          </div>
+          <div className="flex shrink-0 items-center gap-2">
+            <a
+              href={url}
+              download={name}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="inline-flex h-9 items-center gap-2 rounded-xl bg-[#241453] px-3 text-xs font-semibold text-white hover:bg-[#362063]"
+            >
+              <FileDown className="h-3.5 w-3.5" />
+              Download
+            </a>
+            <button
+              type="button"
+              onClick={onClose}
+              className="inline-flex h-9 w-9 items-center justify-center rounded-xl border border-[#E7E2F3] text-[#7B6D9B] hover:bg-[#F8F5FF]"
+            >
+              <X className="h-4 w-4" />
+            </button>
+          </div>
+        </div>
+        <div className="custom-scroll flex-1 overflow-auto bg-[#F8F6FC] p-4">
+          {isImage ? (
+            <img src={url} alt={name} className="mx-auto max-h-[70vh] max-w-full rounded-2xl bg-white object-contain shadow-sm" />
+          ) : isPdf ? (
+            <iframe title={name} src={url} className="h-[70vh] w-full rounded-2xl border border-[#E7E2F3] bg-white" />
+          ) : (
+            <div className="flex min-h-[260px] flex-col items-center justify-center rounded-2xl border border-[#E7E2F3] bg-white p-8 text-center">
+              <FileText className="mb-3 h-10 w-10 text-[#8E82AA]" />
+              <p className="text-sm font-semibold text-[#241453]">Preview is not available for this file type.</p>
+              <p className="mt-1 text-xs text-[#7B6D9B]">Use Download to open it on your device.</p>
+            </div>
+          )}
+        </div>
+      </div>
+    </div>,
+    document.body
+  );
+}
 
 function NotesEvidenceModal({
   mode,
@@ -1871,6 +2034,7 @@ function NotesEvidenceModal({
 }) {
   const [items, setItems] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
+  const [previewItem, setPreviewItem] = useState<EvidenceItem | null>(null);
 
   useEffect(() => {
     let mounted = true;
@@ -1930,15 +2094,14 @@ function NotesEvidenceModal({
               <div key={e.id} className="rounded-2xl border border-[#F0E8D8] bg-[#FEFBF5] p-4">
                 {e.description && <p className="text-sm font-medium text-[#241453] mb-1">{e.description}</p>}
                 {e.file_url ? (
-                  <a
-                    href={resolveMediaUrl(e.file_url)}
-                    target="_blank"
-                    rel="noopener noreferrer"
+                  <button
+                    type="button"
+                    onClick={() => setPreviewItem(e)}
                     className="inline-flex items-center gap-1.5 text-xs text-[#9D6912] hover:underline"
                   >
                     <ExternalLink className="h-3 w-3" />
-                    {e.file_name || "View file"}
-                  </a>
+                    Preview
+                  </button>
                 ) : e.file_name ? (
                   <p className="text-xs text-slate-500">{e.file_name}</p>
                 ) : null}
@@ -1951,8 +2114,218 @@ function NotesEvidenceModal({
           )}
         </div>
       </div>
+      {previewItem && (
+        <OnboardingEvidencePreviewModal
+          item={previewItem}
+          onClose={() => setPreviewItem(null)}
+        />
+      )}
     </div>,
     document.body
+  );
+}
+
+function ArchivedOnboardingReportsPanel({
+  coachEmail,
+  onClose,
+  onRestored,
+}: {
+  coachEmail?: string;
+  onClose: () => void;
+  onRestored: () => void;
+}) {
+  const [items, setItems] = useState<OnboardingReport[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+  const [restoringId, setRestoringId] = useState<string | null>(null);
+
+  useEffect(() => {
+    let mounted = true;
+    setLoading(true);
+    setError("");
+    getOnboardingReports((coachEmail || "").trim() || undefined, true)
+      .then((data: any) => {
+        if (mounted) setItems(Array.isArray(data?.reports) ? data.reports : []);
+      })
+      .catch(() => { if (mounted) setError("Failed to load archived onboarding tickets."); })
+      .finally(() => { if (mounted) setLoading(false); });
+    return () => { mounted = false; };
+  }, [coachEmail]);
+
+  async function handleRestore(id: string) {
+    setRestoringId(id);
+    try {
+      await restoreOnboardingReport(id);
+      setItems((prev) => prev.filter((item) => item.id !== id));
+      onRestored();
+    } catch {
+      setError("Failed to restore onboarding ticket.");
+    } finally {
+      setRestoringId(null);
+    }
+  }
+
+  return createPortal(
+    <>
+      <button type="button" className="fixed inset-0 z-[85] cursor-default bg-black/30" onClick={onClose} />
+      <div className="fixed right-0 top-0 z-[90] flex h-full w-full max-w-[640px] flex-col bg-white shadow-2xl">
+        <div className="flex shrink-0 items-center justify-between border-b border-[#ECE7F7] px-6 py-4">
+          <div>
+            <div className="flex items-center gap-2 text-base font-semibold text-[#241453]">
+              <Archive className="h-4 w-4 text-[#7B6D9B]" />
+              Archived Onboarding Tickets
+            </div>
+            <div className="mt-0.5 text-xs text-[#7B6D9B]">{items.length} ticket{items.length !== 1 ? "s" : ""} archived</div>
+          </div>
+          <button type="button" onClick={onClose} className="rounded-xl border border-[#E7E2F3] p-2 text-[#241453] hover:bg-[#F8F5FF]">
+            <X className="h-4 w-4" />
+          </button>
+        </div>
+
+        <div className="custom-scroll flex-1 overflow-y-auto p-6">
+          {loading && <div className="py-12 text-center text-sm text-[#7B6D9B]">Loading archived onboarding tickets...</div>}
+          {!loading && error && <div className="rounded-xl border border-red-200 bg-red-50 p-4 text-sm text-red-600">{error}</div>}
+          {!loading && !error && items.length === 0 && (
+            <div className="rounded-xl border border-[#ECE7F7] bg-[#F8F6FC] p-8 text-center text-sm text-[#7B6D9B]">
+              No archived onboarding tickets.
+            </div>
+          )}
+          {!loading && !error && items.length > 0 && (
+            <div className="space-y-3">
+              {items.map((item) => {
+                const risk = normaliseRisk(item.overall_risk_level);
+                return (
+                  <div key={item.id} className="rounded-2xl border border-[#ECE7F7] bg-white p-4">
+                    <div className="mb-3 flex items-start justify-between gap-3">
+                      <div className="min-w-0">
+                        <div className="truncate text-sm font-semibold text-[#241453]">{item.learner_name || "-"}</div>
+                        <div className="mt-0.5 text-xs text-[#7B6D9B]">{item.learner_email || "-"}</div>
+                        <div className="mt-1 text-xs text-slate-500">{item.programme || "-"} · {formatDate(item.created_at)}</div>
+                      </div>
+                      <span className={`shrink-0 rounded-full px-2.5 py-1 text-xs font-semibold ${riskBadgeClass(risk)}`}>
+                        {risk}
+                      </span>
+                    </div>
+                    <button
+                      type="button"
+                      disabled={restoringId === item.id}
+                      onClick={() => handleRestore(item.id)}
+                      className="inline-flex items-center gap-1.5 rounded-xl border border-[#D9CFF3] bg-white px-3 py-1.5 text-xs font-medium text-[#6248BE] transition hover:bg-[#F5F1FC] disabled:opacity-60"
+                    >
+                      <ArchiveRestore className="h-3 w-3" />
+                      {restoringId === item.id ? "Restoring..." : "Restore"}
+                    </button>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      </div>
+    </>,
+    document.body
+  );
+}
+
+function OnboardingSkeletonBlock({ className = "" }: { className?: string }) {
+  return <div className={`animate-pulse rounded-xl bg-[#EDE8F8] ${className}`} />;
+}
+
+function OnboardingPageLoader() {
+  return (
+    <div className="mb-5 overflow-hidden rounded-3xl border border-[#E7E2F3] bg-white shadow-sm">
+      <div className="h-1.5 w-full overflow-hidden bg-[#F2ECFB]">
+        <div className="h-full w-1/3 animate-[pulse_1.4s_ease-in-out_infinite] rounded-r-full bg-[#8B6BC8]" />
+      </div>
+      <div className="flex flex-col gap-3 px-5 py-4 sm:flex-row sm:items-center sm:justify-between">
+        <div>
+          <p className="text-sm font-semibold text-[#241453]">Loading onboarding tickets</p>
+          <p className="mt-0.5 text-xs text-[#7B6D9B]">Fetching reports, filters, and table rows.</p>
+        </div>
+        <div className="inline-flex items-center gap-2 rounded-full border border-[#DCCFF6] bg-white px-3 py-1.5 text-xs font-semibold text-[#5A3EA6] shadow-sm">
+          <span className="relative flex h-2.5 w-2.5">
+            <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-[#8B6BC8] opacity-40" />
+            <span className="relative inline-flex h-2.5 w-2.5 rounded-full bg-[#8B6BC8]" />
+          </span>
+          Loading...
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function OnboardingTicketsSkeleton() {
+  return (
+    <div className="relative space-y-6">
+      <div className="rounded-3xl bg-white p-5 shadow-sm sm:p-6">
+        <OnboardingPageLoader />
+
+        <div className="mb-6">
+          <h2 className="text-[20px] font-semibold text-[#241453]">Onboarding Tickets</h2>
+          <OnboardingSkeletonBlock className="mt-2 h-3.5 w-64 bg-[#F3EFFC]" />
+        </div>
+
+        <div className="rounded-3xl border border-[#E9E3F5] p-4">
+          <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
+            <OnboardingSkeletonBlock className="h-12 w-full max-w-[680px] bg-[#F5F7FB]" />
+            <div className="flex items-center gap-3">
+              <OnboardingSkeletonBlock className="h-10 w-28 bg-[#F3EFFC]" />
+              <OnboardingSkeletonBlock className="h-10 w-24 bg-[#F3EFFC]" />
+              <OnboardingSkeletonBlock className="h-10 w-28 bg-[#F3EFFC]" />
+            </div>
+          </div>
+          <div className="mt-4 border-t border-[#EEE8F8] pt-4">
+            <div className="grid gap-3">
+              <div className="grid gap-3 sm:grid-cols-2">
+                <OnboardingSkeletonBlock className="h-[74px] bg-emerald-50" />
+                <OnboardingSkeletonBlock className="h-[74px] bg-[#F8F6FC]" />
+              </div>
+              <div className="rounded-2xl border border-[#E9E3F5] bg-[#FCFBFE] p-3">
+                <div className="mb-3 flex items-center justify-between">
+                  <OnboardingSkeletonBlock className="h-3 w-36" />
+                  <OnboardingSkeletonBlock className="h-6 w-20 bg-white" />
+                </div>
+                <div className="flex flex-wrap gap-2">
+                  {[0, 1, 2, 3].map((item) => (
+                    <OnboardingSkeletonBlock key={item} className="h-9 w-24 bg-white" />
+                  ))}
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div className="mt-6 grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-5">
+          {[0, 1, 2, 3, 4].map((item) => (
+            <div key={item} className="rounded-3xl border border-[#ECE7F7] bg-[#F8F6FC] p-5">
+              <div className="mb-3 flex items-center justify-between">
+                <OnboardingSkeletonBlock className="h-3 w-24" />
+                <OnboardingSkeletonBlock className="h-8 w-8 bg-[#F3EFFC]" />
+              </div>
+              <OnboardingSkeletonBlock className="h-8 w-14" />
+            </div>
+          ))}
+        </div>
+
+        <div className="mt-6 overflow-hidden rounded-3xl border border-[#E9E3F5]">
+          <div className="grid grid-cols-8 gap-4 border-b border-[#EEE8F8] bg-[#FCFBFE] px-5 py-4">
+            {[...Array(8)].map((_, i) => <OnboardingSkeletonBlock key={i} className="h-3 w-20" />)}
+          </div>
+          <div className="divide-y divide-[#F1EDF8]">
+            {[...Array(7)].map((_, row) => (
+              <div key={row} className="grid grid-cols-8 gap-4 px-5 py-4" style={{ opacity: 1 - row * 0.07 }}>
+                {[...Array(8)].map((_, col) => (
+                  <div key={col} className="space-y-2">
+                    <OnboardingSkeletonBlock className="h-3.5 w-full max-w-[120px]" />
+                    {col < 2 ? <OnboardingSkeletonBlock className="h-3 w-20 bg-[#F3EFFC]" /> : null}
+                  </div>
+                ))}
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
+    </div>
   );
 }
 
@@ -1968,10 +2341,25 @@ export default function OnboardingTicketsView({ coachEmail }: { coachEmail?: str
   const [exportOpen, setExportOpen] = useState(false);
   const [viewReport, setViewReport] = useState<OnboardingReport | null>(null);
   const [viewSection, setViewSection] = useState<SectionView | null>(null);
+  const [detailLoadingId, setDetailLoadingId] = useState<string | null>(null);
   const [reportStatuses, setReportStatuses] = useState<Map<string, string>>(new Map());
-  const [sortStatus, setSortStatus] = useState<"open-first" | "closed-first">("open-first");
+  type OnboardingSortKey = "learner" | "programme" | "organisation" | "coach" | "risk" | "score" | "reports" | "date" | "notes" | "evidence" | "status";
+  const [sortConfig, setSortConfig] = useState<{ key: OnboardingSortKey; direction: SortDirection }>({
+    key: "date",
+    direction: "desc",
+  });
   const [notesModal, setNotesModal] = useState<{ reportId: string; learnerName: string } | null>(null);
   const [evidenceModal, setEvidenceModal] = useState<{ reportId: string; learnerName: string } | null>(null);
+  const [archiveConfirmId, setArchiveConfirmId] = useState<string | null>(null);
+  const [archivingId, setArchivingId] = useState<string | null>(null);
+  const [archivedPanelOpen, setArchivedPanelOpen] = useState(false);
+
+  function applyReportRows(rows: OnboardingReport[]) {
+    setReports(rows);
+    const statusMap = new Map<string, string>();
+    rows.forEach((r) => statusMap.set(r.id, r.status || "active"));
+    setReportStatuses(statusMap);
+  }
 
   useEffect(() => {
     let mounted = true;
@@ -1982,10 +2370,7 @@ export default function OnboardingTicketsView({ coachEmail }: { coachEmail?: str
         const res = await getOnboardingReports((coachEmail || "").trim() || undefined);
         if (!mounted) return;
         const rows: OnboardingReport[] = res?.reports || [];
-        setReports(rows);
-        const statusMap = new Map<string, string>();
-        rows.forEach((r) => statusMap.set(r.id, r.status || "active"));
-        setReportStatuses(statusMap);
+        applyReportRows(rows);
       } catch (err: any) {
         if (!mounted) return;
         setError(err?.message || "Failed to load onboarding reports");
@@ -1994,8 +2379,72 @@ export default function OnboardingTicketsView({ coachEmail }: { coachEmail?: str
       }
     }
     load();
-    return () => { mounted = false; };
+    return () => {
+      mounted = false;
+    };
   }, [coachEmail]);
+
+  async function reloadReports() {
+    setLoading(true);
+    setError("");
+    try {
+      const res = await getOnboardingReports((coachEmail || "").trim() || undefined);
+      applyReportRows(res?.reports || []);
+    } catch (err: any) {
+      setError(err?.message || "Failed to load onboarding reports");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function handleArchiveReport(reportId: string) {
+    setArchivingId(reportId);
+    try {
+      await archiveOnboardingReport(reportId);
+      setReports((prev) => prev.filter((report) => report.id !== reportId));
+      setReportStatuses((prev) => {
+        const next = new Map(prev);
+        next.delete(reportId);
+        return next;
+      });
+      setArchiveConfirmId(null);
+    } catch (err: any) {
+      setError(err?.message || "Failed to archive onboarding report");
+    } finally {
+      setArchivingId(null);
+    }
+  }
+
+  async function fetchReportDetail(reportId: string) {
+    setDetailLoadingId(reportId);
+    try {
+      const res = await getOnboardingReportDetail(reportId);
+      const report = normaliseOnboardingReportRow(res?.report);
+      setReports((prev) => prev.map((item) => item.id === reportId ? { ...item, ...report } : item));
+      return report;
+    } catch (err: any) {
+      setError(err?.message || "Failed to load onboarding report details");
+      return null;
+    } finally {
+      setDetailLoadingId(null);
+    }
+  }
+
+  async function openReportDetail(report: OnboardingReport) {
+    const fullReport = report.master_report && Object.keys(report.master_report || {}).length
+      ? normaliseOnboardingReportRow(report)
+      : await fetchReportDetail(report.id);
+    if (fullReport) setViewReport(fullReport);
+  }
+
+  async function openSectionDetail(report: OnboardingReport, sectionLabel: string) {
+    const fullReport = await fetchReportDetail(report.id);
+    if (!fullReport) return;
+    const section = fullReport?.section_progress?.find((item) => item.label === sectionLabel);
+    if (section) {
+      setViewSection({ label: section.label, badge: section.badge, data: section.data, learnerName: fullReport.learner_name });
+    }
+  }
 
   const searchedReports = useMemo(() => {
     const q = search.trim().toLowerCase();
@@ -2015,31 +2464,58 @@ export default function OnboardingTicketsView({ coachEmail }: { coachEmail?: str
     });
   }, [reports, search, coachEmail]);
 
-  const filtered = useMemo(() => {
+  const statusFilteredReports = useMemo(() => {
     return searchedReports.filter((r) => {
-      if (filters.risk.length > 0) {
-        const nr = normaliseRisk(r.overall_risk_level);
-        if (!filters.risk.includes(nr)) return false;
-      }
-      if (filters.status) {
-        const s = (reportStatuses.get(r.id) || r.status || "active").toLowerCase();
-        const isClosed = s === "closed";
-        if (filters.status === "closed" && !isClosed) return false;
-        if (filters.status === "open" && isClosed) return false;
-      }
+      if (filters.status === "all") return true;
+      const s = (reportStatuses.get(r.id) || r.status || "active").toLowerCase();
+      const isClosed = s === "closed";
+      return filters.status === "closed" ? isClosed : !isClosed;
+    });
+  }, [searchedReports, filters.status, reportStatuses]);
+
+  const riskFilteredReports = useMemo(() => {
+    return statusFilteredReports.filter((r) => {
+      if (filters.risk.length === 0) return true;
+      const nr = normaliseRisk(r.overall_risk_level);
+      return filters.risk.includes(nr);
+    });
+  }, [statusFilteredReports, filters.risk]);
+
+  const filtered = useMemo(() => {
+    return riskFilteredReports.filter((r) => {
+      if (filters.evidence === "with") return reportHasEvidence(r);
+      if (filters.evidence === "missing") return !reportHasEvidence(r);
       return true;
     });
-  }, [searchedReports, filters, reportStatuses]);
+  }, [riskFilteredReports, filters.evidence]);
+
+  function setSort(key: OnboardingSortKey) {
+    setSortConfig((prev) => ({
+      key,
+      direction: prev.key === key && prev.direction === "desc" ? "asc" : "desc",
+    }));
+  }
 
   const sorted = useMemo(() => {
-    return [...filtered].sort((a, b) => {
-      const sa = (reportStatuses.get(a.id) || a.status || "active").toLowerCase();
-      const sb = (reportStatuses.get(b.id) || b.status || "active").toLowerCase();
-      const aClosed = sa === "closed" ? 1 : 0;
-      const bClosed = sb === "closed" ? 1 : 0;
-      return sortStatus === "open-first" ? aClosed - bClosed : bClosed - aClosed;
-    });
-  }, [filtered, reportStatuses, sortStatus]);
+    const valueFor = (report: OnboardingReport, key: OnboardingSortKey) => {
+      if (key === "learner") return sortText(report.learner_name || report.learner_email);
+      if (key === "programme") return sortText(report.programme);
+      if (key === "organisation") return sortText(report.organization_name);
+      if (key === "coach") return sortText(report.coach_name || report.coach_email);
+      if (key === "risk") return sortText(normaliseRisk(report.overall_risk_level));
+      if (key === "score") return sortNumber(report.overall_score);
+      if (key === "reports") return sortNumber(report.completed_reports);
+      if (key === "date") return sortDate(report.created_at);
+      if (key === "notes") return sortNumber(report.notes_count ?? 0);
+      if (key === "evidence") return sortNumber(report.evidence_count ?? 0);
+      return sortText(reportStatuses.get(report.id) || report.status || "active");
+    };
+    return [...filtered].sort((a, b) => compareValues(valueFor(a, sortConfig.key), valueFor(b, sortConfig.key), sortConfig.direction));
+  }, [filtered, reportStatuses, sortConfig]);
+
+  const sortHeader = (key: OnboardingSortKey, label: string) => (
+    <SortHeaderButton label={label} active={sortConfig.key === key} direction={sortConfig.direction} onClick={() => setSort(key)} />
+  );
 
   const quickRiskValue = useMemo<OnboardingQuickRisk | undefined>(() => {
     const risk = [...filters.risk].sort();
@@ -2050,19 +2526,36 @@ export default function OnboardingTicketsView({ coachEmail }: { coachEmail?: str
     return undefined;
   }, [filters.risk]);
 
+  const evidenceFilteredForRisk = useMemo(() => {
+    return statusFilteredReports.filter((r) => {
+      if (filters.evidence === "with") return reportHasEvidence(r);
+      if (filters.evidence === "missing") return !reportHasEvidence(r);
+      return true;
+    });
+  }, [statusFilteredReports, filters.evidence]);
+
   const quickRiskCounts = useMemo<Partial<Record<OnboardingQuickRisk, number>>>(() => ({
-    all: searchedReports.length,
-    red: searchedReports.filter((r) => {
+    all: evidenceFilteredForRisk.length,
+    red: evidenceFilteredForRisk.filter((r) => {
       const nr = normaliseRisk(r.overall_risk_level);
       return nr === "Very High" || nr === "High";
     }).length,
-    amber: searchedReports.filter((r) => normaliseRisk(r.overall_risk_level) === "Moderate").length,
-    green: searchedReports.filter((r) => normaliseRisk(r.overall_risk_level) === "Low").length,
-  }), [searchedReports]);
+    amber: evidenceFilteredForRisk.filter((r) => normaliseRisk(r.overall_risk_level) === "Moderate").length,
+    green: evidenceFilteredForRisk.filter((r) => normaliseRisk(r.overall_risk_level) === "Low").length,
+  }), [evidenceFilteredForRisk]);
+
+  const evidenceCounts = useMemo(() => {
+    const withEvidence = riskFilteredReports.filter(reportHasEvidence).length;
+    return {
+      all: riskFilteredReports.length,
+      with: withEvidence,
+      missing: riskFilteredReports.length - withEvidence,
+    };
+  }, [riskFilteredReports]);
 
   const statusCounts = useMemo(() => {
     const closed = searchedReports.filter((r) => (reportStatuses.get(r.id) || r.status || "active").toLowerCase() === "closed").length;
-    return { open: searchedReports.length - closed, closed };
+    return { all: searchedReports.length, open: searchedReports.length - closed, closed };
   }, [searchedReports, reportStatuses]);
 
   function setQuickRisk(value: OnboardingQuickRisk) {
@@ -2081,7 +2574,10 @@ export default function OnboardingTicketsView({ coachEmail }: { coachEmail?: str
     low: filtered.filter((r) => normaliseRisk(r.overall_risk_level) === "Low").length,
   }), [filtered]);
 
-  const activeFilterCount = filters.risk.length + (filters.status ? 1 : 0);
+  const activeFilterCount =
+    filters.risk.length +
+    (filters.status !== DEFAULT_ONBOARDING_STATUS ? 1 : 0) +
+    (filters.evidence !== "all" ? 1 : 0);
 
   function exportToExcel() {
     const rows = filtered.map((r) => ({
@@ -2237,6 +2733,10 @@ export default function OnboardingTicketsView({ coachEmail }: { coachEmail?: str
     doc.save(`onboarding-reports-${new Date().toISOString().split("T")[0]}.pdf`);
   }
 
+  if (loading && reports.length === 0) {
+    return <OnboardingTicketsSkeleton />;
+  }
+
   return (
     <div className="relative space-y-6">
       {loading && reports.length > 0 ? (
@@ -2269,6 +2769,14 @@ export default function OnboardingTicketsView({ coachEmail }: { coachEmail?: str
               />
             </div>
             <div className="flex items-center gap-3">
+              <button
+                type="button"
+                onClick={() => setArchivedPanelOpen(true)}
+                className="inline-flex h-10 items-center gap-2 rounded-2xl border border-[#E7E2F3] px-4 text-sm text-[#241453] hover:bg-[#F8F5FF]"
+              >
+                <Archive className="h-4 w-4" />
+                Archived
+              </button>
               <div className="relative">
                 <button
                   type="button"
@@ -2331,40 +2839,104 @@ export default function OnboardingTicketsView({ coachEmail }: { coachEmail?: str
             </div>
           </div>
           <div className="mt-4 border-t border-[#EEE8F8] pt-4">
-            <div className="flex flex-wrap items-center gap-3">
-              <OnboardingRiskQuickFilter
-                value={quickRiskValue}
-                onChange={setQuickRisk}
-                counts={quickRiskCounts}
-              />
-              <div className="h-6 w-px bg-[#E7E2F3] shrink-0" />
-              <div className="flex flex-wrap gap-2">
-                {(["open", "closed"] as const).map((sv) => {
+            <div className="grid gap-3">
+              <div className="grid gap-3 lg:grid-cols-3">
+                {(["all", "open", "closed"] as const).map((sv) => {
                   const isActive = filters.status === sv;
                   const count = statusCounts[sv];
-                  const activeClass = sv === "open"
-                    ? "border-emerald-500 bg-emerald-500 text-white"
-                    : "border-slate-500 bg-slate-500 text-white";
+                  const Icon = sv === "all" ? FileText : sv === "open" ? Clock : CheckCircle;
                   return (
                     <button
                       key={sv}
                       type="button"
-                      onClick={() => setFilters((f) => ({ ...f, status: isActive ? "" : sv }))}
-                      className={`inline-flex h-9 items-center gap-2 rounded-xl border px-3 text-xs font-semibold transition ${
+                      onClick={() => setFilters((f) => ({ ...f, status: sv }))}
+                      className={`flex min-h-[74px] items-center justify-between gap-4 rounded-2xl border px-4 py-3 text-left transition ${
                         isActive
-                          ? activeClass
+                          ? sv === "all"
+                            ? "border-[#BFAFEA] bg-[#F8F5FF] text-[#241453] shadow-sm"
+                            : sv === "open"
+                              ? "border-emerald-300 bg-emerald-50 text-emerald-800 shadow-sm"
+                              : "border-slate-300 bg-slate-100 text-slate-800 shadow-sm"
                           : "border-[#E7E2F3] bg-white text-[#241453] hover:bg-[#F8F5FF]"
                       }`}
                     >
-                      <span>{sv === "open" ? "Open" : "Closed"}</span>
-                      <span className={`rounded-full px-1.5 py-0.5 text-[10px] ${
-                        isActive ? "bg-white/20 text-current" : "bg-[#F4F0FC] text-[#644D93]"
+                      <span className="flex min-w-0 items-center gap-3">
+                        <span className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-xl ${
+                          isActive
+                            ? sv === "all" ? "bg-white text-[#6248BE]" : sv === "open" ? "bg-emerald-100 text-emerald-700" : "bg-white text-slate-600"
+                            : "bg-[#F4F0FC] text-[#644D93]"
+                        }`}>
+                          <Icon className="h-4 w-4" />
+                        </span>
+                        <span className="min-w-0">
+                          <span className="block text-sm font-semibold">
+                            {sv === "all" ? "All Reports" : sv === "open" ? "Open Tickets" : "Closed Tickets"}
+                          </span>
+                          <span className="mt-0.5 block text-xs text-[#7B6D9B]">
+                            {sv === "all" ? "Every report" : sv === "open" ? "Active cases" : "Resolved cases"}
+                          </span>
+                        </span>
+                      </span>
+                      <span className={`rounded-full px-2.5 py-1 text-xs font-semibold ${
+                        isActive
+                          ? sv === "all" ? "bg-white text-[#6248BE]" : sv === "open" ? "bg-emerald-100 text-emerald-700" : "bg-white text-slate-600"
+                          : "bg-[#F4F0FC] text-[#644D93]"
                       }`}>
                         {count}
                       </span>
                     </button>
                   );
                 })}
+              </div>
+
+              <div className="rounded-2xl border border-[#E9E3F5] bg-[#FCFBFE] p-3">
+                <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+                  <span className="text-xs font-semibold uppercase tracking-wide text-[#7B6D9B]">
+                    {filters.status === "all" ? "All report RAG" : filters.status === "open" ? "Open ticket RAG" : "Closed ticket RAG"}
+                  </span>
+                  <span className="rounded-full bg-white px-2.5 py-1 text-[11px] font-semibold text-[#644D93]">
+                    {filtered.length} shown
+                  </span>
+                </div>
+                <OnboardingRiskQuickFilter
+                  value={quickRiskValue}
+                  onChange={setQuickRisk}
+                  counts={quickRiskCounts}
+                />
+                <div className="mt-3 border-t border-[#EEE8F8] pt-3">
+                  <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-[#7B6D9B]">Notes / Evidence</div>
+                  <div className="flex flex-wrap gap-2">
+                    {([
+                      ["all", "All"],
+              ["with", "Has notes/evidence"],
+              ["missing", "Missing notes/evidence"],
+            ] as const).map(([value, label]) => {
+                      const isActive = filters.evidence === value;
+                      return (
+                        <button
+                          key={value}
+                          type="button"
+                          onClick={() => {
+                            setSearch("");
+                            setFilters((f) => ({ ...f, evidence: isActive ? "all" : value }));
+                          }}
+                          className={`inline-flex h-9 items-center gap-2 rounded-xl border px-3 text-xs font-semibold transition ${
+                            isActive
+                              ? "border-[#241453] bg-[#241453] text-white"
+                              : "border-[#E7E2F3] bg-white text-[#241453] hover:bg-[#F8F5FF]"
+                          }`}
+                        >
+                          <span>{label}</span>
+                          <span className={`rounded-full px-1.5 py-0.5 text-[10px] ${
+                            isActive ? "bg-white/20 text-current" : "bg-[#F4F0FC] text-[#644D93]"
+                          }`}>
+                            {evidenceCounts[value]}
+                          </span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
               </div>
             </div>
           </div>
@@ -2392,47 +2964,36 @@ export default function OnboardingTicketsView({ coachEmail }: { coachEmail?: str
         {/* Table */}
         <div className="mt-6 overflow-hidden rounded-3xl border border-[#E9E3F5]">
           <div className="custom-scroll overflow-auto" style={{ maxHeight: "calc(100vh - 380px)" }}>
-            <table className="w-full min-w-[900px] text-sm">
+            <table className="w-full min-w-[980px] text-sm">
               <thead className="sticky top-0 z-10 bg-[#FCFBFE]">
                 <tr className="border-b border-[#EEE8F8] text-left text-[#7B6D9B]">
-                  <th className="px-5 py-4 font-medium">Learner</th>
-                  <th className="px-5 py-4 font-medium">Programme</th>
-                  <th className="px-5 py-4 font-medium">Organisation</th>
-                  <th className="px-5 py-4 font-medium">Coach</th>
-                  <th className="px-5 py-4 font-medium">Risk</th>
-                  <th className="px-5 py-4 font-medium">Score</th>
-                  <th className="px-5 py-4 font-medium">Reports</th>
-                  <th className="px-5 py-4 font-medium">Date</th>
-                  <th className="px-5 py-4 font-medium">Notes</th>
-                  <th className="px-5 py-4 font-medium">Evidence</th>
-                  <th className="px-5 py-4 font-medium">
-                    <button
-                      type="button"
-                      onClick={() => setSortStatus((v) => v === "open-first" ? "closed-first" : "open-first")}
-                      className="inline-flex items-center gap-1 rounded-lg hover:bg-[#F0EBF9] px-2 py-1 -ml-2 transition"
-                      title={sortStatus === "open-first" ? "Showing open first — click to show closed first" : "Showing closed first — click to show open first"}
-                    >
-                      Status
-                      <span className="text-[10px] text-[#9B8EC4]">
-                        {sortStatus === "open-first" ? "↑ Open" : "↓ Closed"}
-                      </span>
-                    </button>
-                  </th>
+                  <th className="px-5 py-4 font-medium">{sortHeader("learner", "Learner")}</th>
+                  <th className="px-5 py-4 font-medium">{sortHeader("programme", "Programme")}</th>
+                  <th className="px-5 py-4 font-medium">{sortHeader("organisation", "Organisation")}</th>
+                  <th className="px-5 py-4 font-medium">{sortHeader("coach", "Coach")}</th>
+                  <th className="px-5 py-4 font-medium">{sortHeader("risk", "Risk")}</th>
+                  <th className="px-5 py-4 font-medium">{sortHeader("score", "Score")}</th>
+                  <th className="px-5 py-4 font-medium">{sortHeader("reports", "Reports")}</th>
+                  <th className="px-5 py-4 font-medium">{sortHeader("date", "Date")}</th>
+                  <th className="px-5 py-4 font-medium">{sortHeader("notes", "Notes")}</th>
+                  <th className="px-5 py-4 font-medium">{sortHeader("evidence", "Evidence")}</th>
+                  <th className="px-5 py-4 font-medium">{sortHeader("status", "Status")}</th>
+                  <th className="px-5 py-4 font-medium">Archive</th>
                   <th className="px-5 py-4 font-medium">View Report</th>
                 </tr>
               </thead>
               <tbody>
                 {loading ? (
                   <tr>
-                    <td colSpan={12} className="px-5 py-10 text-center text-slate-500">Loading reports...</td>
+                    <td colSpan={13} className="px-5 py-10 text-center text-slate-500">Loading reports...</td>
                   </tr>
                 ) : error ? (
                   <tr>
-                    <td colSpan={12} className="px-5 py-10 text-center text-red-500">{error}</td>
+                    <td colSpan={13} className="px-5 py-10 text-center text-red-500">{error}</td>
                   </tr>
                 ) : sorted.length === 0 ? (
                   <tr>
-                    <td colSpan={12} className="px-5 py-10 text-center text-slate-500">No reports found</td>
+                    <td colSpan={13} className="px-5 py-10 text-center text-slate-500">No reports found</td>
                   </tr>
                 ) : (
                   sorted.map((r) => {
@@ -2569,6 +3130,38 @@ export default function OnboardingTicketsView({ coachEmail }: { coachEmail?: str
                           />
                         </td>
 
+                        <td className="px-5 py-4">
+                          {archiveConfirmId === r.id ? (
+                            <div className="flex items-center gap-1.5">
+                              <button
+                                type="button"
+                                onClick={() => handleArchiveReport(r.id)}
+                                disabled={archivingId === r.id}
+                                className="rounded-lg bg-[#241453] px-2.5 py-1 text-xs font-semibold text-white hover:bg-[#362063] disabled:opacity-60"
+                              >
+                                {archivingId === r.id ? "..." : "Yes"}
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => setArchiveConfirmId(null)}
+                                disabled={archivingId === r.id}
+                                className="rounded-lg border border-slate-200 px-2.5 py-1 text-xs font-semibold text-slate-500 hover:bg-slate-50"
+                              >
+                                No
+                              </button>
+                            </div>
+                          ) : (
+                            <button
+                              type="button"
+                              onClick={() => setArchiveConfirmId(r.id)}
+                              className="inline-flex items-center gap-1.5 text-sm font-medium text-[#7B6D9B] hover:text-[#241453]"
+                            >
+                              <Archive className="h-4 w-4" />
+                              Archive
+                            </button>
+                          )}
+                        </td>
+
                         {/* View Report — last column */}
                         <td className="px-5 py-4">
                           {(() => {
@@ -2581,10 +3174,11 @@ export default function OnboardingTicketsView({ coachEmail }: { coachEmail?: str
                               return (
                                 <button
                                   type="button"
-                                  onClick={() => setViewReport(normaliseOnboardingReportRow(r))}
+                                  onClick={() => openReportDetail(r)}
+                                  disabled={detailLoadingId === r.id}
                                   className="inline-flex h-8 items-center gap-1.5 rounded-xl bg-[#241453] px-3 text-xs font-semibold text-white hover:bg-[#362063] transition whitespace-nowrap"
                                 >
-                                  View Report
+                                  {detailLoadingId === r.id ? "Loading..." : "View Report"}
                                 </button>
                               );
                             }
@@ -2600,8 +3194,9 @@ export default function OnboardingTicketsView({ coachEmail }: { coachEmail?: str
                                   <button
                                     key={s.label}
                                     type="button"
-                                    onClick={() => setViewSection({ label: s.label, badge: s.badge, data: s.data, learnerName: r.learner_name })}
-                                    className="inline-flex h-7 items-center gap-1 rounded-xl border border-[#DED5F3] bg-[#F4F0FC] px-2.5 text-[11px] font-semibold text-[#241453] hover:bg-[#EAE3F8] transition"
+                                    onClick={() => openSectionDetail(r, s.label)}
+                                    disabled={detailLoadingId === r.id}
+                                    className="inline-flex h-7 items-center gap-1 rounded-xl border border-[#DED5F3] bg-[#F4F0FC] px-2.5 text-[11px] font-semibold text-[#241453] transition hover:bg-[#EAE3F8] disabled:cursor-wait disabled:opacity-60"
                                     title={`View ${s.label} report`}
                                   >
                                     {s.badge && (
@@ -2651,6 +3246,14 @@ export default function OnboardingTicketsView({ coachEmail }: { coachEmail?: str
           reportId={evidenceModal.reportId}
           learnerName={evidenceModal.learnerName}
           onClose={() => setEvidenceModal(null)}
+        />
+      )}
+
+      {archivedPanelOpen && (
+        <ArchivedOnboardingReportsPanel
+          coachEmail={coachEmail}
+          onClose={() => setArchivedPanelOpen(false)}
+          onRestored={reloadReports}
         />
       )}
     </div>
