@@ -5615,6 +5615,11 @@ function TicketsManagementView({
       ? selectedRiskFilter as RiskLevel
       : undefined;
   const summary = ticketsData?.summary;
+  const visibleRiskCounts = React.useMemo(() => ({
+    red: tickets.filter((ticket) => String(ticket.risk || "").toLowerCase() === "red").length,
+    amber: tickets.filter((ticket) => String(ticket.risk || "").toLowerCase() === "amber").length,
+    green: tickets.filter((ticket) => String(ticket.risk || "").toLowerCase() === "green").length,
+  }), [tickets]);
   const currentStatusLabel =
     filters.statusGroup === "closed"
       ? "Closed Tickets"
@@ -5650,7 +5655,7 @@ function TicketsManagementView({
     ] : []),
     {
       title: "Red Risk",
-      value: isInitialTicketLoad ? "…" : riskCounts.red ?? 0,
+      value: isInitialTicketLoad ? "…" : visibleRiskCounts.red,
       icon: <AlertTriangle className="h-4 w-4" />,
       valueColor: "text-red-500",
       iconBg: "bg-red-50",
@@ -5659,7 +5664,7 @@ function TicketsManagementView({
     },
     {
       title: "Amber Risk",
-      value: isInitialTicketLoad ? "…" : riskCounts.amber ?? 0,
+      value: isInitialTicketLoad ? "…" : visibleRiskCounts.amber,
       icon: <AlertTriangle className="h-4 w-4" />,
       valueColor: "text-amber-500",
       iconBg: "bg-amber-50",
@@ -5668,7 +5673,7 @@ function TicketsManagementView({
     },
     {
       title: "Green Risk",
-      value: isInitialTicketLoad ? "…" : riskCounts.green ?? 0,
+      value: isInitialTicketLoad ? "…" : visibleRiskCounts.green,
       icon: <Shield className="h-4 w-4" />,
       valueColor: "text-emerald-600",
       iconBg: "bg-emerald-50",

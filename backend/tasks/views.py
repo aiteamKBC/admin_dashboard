@@ -2278,13 +2278,15 @@ def support_tickets_list(request):
     red_risk = 0
     escalated = 0
     closed = 0
+    urgency_sync_rows = []
 
     for row in rows:
         learner_record = monitoring_by_id.get(getattr(row, "wellbeing_record_id", None))
         if not learner_record:
             learner_record = monitoring_by_email.get((getattr(row, "email", "") or "").strip().lower())
 
-        urgency = (getattr(row, "urgency", "") or "").strip().lower()
+        stored_urgency = (getattr(row, "urgency", "") or "").strip().lower()
+        urgency = stored_urgency
         ticket_type = (getattr(row, "ticket_type", "") or "").strip()
         subject = (getattr(row, "subject", "") or "").strip()
         raw_details = getattr(row, "details", "") or ""
@@ -2307,6 +2309,9 @@ def support_tickets_list(request):
 
             context = derive_auto_ticket_context(learner_record, triggered_questions)
             urgency = manual_urgency_override or context["urgency"]
+            if urgency and urgency != stored_urgency:
+                row.urgency = urgency
+                urgency_sync_rows.append(row)
             ticket_type = context["ticket_type"]
             subject = "Safeguarding risk review required" if ticket_type == "safeguarding" else "Wellbeing follow-up required"
             details_override = build_auto_ticket_details_from_monitoring(
@@ -2388,6 +2393,10 @@ def support_tickets_list(request):
             "evidenceCount": len(_ensure_list(getattr(row, "evidence", None))),
             "assignedOwner": (getattr(row, "assigned_owner", "") or "").strip(),
         })
+
+    if urgency_sync_rows:
+        SupportTicket.objects.using("wellbeing").bulk_update(urgency_sync_rows, ["urgency"])
+        _clear_wellbeing_runtime_caches()
 
     now_dt = timezone.now()
     now = now_dt.date()
