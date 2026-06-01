@@ -51,6 +51,7 @@ export type TicketNoteRow = {
   note: string;
   created_by: string;
   created_at: string | null;
+  type?: string;
 };
 
 export type TicketEvidenceRow = {
@@ -82,6 +83,7 @@ export type SupportTicketRow = {
   wellbeingRecordId?: number | null;
   learnerName: string;
   learnerEmail: string;
+  programme?: string;
   type: string;
   risk: "red" | "amber" | "green";
   source: string;
@@ -639,7 +641,7 @@ export function ActionModal({
         const fromPart = prevRisk && prevRisk !== riskLevel ? ` from ${fmt(prevRisk)}` : "";
         const noteText = `${riskEmoji[riskLevel] ?? "🔴"} Risk level changed${fromPart} to ${fmt(riskLevel)}${note.trim() ? ` — ${note.trim()}` : ""}`;
         if (saveNote) await saveNote(noteText);
-        else await createTicketNote(ticket.id, noteText);
+        else if (note.trim()) await createTicketNote(ticket.id, `Risk change note: ${note.trim()}`);
         onConfirm(undefined, { risk: riskLevel, notesChanged: true });
         return;
       }

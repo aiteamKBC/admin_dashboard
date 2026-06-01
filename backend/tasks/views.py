@@ -43,6 +43,61 @@ def _ensure_list(value):
     return value if isinstance(value, list) else []
 
 
+def _is_activity_note(note):
+    return isinstance(note, dict) and (note.get("type") or "").strip().lower() == "activity"
+
+
+def _ticket_case_note_count(notes):
+    return sum(1 for note in _ensure_list(notes) if not _is_activity_note(note))
+
+
+def _format_activity_value(value):
+    value = (value or "").strip()
+    if not value:
+        return "Unset"
+    return value.replace("_", " ").title()
+
+
+def _ticket_risk_from_urgency(urgency):
+    urgency = (urgency or "").strip().lower()
+    if urgency in {"urgent", "high"}:
+        return "red"
+    if urgency in {"medium", "moderate"}:
+        return "amber"
+    return "green"
+
+
+def _request_actor_label(request):
+    first = (getattr(request.user, "first_name", "") or "").strip()
+    last = (getattr(request.user, "last_name", "") or "").strip()
+    full_name = f"{first} {last}".strip()
+    return (
+        full_name
+        or (getattr(request.user, "email", "") or "").strip()
+        or (getattr(request.user, "username", "") or "").strip()
+        or "System"
+    )
+
+
+def _append_ticket_activity_notes(ticket, messages, actor):
+    messages = [message for message in messages if message]
+    if not messages:
+        return False
+
+    notes = _ensure_list(ticket.notes).copy()
+    created_at = timezone.now().isoformat()
+    for message in messages:
+        notes.append({
+            "id": uuid.uuid4().hex,
+            "type": "activity",
+            "note": message,
+            "created_by": actor,
+            "created_at": created_at,
+        })
+    ticket.notes = notes
+    return True
+
+
 def _normalize_tasks(raw_tasks):
     tasks = []
     for t in _ensure_list(raw_tasks):
@@ -637,6 +692,31 @@ def derive_frontend_risk_level(total_score, safeguarding_score, trigger_count):
     if triggers >= 1 or max_score >= 6:
         return "amber"
     return "green"
+
+
+def monitoring_record_risk_level(learner):
+    total_score = getattr(learner, "total_score", None)
+    wellbeing_score = getattr(learner, "emotional_stress_resilience_score", None)
+    engagement_score = getattr(learner, "personal_wellbeing_protective_factors_score", None)
+    provider_support_score = getattr(learner, "provider_culture_support_score", None)
+    safeguarding_score = getattr(learner, "safeguarding_vulnerability_score", None)
+    trigger_count = getattr(learner, "trigger_count", None) or 0
+
+    has_score_data = any(
+        value is not None
+        for value in [
+            total_score,
+            wellbeing_score,
+            engagement_score,
+            provider_support_score,
+            safeguarding_score,
+        ]
+    ) or trigger_count > 0
+
+    if has_score_data:
+        return derive_frontend_risk_level(total_score, safeguarding_score, trigger_count)
+
+    return map_db_risk_level(getattr(learner, "risk_level", None))
 
 
 def derive_ticket_urgency(total_score, safeguarding_score, trigger_count):
@@ -1288,6 +1368,12 @@ def create_support_ticket(request):
     urgency = (request.data.get("urgency") or "medium").strip().lower()
     if urgency not in ["low", "medium", "high", "urgent"]:
         urgency = "medium"
+
+    if monitoring_record_risk_level(learner) == "green" and urgency in {"low", "medium"}:
+        return Response(
+            {"detail": "Green safeguarding records are shown on the dashboard and do not create support tickets."},
+            status=status.HTTP_409_CONFLICT,
+        )
 
     preferred_contact = (request.data.get("preferred_contact") or "email").strip().lower()
     if preferred_contact not in ["email", "phone"]:
@@ -2066,6 +2152,9 @@ def update_support_ticket(request, ticket_id):
 
     update_fields = []
     response_data = {"id": ticket.id}
+    activity_messages = []
+    original_status = (getattr(ticket, "status", "") or "").strip().lower()
+    original_urgency = (getattr(ticket, "urgency", "") or "").strip().lower()
 
     CLOSED_STATUSES = {"closed", "outcome recorded"}
 
@@ -2079,6 +2168,10 @@ def update_support_ticket(request, ticket_id):
         ticket.status = new_status
         update_fields.append("status")
         response_data["status"] = new_status
+        if new_status != original_status:
+            activity_messages.append(
+                f"Status changed from {_format_activity_value(original_status)} to {_format_activity_value(new_status)}"
+            )
 
         # Auto-compute days_to_close when ticket is closed for the first time
         if new_status in CLOSED_STATUSES and ticket.days_to_close is None:
@@ -2096,6 +2189,17 @@ def update_support_ticket(request, ticket_id):
         ticket.urgency = new_urgency
         update_fields.append("urgency")
         response_data["urgency"] = new_urgency
+        if new_urgency != original_urgency:
+            old_risk = _ticket_risk_from_urgency(original_urgency)
+            new_risk = _ticket_risk_from_urgency(new_urgency)
+            if old_risk != new_risk:
+                activity_messages.append(
+                    f"Risk changed from {_format_activity_value(old_risk)} to {_format_activity_value(new_risk)}"
+                )
+            else:
+                activity_messages.append(
+                    f"Urgency changed from {_format_activity_value(original_urgency)} to {_format_activity_value(new_urgency)}"
+                )
 
     new_subject = (request.data.get("subject") or "").strip()
     if new_subject:
@@ -2138,6 +2242,10 @@ def update_support_ticket(request, ticket_id):
 
     if not update_fields:
         return Response({"detail": "No valid fields to update."}, status=status.HTTP_400_BAD_REQUEST)
+
+    if _append_ticket_activity_notes(ticket, activity_messages, _request_actor_label(request)):
+        update_fields.append("notes")
+        response_data["notesCount"] = _ticket_case_note_count(ticket.notes)
 
     ticket.updated_at = timezone.now()
     update_fields.append("updated_at")
@@ -2367,6 +2475,7 @@ def support_tickets_list(request):
             display_source = "Coach" if name_part else "-"
 
         details = details_override or stored_details
+        programme = (getattr(learner_record, "programme", "") or "").strip() if learner_record else ""
 
         tickets.append({
             "id": row.id,
@@ -2374,6 +2483,7 @@ def support_tickets_list(request):
             "wellbeingRecordId": getattr(row, "wellbeing_record_id", None),
             "learnerName": (getattr(row, "full_name", "") or "").strip(),
             "learnerEmail": (getattr(row, "email", "") or "").strip(),
+            "programme": programme,
             "type": ticket_type or "Support",
             "risk": risk,
             "createdAt": safe_dt_iso(getattr(row, "created_at", None)),
@@ -2389,7 +2499,7 @@ def support_tickets_list(request):
             "preferredContact": (getattr(row, "preferred_contact", "") or "").strip(),
             "notes": [],
             "evidence": [],
-            "notesCount": len(_ensure_list(getattr(row, "notes", None))),
+            "notesCount": _ticket_case_note_count(getattr(row, "notes", None)),
             "evidenceCount": len(_ensure_list(getattr(row, "evidence", None))),
             "assignedOwner": (getattr(row, "assigned_owner", "") or "").strip(),
         })

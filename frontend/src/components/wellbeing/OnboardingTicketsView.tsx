@@ -73,12 +73,13 @@ export type OnboardingReport = {
 
 type OnboardingFilters = {
   risk: string[];
+  programme: string[];
   status: "all" | "open" | "closed";
   evidence: "all" | "with" | "missing";
 };
 
 const DEFAULT_ONBOARDING_STATUS: OnboardingFilters["status"] = "open";
-const emptyFilters: OnboardingFilters = { risk: [], status: DEFAULT_ONBOARDING_STATUS, evidence: "all" };
+const emptyFilters: OnboardingFilters = { risk: [], programme: [], status: DEFAULT_ONBOARDING_STATUS, evidence: "all" };
 
 type SortDirection = "asc" | "desc";
 
@@ -1042,27 +1043,34 @@ async function downloadInclusivenessPDF(report: OnboardingReport) {
 
 function OnboardingFiltersPanel({
   filters,
+  programmes,
   onChange,
   onReset,
 }: {
   filters: OnboardingFilters;
+  programmes: string[];
   onChange: (f: OnboardingFilters) => void;
   onReset: () => void;
 }) {
   const activeCount =
     filters.risk.length +
+    filters.programme.length +
     (filters.status !== DEFAULT_ONBOARDING_STATUS ? 1 : 0) +
     (filters.evidence !== "all" ? 1 : 0);
   function toggleRisk(r: string) {
     const cur = filters.risk;
     onChange({ ...filters, risk: cur.includes(r) ? cur.filter((v) => v !== r) : [...cur, r] });
   }
+  function toggleProgramme(programme: string) {
+    const cur = filters.programme;
+    onChange({ ...filters, programme: cur.includes(programme) ? cur.filter((v) => v !== programme) : [...cur, programme] });
+  }
   function toggleStatus(s: OnboardingFilters["status"]) {
     onChange({ ...filters, status: s });
   }
 
   return (
-    <div className="absolute right-0 top-full z-50 mt-2 w-64 rounded-2xl border border-[#E6DDF8] bg-white p-4 shadow-[0_12px_30px_rgba(36,20,83,0.12)]">
+    <div className="absolute right-0 top-full z-50 mt-2 w-80 rounded-2xl border border-[#E6DDF8] bg-white p-4 shadow-[0_12px_30px_rgba(36,20,83,0.12)]">
       <div className="mb-4 flex items-center justify-between">
         <span className="text-sm font-semibold text-[#241453]">Filters</span>
         {activeCount > 0 && (
@@ -1085,6 +1093,30 @@ function OnboardingFiltersPanel({
                 }`}
               >
                 {r}
+              </button>
+            ))}
+          </div>
+        </div>
+        <div>
+          <div className="mb-2 text-[10px] font-semibold uppercase tracking-wide text-[#7B6D9B]">Programme</div>
+          <div className="custom-scroll flex max-h-36 flex-col gap-1.5 overflow-y-auto pr-1">
+            {programmes.length === 0 ? (
+              <div className="rounded-xl border border-dashed border-[#E7E2F3] px-3 py-2 text-xs text-slate-400">
+                No programmes found
+              </div>
+            ) : programmes.map((programme) => (
+              <button
+                key={programme}
+                type="button"
+                onClick={() => toggleProgramme(programme)}
+                className={`w-full truncate rounded-xl px-2.5 py-1.5 text-left text-xs font-medium transition ${
+                  filters.programme.includes(programme)
+                    ? "border border-[#241453] bg-[#241453] text-white"
+                    : "border border-[#E7E2F3] text-[#241453] hover:bg-[#F8F5FF]"
+                }`}
+                title={programme}
+              >
+                {programme}
               </button>
             ))}
           </div>
@@ -2481,14 +2513,28 @@ export default function OnboardingTicketsView({ coachEmail }: { coachEmail?: str
     });
   }, [reports, search, coachEmail]);
 
+  const programmeOptions = useMemo(() => {
+    const values = new Set<string>();
+    searchedReports.forEach((report) => {
+      const programme = (report.programme || "").trim();
+      if (programme) values.add(programme);
+    });
+    return Array.from(values).sort((a, b) => a.localeCompare(b, undefined, { sensitivity: "base" }));
+  }, [searchedReports]);
+
+  const programmeFilteredReports = useMemo(() => {
+    if (filters.programme.length === 0) return searchedReports;
+    return searchedReports.filter((report) => filters.programme.includes((report.programme || "").trim()));
+  }, [searchedReports, filters.programme]);
+
   const statusFilteredReports = useMemo(() => {
-    return searchedReports.filter((r) => {
+    return programmeFilteredReports.filter((r) => {
       if (filters.status === "all") return true;
       const s = (reportStatuses.get(r.id) || r.status || "active").toLowerCase();
       const isClosed = s === "closed";
       return filters.status === "closed" ? isClosed : !isClosed;
     });
-  }, [searchedReports, filters.status, reportStatuses]);
+  }, [programmeFilteredReports, filters.status, reportStatuses]);
 
   const riskFilteredReports = useMemo(() => {
     return statusFilteredReports.filter((r) => {
@@ -2571,9 +2617,9 @@ export default function OnboardingTicketsView({ coachEmail }: { coachEmail?: str
   }, [riskFilteredReports]);
 
   const statusCounts = useMemo(() => {
-    const closed = searchedReports.filter((r) => (reportStatuses.get(r.id) || r.status || "active").toLowerCase() === "closed").length;
-    return { all: searchedReports.length, open: searchedReports.length - closed, closed };
-  }, [searchedReports, reportStatuses]);
+    const closed = programmeFilteredReports.filter((r) => (reportStatuses.get(r.id) || r.status || "active").toLowerCase() === "closed").length;
+    return { all: programmeFilteredReports.length, open: programmeFilteredReports.length - closed, closed };
+  }, [programmeFilteredReports, reportStatuses]);
 
   function setQuickRisk(value: OnboardingQuickRisk) {
     setSearch("");
@@ -2593,6 +2639,7 @@ export default function OnboardingTicketsView({ coachEmail }: { coachEmail?: str
 
   const activeFilterCount =
     filters.risk.length +
+    filters.programme.length +
     (filters.status !== DEFAULT_ONBOARDING_STATUS ? 1 : 0) +
     (filters.evidence !== "all" ? 1 : 0);
 
@@ -2814,7 +2861,12 @@ export default function OnboardingTicketsView({ coachEmail }: { coachEmail?: str
                   <>
                     <button type="button" className="fixed inset-0 z-40 cursor-default" onClick={() => setFiltersOpen(false)} />
                     <div className="z-50">
-                      <OnboardingFiltersPanel filters={filters} onChange={setFilters} onReset={() => setFilters(emptyFilters)} />
+                      <OnboardingFiltersPanel
+                        filters={filters}
+                        programmes={programmeOptions}
+                        onChange={setFilters}
+                        onReset={() => setFilters(emptyFilters)}
+                      />
                     </div>
                   </>
                 )}

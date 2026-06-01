@@ -150,6 +150,7 @@ function ticketMatchesTextSearch(ticket: SupportTicketRow, query: string) {
     String(ticket.ticketCode || "").toLowerCase().includes(query) ||
     String(ticket.learnerName || "").toLowerCase().includes(query) ||
     String(ticket.learnerEmail || "").toLowerCase().includes(query) ||
+    String(ticket.programme || "").toLowerCase().includes(query) ||
     String(ticket.type || "").toLowerCase().includes(query) ||
     String(ticket.status || "").toLowerCase().includes(query) ||
     String(ticket.subject || "").toLowerCase().includes(query) ||
@@ -165,6 +166,14 @@ function ticketMatchesLearner(ticket: SupportTicketRow, learner: TicketableLearn
   const ticketName = String(ticket.learnerName || "").trim().toLowerCase();
   const learnerName = String(learner.studentName || "").trim().toLowerCase();
   return Boolean(ticketName && learnerName && ticketName === learnerName);
+}
+
+function isActivityNote(note: TicketNoteRow) {
+  return String(note.type || "").trim().toLowerCase() === "activity";
+}
+
+function caseNoteCount(notes: TicketNoteRow[]) {
+  return notes.filter((note) => !isActivityNote(note)).length;
 }
 
 function learnerMatchesTextSearch(learner: TicketableLearnerRow, query: string) {
@@ -1829,6 +1838,7 @@ function LearnerTable({
                 const closedTicketCount = Number(row.closedTicketCount || 0);
                 const totalTicketCount = Number(row.totalTicketCount ?? (openTicketCount + closedTicketCount));
                 const noData = !row.hasWellbeingData;
+                const isGreenRisk = String(row.riskLevel || "").toLowerCase() === "green";
 
                 return (
                   <tr
@@ -1932,16 +1942,27 @@ function LearnerTable({
                           >
                             View tickets
                           </button>
-                          <button
-                            type="button"
-                            onClick={() => onCreateFollowUp(row)}
-                            title="Create new follow-up ticket"
-                            aria-label={`Create new follow-up ticket for ${row.studentName || "learner"}`}
-                            className="inline-flex h-8 w-8 items-center justify-center rounded-lg border border-[#D9CFF3] bg-white text-[#6248BE] transition hover:bg-[#F5F1FC]"
-                          >
-                            <Plus className="h-3.5 w-3.5" />
-                          </button>
+                          {!isGreenRisk && (
+                            <button
+                              type="button"
+                              onClick={() => onCreateFollowUp(row)}
+                              title="Create new follow-up ticket"
+                              aria-label={`Create new follow-up ticket for ${row.studentName || "learner"}`}
+                              className="inline-flex h-8 w-8 items-center justify-center rounded-lg border border-[#D9CFF3] bg-white text-[#6248BE] transition hover:bg-[#F5F1FC]"
+                            >
+                              <Plus className="h-3.5 w-3.5" />
+                            </button>
+                          )}
                         </div>
+                      ) : isGreenRisk ? (
+                        <button
+                          type="button"
+                          onClick={() => setReportLearner(row)}
+                          className="inline-flex h-9 items-center justify-center gap-1.5 rounded-xl border border-[#D9CFF3] bg-[#F5F1FC] px-4 text-xs font-semibold text-[#6248BE] transition hover:bg-[#EEE7FB] whitespace-nowrap"
+                        >
+                          <FileText className="h-3.5 w-3.5" />
+                          View answers
+                        </button>
                       ) : (
                         <button
                           type="button"
@@ -2496,11 +2517,12 @@ type TicketFilters = {
   status: string[];
   type: string[];
   risk: string[];
+  programme: string[];
   evidence: TicketEvidenceFilter;
 };
 
 const DEFAULT_TICKET_STATUS_GROUP: TicketStatusGroup = "open";
-const emptyFilters: TicketFilters = { statusGroup: DEFAULT_TICKET_STATUS_GROUP, status: [], type: [], risk: [], evidence: "all" };
+const emptyFilters: TicketFilters = { statusGroup: DEFAULT_TICKET_STATUS_GROUP, status: [], type: [], risk: [], programme: [], evidence: "all" };
 
 function ticketHasEvidence(ticket: SupportTicketRow): boolean {
   return (ticket.evidenceCount ?? ticket.evidence?.length ?? 0) > 0 || (ticket.notesCount ?? ticket.notes?.length ?? 0) > 0;
@@ -2569,6 +2591,77 @@ function SortHeaderButton({
   );
 }
 
+function useAnchoredPopoverPosition(
+  open: boolean,
+  setOpen: React.Dispatch<React.SetStateAction<boolean>>,
+  btnRef: React.RefObject<HTMLButtonElement | null>,
+  panelRef: React.RefObject<HTMLDivElement | null>,
+  listRef: React.RefObject<HTMLDivElement | null>,
+) {
+  React.useLayoutEffect(() => {
+    if (!open) return;
+
+    let frame = 0;
+    const position = () => {
+      if (!btnRef.current || !panelRef.current) return;
+
+      const btn = btnRef.current.getBoundingClientRect();
+      const panel = panelRef.current;
+      const pw = panel.offsetWidth;
+      const vw = window.innerWidth;
+      const vh = window.innerHeight;
+
+      if (btn.bottom < 0 || btn.top > vh || btn.right < 0 || btn.left > vw) {
+        setOpen(false);
+        return;
+      }
+
+      let left = btn.left;
+      if (left + pw > vw - 8) left = vw - pw - 8;
+      if (left < 8) left = 8;
+
+      const HEADER_H = 46;
+      const spaceBelow = vh - btn.bottom - 12;
+      const spaceAbove = btn.top - 12;
+
+      let top: number;
+      let listMaxH: number;
+
+      if (spaceBelow >= spaceAbove || spaceBelow >= 160) {
+        top = btn.bottom + 6;
+        listMaxH = Math.max(80, spaceBelow - HEADER_H);
+      } else {
+        listMaxH = Math.max(80, spaceAbove - HEADER_H - 6);
+        top = btn.top - HEADER_H - listMaxH - 6;
+        if (top < 8) {
+          top = 8;
+          listMaxH = Math.max(80, btn.top - HEADER_H - 14);
+        }
+      }
+
+      panel.style.left = `${left}px`;
+      panel.style.top = `${top}px`;
+      if (listRef.current) listRef.current.style.maxHeight = `${Math.min(listMaxH, 360)}px`;
+      panel.style.visibility = "visible";
+    };
+
+    const schedulePosition = () => {
+      window.cancelAnimationFrame(frame);
+      frame = window.requestAnimationFrame(position);
+    };
+
+    position();
+    window.addEventListener("resize", schedulePosition);
+    window.addEventListener("scroll", schedulePosition, true);
+
+    return () => {
+      window.cancelAnimationFrame(frame);
+      window.removeEventListener("resize", schedulePosition);
+      window.removeEventListener("scroll", schedulePosition, true);
+    };
+  }, [open, setOpen, btnRef, panelRef, listRef]);
+}
+
 
 function TicketNotesPopover({ ticketId, count, initialNotes = [] }: { ticketId: number; count: number; initialNotes?: TicketNoteRow[] }) {
   const [open, setOpen] = React.useState(false);
@@ -2589,42 +2682,9 @@ function TicketNotesPopover({ ticketId, count, initialNotes = [] }: { ticketId: 
     return () => { mounted = false; };
   }, [open, notes.length, count, ticketId]);
 
-  React.useLayoutEffect(() => {
-    if (!open || !btnRef.current || !panelRef.current) return;
-    const btn = btnRef.current.getBoundingClientRect();
-    const panel = panelRef.current;
-    const pw = panel.offsetWidth;
-    const vw = window.innerWidth;
-    const vh = window.innerHeight;
+  const caseNotes = React.useMemo(() => notes.filter((note) => !isActivityNote(note)), [notes]);
 
-    // Horizontal: align with button, clamp to viewport
-    let left = btn.left;
-    if (left + pw > vw - 8) left = vw - pw - 8;
-    if (left < 8) left = 8;
-
-    const HEADER_H = 46;
-    const spaceBelow = vh - btn.bottom - 12;
-    const spaceAbove = btn.top - 12;
-
-    let top: number;
-    let listMaxH: number;
-
-    if (spaceBelow >= spaceAbove || spaceBelow >= 160) {
-      // Show below — list fills available space downward
-      top = btn.bottom + 6;
-      listMaxH = Math.max(80, spaceBelow - HEADER_H);
-    } else {
-      // Show above — constrain list to available space upward
-      listMaxH = Math.max(80, spaceAbove - HEADER_H - 6);
-      top = btn.top - HEADER_H - listMaxH - 6;
-      if (top < 8) { top = 8; listMaxH = btn.top - HEADER_H - 14; }
-    }
-
-    panel.style.left = `${left}px`;
-    panel.style.top = `${top}px`;
-    if (listRef.current) listRef.current.style.maxHeight = `${Math.min(listMaxH, 360)}px`;
-    panel.style.visibility = "visible";
-  }, [open]);
+  useAnchoredPopoverPosition(open, setOpen, btnRef, panelRef, listRef);
 
   return (
     <>
@@ -2664,9 +2724,9 @@ function TicketNotesPopover({ ticketId, count, initialNotes = [] }: { ticketId: 
             <div ref={listRef} className="custom-scroll space-y-2 overflow-y-auto p-3">
               {loading ? (
                 <div className="py-6 text-center text-xs text-[#8E82AA]">Loading notes...</div>
-              ) : notes.length === 0 ? (
+              ) : caseNotes.length === 0 ? (
                 <div className="py-6 text-center text-xs text-slate-400">No notes found</div>
-              ) : notes.map((n, i) => (
+              ) : caseNotes.map((n, i) => (
                 <div key={n.id ?? i} className="rounded-xl border border-[#EEE8F8] p-3">
                   <div className="mb-1.5 flex items-center justify-between gap-2">
                     <span className="truncate text-[10px] font-medium text-[#8E82AA]">{n.created_by || "Coach"}</span>
@@ -2704,39 +2764,7 @@ function TicketEvidencePopover({ ticketId, count, initialEvidence = [] }: { tick
     return () => { mounted = false; };
   }, [open, evidence.length, count, ticketId]);
 
-  React.useLayoutEffect(() => {
-    if (!open || !btnRef.current || !panelRef.current) return;
-    const btn = btnRef.current.getBoundingClientRect();
-    const panel = panelRef.current;
-    const pw = panel.offsetWidth;
-    const vw = window.innerWidth;
-    const vh = window.innerHeight;
-
-    let left = btn.left;
-    if (left + pw > vw - 8) left = vw - pw - 8;
-    if (left < 8) left = 8;
-
-    const HEADER_H = 46;
-    const spaceBelow = vh - btn.bottom - 12;
-    const spaceAbove = btn.top - 12;
-
-    let top: number;
-    let listMaxH: number;
-
-    if (spaceBelow >= spaceAbove || spaceBelow >= 160) {
-      top = btn.bottom + 6;
-      listMaxH = Math.max(80, spaceBelow - HEADER_H);
-    } else {
-      listMaxH = Math.max(80, spaceAbove - HEADER_H - 6);
-      top = btn.top - HEADER_H - listMaxH - 6;
-      if (top < 8) { top = 8; listMaxH = btn.top - HEADER_H - 14; }
-    }
-
-    panel.style.left = `${left}px`;
-    panel.style.top = `${top}px`;
-    if (listRef.current) listRef.current.style.maxHeight = `${Math.min(listMaxH, 360)}px`;
-    panel.style.visibility = "visible";
-  }, [open]);
+  useAnchoredPopoverPosition(open, setOpen, btnRef, panelRef, listRef);
 
   return (
     <>
@@ -2848,14 +2876,16 @@ function TicketEvidencePopover({ ticketId, count, initialEvidence = [] }: { tick
 
 function FiltersPanel({
   filters,
+  programmes,
   onChange,
   onReset,
 }: {
   filters: TicketFilters;
+  programmes: string[];
   onChange: (f: TicketFilters) => void;
   onReset: () => void;
 }) {
-  function toggle(key: "status" | "type" | "risk", value: string) {
+  function toggle(key: "status" | "type" | "risk" | "programme", value: string) {
     const current = filters[key];
     onChange({
       ...filters,
@@ -2868,10 +2898,11 @@ function FiltersPanel({
     filters.status.length +
     filters.type.length +
     filters.risk.length +
+    filters.programme.length +
     (filters.evidence !== "all" ? 1 : 0);
 
   return (
-    <div className="absolute right-0 top-full z-50 mt-2 w-72 rounded-2xl border border-[#E6DDF8] bg-white p-4 shadow-[0_12px_30px_rgba(36,20,83,0.12)]">
+    <div className="absolute right-0 top-full z-50 mt-2 w-80 rounded-2xl border border-[#E6DDF8] bg-white p-4 shadow-[0_12px_30px_rgba(36,20,83,0.12)]">
       <div className="mb-4 flex items-center justify-between">
         <span className="text-sm font-semibold text-[#241453]">Filters</span>
         {activeCount > 0 && (
@@ -2918,6 +2949,31 @@ function FiltersPanel({
                 }`}
             >
               {t}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      <div className="mb-4">
+        <div className="mb-2 text-[10px] font-semibold uppercase tracking-wide text-[#7B6D9B]">Programme</div>
+        <div className="custom-scroll flex max-h-36 flex-col gap-1.5 overflow-y-auto pr-1">
+          {programmes.length === 0 ? (
+            <div className="rounded-xl border border-dashed border-[#E7E2F3] px-3 py-2 text-xs text-slate-400">
+              No programmes found
+            </div>
+          ) : programmes.map((programme) => (
+            <button
+              key={programme}
+              type="button"
+              onClick={() => toggle("programme", programme)}
+              className={`w-full truncate rounded-xl px-2.5 py-1.5 text-left text-xs font-medium transition ${
+                filters.programme.includes(programme)
+                  ? "border border-[#241453] bg-[#241453] text-white"
+                  : "border border-[#E7E2F3] text-[#241453] hover:bg-[#F8F5FF]"
+              }`}
+              title={programme}
+            >
+              {programme}
             </button>
           ))}
         </div>
@@ -4610,6 +4666,8 @@ function TicketDetailPanel({
 
   const isUpdating = statusUpdating === ticket.id;
   const isClosed = !isActiveTicketStatus(ticket.status);
+  const activityNotes = notes.filter(isActivityNote);
+  const caseNotes = notes.filter((note) => !isActivityNote(note));
 
   const statusActions = [
     { value: "under review", label: "Under Review" },
@@ -4791,25 +4849,61 @@ function TicketDetailPanel({
               </div>
             )}
 
+            {/* Activity */}
+            <div>
+              <div className="mb-3 flex items-center justify-between">
+                <div className="text-[10px] font-semibold uppercase tracking-wider text-[#7B6D9B]">
+                  Activity
+                </div>
+                {activityNotes.length > 0 && (
+                  <span className="text-[10px] text-[#B8AACC]">{activityNotes.length} update{activityNotes.length !== 1 ? "s" : ""}</span>
+                )}
+              </div>
+              {notesLoading ? (
+                <p className="text-xs text-slate-400">Loading...</p>
+              ) : activityNotes.length === 0 ? (
+                <div className="rounded-xl border border-dashed border-[#EEE8F8] px-4 py-3 text-xs text-slate-400">
+                  No activity yet.
+                </div>
+              ) : (
+                <div className="space-y-2">
+                  {activityNotes.map((n) => (
+                    <div key={n.id} className="rounded-xl border border-[#E8DFF8] bg-[#FBFAFE] p-3">
+                      <div className="flex items-center justify-between gap-2">
+                        <div className="flex items-center gap-1.5">
+                          <RotateCcw className="h-3 w-3 text-[#8E82AA]" />
+                          <span className="text-[10px] text-[#8E82AA]">{n.created_by || "System"}</span>
+                        </div>
+                        <span className="text-[10px] text-[#B8AACC]">
+                          {n.created_at ? formatTicketDate(n.created_at) : ""}
+                        </span>
+                      </div>
+                      <p className="mt-1.5 whitespace-pre-wrap text-sm font-medium text-[#241453]">{n.note}</p>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+
             {/* Case Notes */}
             <div>
               <div className="mb-3 flex items-center justify-between">
                 <div className="text-[10px] font-semibold uppercase tracking-wider text-[#7B6D9B]">
                   Case Notes
                 </div>
-                {notes.length > 0 && (
-                  <span className="text-[10px] text-[#B8AACC]">{notes.length} note{notes.length !== 1 ? "s" : ""}</span>
+                {caseNotes.length > 0 && (
+                  <span className="text-[10px] text-[#B8AACC]">{caseNotes.length} note{caseNotes.length !== 1 ? "s" : ""}</span>
                 )}
               </div>
               {notesLoading ? (
                 <p className="text-xs text-slate-400">Loading...</p>
-              ) : notes.length === 0 ? (
+              ) : caseNotes.length === 0 ? (
                 <div className="rounded-xl border border-dashed border-[#EEE8F8] px-4 py-3 text-xs text-slate-400">
                   No case notes yet. Use Actions → Add Case Note.
                 </div>
               ) : (
                 <div className="space-y-2">
-                  {notes.map((n) => (
+                  {caseNotes.map((n) => (
                     <div key={n.id} className="rounded-xl border border-[#EEE8F8] p-3">
                       <div className="flex items-center justify-between gap-2">
                         <div className="flex items-center gap-1.5">
@@ -5512,6 +5606,7 @@ function TicketsManagementView({
   search,
   onSearchChange,
   ticketsData,
+  programmeOptions,
   riskCounts,
   evidenceCounts,
   statusCounts,
@@ -5540,6 +5635,7 @@ function TicketsManagementView({
   search: string;
   onSearchChange: (value: string) => void;
   ticketsData: SupportTicketsResponse | null;
+  programmeOptions: string[];
   riskCounts: Partial<Record<RiskQuickValue, number>>;
   evidenceCounts: Record<TicketEvidenceFilter, number>;
   statusCounts: Record<TicketStatusGroup, number>;
@@ -5607,6 +5703,7 @@ function TicketsManagementView({
     filters.status.length +
     filters.type.length +
     filters.risk.length +
+    filters.programme.length +
     (filters.evidence !== "all" ? 1 : 0);
   const selectedRiskFilter = filters.risk[0] ?? "";
   const ticketQuickRiskValue = filters.risk.length === 0
@@ -5752,7 +5849,7 @@ function TicketsManagementView({
               <input
                 value={search}
                 onChange={(e) => onSearchChange(e.target.value)}
-                placeholder="Search tickets..."
+                placeholder="Search tickets, learners, programme..."
                 className="w-full bg-transparent text-sm outline-none"
               />
             </div>
@@ -5796,6 +5893,7 @@ function TicketsManagementView({
                     <div className="z-50">
                       <FiltersPanel
                         filters={filters}
+                        programmes={programmeOptions}
                         onChange={onFiltersChange}
                         onReset={() => onFiltersChange(emptyFilters)}
                       />
@@ -6962,6 +7060,8 @@ export default function CoachWellbeingPage({ setMobileOpen, isDesktop }: CoachWe
         }
         return { ...prev, ...patch };
       });
+
+      await handleNotesChanged(ticketId);
     } catch (err) {
       console.error("Failed to update ticket status", err);
     } finally {
@@ -7007,10 +7107,11 @@ export default function CoachWellbeingPage({ setMobileOpen, isDesktop }: CoachWe
     }
     try {
       const updatedNotes = await getTicketNotes(ticketId);
+      const updatedCaseNoteCount = Array.isArray(updatedNotes) ? caseNoteCount(updatedNotes) : undefined;
       setTicketsData((prev) => {
         if (!prev) return prev;
         const updated = prev.tickets.map((t) =>
-          t.id === ticketId ? { ...t, notes: Array.isArray(updatedNotes) ? updatedNotes : t.notes, notesCount: Array.isArray(updatedNotes) ? updatedNotes.length : t.notesCount } : t
+          t.id === ticketId ? { ...t, notes: Array.isArray(updatedNotes) ? updatedNotes : t.notes, notesCount: updatedCaseNoteCount ?? t.notesCount } : t
         );
         return { ...prev, tickets: updated };
       });
@@ -7065,6 +7166,9 @@ export default function CoachWellbeingPage({ setMobileOpen, isDesktop }: CoachWe
         ...(changes.preferred_contact ? { preferredContact: changes.preferred_contact } : {}),
       };
     });
+    if (changes.status || changes.urgency) {
+      void handleNotesChanged(ticketId);
+    }
     setEditTicket(null);
   }
 
@@ -7388,6 +7492,17 @@ export default function CoachWellbeingPage({ setMobileOpen, isDesktop }: CoachWe
     ? dashboardLearnerRows.length
     : dashboardTicketRows.length;
 
+  const ticketProgrammeOptions = useMemo(() => {
+    const q = ticketsSearch.trim().toLowerCase();
+    const values = new Set<string>();
+    scopedTicketRows.forEach((ticket) => {
+      if (!ticketMatchesTextSearch(ticket, q)) return;
+      const programme = String(ticket.programme || "").trim();
+      if (programme) values.add(programme);
+    });
+    return Array.from(values).sort((a, b) => a.localeCompare(b, undefined, { sensitivity: "base" }));
+  }, [scopedTicketRows, ticketsSearch]);
+
   const filteredTicketsData = useMemo<SupportTicketsResponse>(() => {
     const q = ticketsSearch.trim().toLowerCase();
 
@@ -7403,6 +7518,7 @@ export default function CoachWellbeingPage({ setMobileOpen, isDesktop }: CoachWe
       if (ticketFilters.status.length > 0 && !ticketFilters.status.includes(String(item.status || "").toLowerCase())) return false;
       if (ticketFilters.type.length > 0 && !ticketFilters.type.includes(String(item.type || "").toLowerCase())) return false;
       if (ticketFilters.risk.length > 0 && !ticketFilters.risk.includes(String(item.risk || "").toLowerCase())) return false;
+      if (ticketFilters.programme.length > 0 && !ticketFilters.programme.includes(String(item.programme || "").trim())) return false;
       if (ticketFilters.evidence === "with" && !ticketHasEvidence(item)) return false;
       if (ticketFilters.evidence === "missing" && ticketHasEvidence(item)) return false;
 
@@ -7421,13 +7537,14 @@ export default function CoachWellbeingPage({ setMobileOpen, isDesktop }: CoachWe
       if (!ticketMatchesTextSearch(item, q)) return false;
       if (ticketFilters.status.length > 0 && !ticketFilters.status.includes(String(item.status || "").toLowerCase())) return false;
       if (ticketFilters.type.length > 0 && !ticketFilters.type.includes(String(item.type || "").toLowerCase())) return false;
+      if (ticketFilters.programme.length > 0 && !ticketFilters.programme.includes(String(item.programme || "").trim())) return false;
       if (ticketFilters.evidence === "with" && !ticketHasEvidence(item)) return false;
       if (ticketFilters.evidence === "missing" && ticketHasEvidence(item)) return false;
       return true;
     });
     const closed = countBase.filter((ticket) => CLOSED_TICKET_STATUSES.has(String(ticket.status || "open").toLowerCase())).length;
     return { all: countBase.length, open: countBase.length - closed, closed };
-  }, [scopedTicketRows, ticketsSearch, ticketFilters.status, ticketFilters.type, ticketFilters.evidence]);
+  }, [scopedTicketRows, ticketsSearch, ticketFilters.status, ticketFilters.type, ticketFilters.programme, ticketFilters.evidence]);
 
   const ticketRiskCounts = useMemo<Partial<Record<RiskQuickValue, number>>>(() => {
     const q = ticketsSearch.trim().toLowerCase();
@@ -7439,6 +7556,7 @@ export default function CoachWellbeingPage({ setMobileOpen, isDesktop }: CoachWe
       if (ticketFilters.statusGroup === "open" && isClosed) return false;
       if (ticketFilters.status.length > 0 && !ticketFilters.status.includes(String(item.status || "").toLowerCase())) return false;
       if (ticketFilters.type.length > 0 && !ticketFilters.type.includes(String(item.type || "").toLowerCase())) return false;
+      if (ticketFilters.programme.length > 0 && !ticketFilters.programme.includes(String(item.programme || "").trim())) return false;
       if (ticketFilters.evidence === "with" && !ticketHasEvidence(item)) return false;
       if (ticketFilters.evidence === "missing" && ticketHasEvidence(item)) return false;
       return true;
@@ -7450,7 +7568,7 @@ export default function CoachWellbeingPage({ setMobileOpen, isDesktop }: CoachWe
       amber: countBase.filter((ticket) => String(ticket.risk || "").toLowerCase() === "amber").length,
       green: countBase.filter((ticket) => String(ticket.risk || "").toLowerCase() === "green").length,
     };
-  }, [scopedTicketRows, ticketsSearch, ticketFilters.statusGroup, ticketFilters.status, ticketFilters.type, ticketFilters.evidence]);
+  }, [scopedTicketRows, ticketsSearch, ticketFilters.statusGroup, ticketFilters.status, ticketFilters.type, ticketFilters.programme, ticketFilters.evidence]);
 
   const ticketEvidenceCounts = useMemo<Record<TicketEvidenceFilter, number>>(() => {
     const q = ticketsSearch.trim().toLowerCase();
@@ -7463,6 +7581,7 @@ export default function CoachWellbeingPage({ setMobileOpen, isDesktop }: CoachWe
       if (ticketFilters.status.length > 0 && !ticketFilters.status.includes(statusValue)) return false;
       if (ticketFilters.type.length > 0 && !ticketFilters.type.includes(String(item.type || "").toLowerCase())) return false;
       if (ticketFilters.risk.length > 0 && !ticketFilters.risk.includes(String(item.risk || "").toLowerCase())) return false;
+      if (ticketFilters.programme.length > 0 && !ticketFilters.programme.includes(String(item.programme || "").trim())) return false;
       return true;
     });
     const withEvidence = countBase.filter(ticketHasEvidence).length;
@@ -7471,7 +7590,7 @@ export default function CoachWellbeingPage({ setMobileOpen, isDesktop }: CoachWe
       with: withEvidence,
       missing: countBase.length - withEvidence,
     };
-  }, [scopedTicketRows, ticketsSearch, ticketFilters.statusGroup, ticketFilters.status, ticketFilters.type, ticketFilters.risk]);
+  }, [scopedTicketRows, ticketsSearch, ticketFilters.statusGroup, ticketFilters.status, ticketFilters.type, ticketFilters.risk, ticketFilters.programme]);
 
   const workflowLearnerKeys = useMemo(() => {
     const names = new Set<string>();
@@ -7623,20 +7742,22 @@ export default function CoachWellbeingPage({ setMobileOpen, isDesktop }: CoachWe
               </a>
             )}
 
-            {role === "qa" && activeView === "dashboard" && (
+            {(role === "qa" || role === "coach") && activeView === "dashboard" && (
               <>
-                <a
-                  href={wellbeingPathForView("tickets")}
-                  onClick={() => {
-                    setTicketsSearch("");
-                    setTicketFilters(emptyFilters);
-                    setTicketsLoading(true);
-                  }}
-                  className="inline-flex h-12 items-center justify-center gap-2 rounded-2xl border border-[#a88cd9] bg-[#f9f5ff] px-5 text-sm font-medium text-[#442F73] shadow-sm transition hover:bg-[#F3EBFF] hover:border-[#866cb6]"
-                >
-                  <Ticket className="h-4 w-4" />
-                  Safeguarding Tickets
-                </a>
+                {role === "qa" && (
+                  <a
+                    href={wellbeingPathForView("tickets")}
+                    onClick={() => {
+                      setTicketsSearch("");
+                      setTicketFilters(emptyFilters);
+                      setTicketsLoading(true);
+                    }}
+                    className="inline-flex h-12 items-center justify-center gap-2 rounded-2xl border border-[#a88cd9] bg-[#f9f5ff] px-5 text-sm font-medium text-[#442F73] shadow-sm transition hover:bg-[#F3EBFF] hover:border-[#866cb6]"
+                  >
+                    <Ticket className="h-4 w-4" />
+                    Safeguarding Tickets
+                  </a>
+                )}
                 <a
                   href={wellbeingPathForView("onboarding")}
                   className="inline-flex h-12 items-center justify-center gap-2 rounded-2xl border border-[#DDC398] bg-[#F9F4EC] px-5 text-sm font-medium text-[#9D6912] shadow-sm transition hover:bg-[#F3E9DA] hover:border-[#CEA869]"
@@ -7670,7 +7791,7 @@ export default function CoachWellbeingPage({ setMobileOpen, isDesktop }: CoachWe
 
       {activeView === "onboarding" ? (
         <OnboardingTicketsView
-          coachEmail={role === "qa" ? (selectedCoachEmail === "__all__" ? "" : selectedCoachEmail) : coachScope.email}
+          coachEmail={role === "qa" ? (selectedCoachEmail === "__all__" ? "" : selectedCoachEmail) : undefined}
         />
       ) : activeView === "dashboard" ? (
         <>
@@ -7980,6 +8101,7 @@ export default function CoachWellbeingPage({ setMobileOpen, isDesktop }: CoachWe
             search={ticketsSearch}
             onSearchChange={setTicketsSearch}
             ticketsData={filteredTicketsData}
+            programmeOptions={ticketProgrammeOptions}
             riskCounts={ticketRiskCounts}
             evidenceCounts={ticketEvidenceCounts}
             statusCounts={ticketStatusCounts}
