@@ -1427,6 +1427,24 @@ def create_support_ticket(request):
     except (ValueError, TypeError):
         days_to_close = None
 
+    from datetime import timedelta
+    cutoff = now - timedelta(seconds=30)
+    existing = SupportTicket.objects.using("wellbeing").filter(
+        wellbeing_record_id=learner.id,
+        ticket_type=ticket_type,
+        created_at__gte=cutoff,
+    ).first()
+    if existing:
+        return Response(
+            {
+                "id": existing.id,
+                "wellbeing_record_id": learner.id,
+                "status": existing.status,
+                "message": "Support ticket created successfully",
+            },
+            status=status.HTTP_201_CREATED,
+        )
+
     ticket = SupportTicket.objects.using("wellbeing").create(
         wellbeing_record_id=learner.id,
         ticket_type=ticket_type,
