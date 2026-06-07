@@ -72,10 +72,10 @@ export default function Sidebar({
         <div>
           <div className="p-6 text-2xl font-bold text-white flex items-center gap-3">
             <span className="inline-flex items-center justify-center w-10 h-10 rounded-full bg-white/10">
-              <i className="fa-solid fa-graduation-cap" />
+              <i className="fa-solid fa-file-shield"/>
             </span>
 
-            {(!collapsed || !isDesktop) && <span>Coaches</span>}
+            {(!collapsed || !isDesktop) && <span>Safeguarding</span>}
 
             {!isDesktop && (
               <button
@@ -90,7 +90,7 @@ export default function Sidebar({
           </div>
 
           <nav className="px-3 space-y-2">
-            <SidebarLink
+            {/* <SidebarLink
               to="/dashboard"
               collapsed={collapsed && isDesktop}
               icon="fa-gauge"
@@ -112,7 +112,7 @@ export default function Sidebar({
               icon="fa-calendar-days"
               label="My Calendar"
               onClick={() => !isDesktop && setMobileOpen(false)}
-            />
+            /> */}
 
             <SidebarLink
               to="/coach-wellbeing"
@@ -122,13 +122,13 @@ export default function Sidebar({
               onClick={() => !isDesktop && setMobileOpen(false)}
             />
 
-            <SidebarExternalLink
+            {/* <SidebarExternalLink
               href="https://kentbusinesscollege.org/psychological-dashboard/"
               collapsed={collapsed && isDesktop}
               icon="fa-user"
               label="Who I am"
               onClick={() => !isDesktop && setMobileOpen(false)}
-            />
+            /> */}
 
             <SidebarExternalLink
               href="https://communicationcentre.kentbusinesscollege.net/login"
@@ -162,15 +162,15 @@ export default function Sidebar({
               onClick={() => !isDesktop && setMobileOpen(false)}
             />
 
-            {role === "qa" && (
+            {/* {role === "qa" && (
               <SidebarExternalLink
-                href="https://studentportal.kentbusinesscollege.net/"
+                href="<i class="fa-solid fa-file-shield"></i>"
                 collapsed={collapsed && isDesktop}
                 icon="fa-user-pen"
                 label="Edit Students Attendance"
                 onClick={() => !isDesktop && setMobileOpen(false)}
               />
-            )}
+            )} */}
 
 
 

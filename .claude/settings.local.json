@@ -11,7 +11,9 @@
       "Bash(.venv/Scripts/python.exe -c ' *)",
       "Bash(.venv/Scripts/python.exe -m py_compile tasks/views.py tasks/models.py)",
       "Bash(npx tsc *)",
-      "Bash(node_modules\\\\.bin\\\\tsc --noEmit)"
+      "Bash(node_modules\\\\.bin\\\\tsc --noEmit)",
+      "Bash(python -c ' *)",
+      "Bash(.venv/Scripts/python -c ' *)"
     ]
   }
 }

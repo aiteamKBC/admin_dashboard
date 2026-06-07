@@ -78,15 +78,10 @@ export default function App() {
           <Routes>
             <Route path="/login" element={<Login />} />
 
+            {/* Default redirect to wellbeing */}
+            <Route path="/" element={<Navigate to="/coach-wellbeing" replace />} />
+
             {/* QA + Coach */}
-            <Route
-              path="/"
-              element={
-                <RequireRole allow={["qa", "coach"]}>
-                  <DashboardPage onOpenSidebar={() => setMobileOpen(true)} />
-                </RequireRole>
-              }
-            />
             <Route
               path="/dashboard"
               element={
@@ -130,7 +125,7 @@ export default function App() {
             />
 
             {/* fallback */}
-            <Route path="*" element={<Navigate to="/" replace />} />
+            <Route path="*" element={<Navigate to="/coach-wellbeing" replace />} />
           </Routes>
         </div>
       </main>

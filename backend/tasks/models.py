@@ -56,6 +56,7 @@ class WellbeingSafeguardingMonitoringSystem(models.Model):
     submission_json = models.JSONField(null=True, blank=True)
     risk_level = models.TextField(null=True, blank=True)
     history_json = models.JSONField(null=True, blank=True)
+    program_status = models.TextField(null=True, blank=True, db_column="Program_status")
 
     class Meta:
         managed = False

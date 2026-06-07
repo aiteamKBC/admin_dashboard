@@ -7293,8 +7293,8 @@ export default function CoachWellbeingPage({ setMobileOpen, isDesktop }: CoachWe
     async function loadDashboard() {
       if (activeView !== "dashboard") {
         setLoading(false);
-        setData((prev) => prev || emptyDashboard);
-        return;
+        if (data?.learners?.length) return;
+        // fall through to fetch learners in background (needed for create-ticket modal)
       }
 
       if (role === "qa") {

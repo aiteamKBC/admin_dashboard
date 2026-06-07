@@ -463,6 +463,9 @@ def map_urgency_to_risk(value, safeguarding_flag=False):
 
 CLOSED_TICKET_STATUSES = {"closed", "outcome recorded"}
 
+# Learner program statuses excluded from active caseload counts
+EXCLUDED_PROGRAM_STATUSES = {"Withdrawn", "OnBreak", "ReadyToEnrol", "UnderReview"}
+
 
 def is_active_ticket_status(value):
     value = (value or "").strip().lower()
@@ -1500,6 +1503,9 @@ def coach_wellbeing_dashboard(request):
 
     monitoring_qs = WellbeingSafeguardingMonitoringSystem.objects.using("wellbeing").only(*monitoring_fields)
 
+    # Exclude inactive program statuses from caseload
+    monitoring_qs = monitoring_qs.exclude(program_status__in=EXCLUDED_PROGRAM_STATUSES)
+
     if requested_coach_email:
         monitoring_qs = monitoring_qs.filter(coach_email__iexact=requested_coach_email)
 
@@ -2420,7 +2426,9 @@ def support_tickets_list(request):
             if urgency and urgency != stored_urgency:
                 row.urgency = urgency
                 urgency_sync_rows.append(row)
-            ticket_type = context["ticket_type"]
+            # Always respect the stored ticket_type — re-computation is only for urgency/risk.
+            # A new safeguarding finding should create a new ticket, not mutate an existing one.
+            ticket_type = (getattr(row, "ticket_type", "") or "wellbeing").strip()
             subject = "Safeguarding risk review required" if ticket_type == "safeguarding" else "Wellbeing follow-up required"
             details_override = build_auto_ticket_details_from_monitoring(
                 learner_record,
