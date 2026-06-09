@@ -65,6 +65,8 @@ export type OnboardingReport = {
   section_progress?: { label: string; badge: string | null; summary: string | null; done: boolean; data: any }[];
   master_report: any;
   status?: string;
+  assigned_owner?: string;
+  assigned_owner_email?: string;
   notes_count?: number;
   evidence_count?: number;
   created_at: string | null;
@@ -139,6 +141,11 @@ function normaliseRisk(r: string): string {
   if (v === "moderate" || v === "medium") return "Moderate";
   if (v === "low") return "Low";
   return r || "—";
+}
+
+function displayRiskLabel(r: string): string {
+  const risk = normaliseRisk(r);
+  return risk === "Very High" ? "Critical" : risk;
 }
 
 function riskBadgeClass(level: string): string {
@@ -2002,6 +2009,34 @@ function reportHasEvidence(report: OnboardingReport): boolean {
   return (report.evidence_count ?? 0) > 0 || (report.notes_count ?? 0) > 0;
 }
 
+function onboardingAssignedLabel(report: OnboardingReport) {
+  return (report.assigned_owner || report.assigned_owner_email || "").trim();
+}
+
+const ONBOARDING_ASSIGNED_COLORS = [
+  { bg: "#F9F5FF", text: "#442F73", border: "#A88CD9" },
+  { bg: "#F9F4EC", text: "#80560F", border: "#CEA869" },
+  { bg: "#FEF9FF", text: "#72587A", border: "#EEB7FF" },
+  { bg: "#F3E9DA", text: "#64430C", border: "#DDC398" },
+  { bg: "#F8F8F8", text: "#4C4C4C", border: "#C5C5C5" },
+  { bg: "#FCF3FF", text: "#9875A3", border: "#D6A5E6" },
+  { bg: "#F3E9DA", text: "#9D6912", border: "#B27715" },
+  { bg: "#F4F0FC", text: "#241453", border: "#866CB6" },
+];
+
+function assignedColorKey(report: OnboardingReport) {
+  return String(report.assigned_owner_email || report.assigned_owner || "").trim().toLowerCase();
+}
+
+function onboardingAssignedColor(report: OnboardingReport) {
+  const key = assignedColorKey(report);
+  let hash = 0;
+  for (let i = 0; i < key.length; i += 1) {
+    hash = ((hash << 5) - hash + key.charCodeAt(i)) | 0;
+  }
+  return ONBOARDING_ASSIGNED_COLORS[Math.abs(hash) % ONBOARDING_ASSIGNED_COLORS.length]!;
+}
+
 function onboardingFileLooksLikePdf(url: string, name = "") {
   return `${name} ${url}`.toLowerCase().match(/\.pdf(?:$|\?)/);
 }
@@ -2392,7 +2427,7 @@ export default function OnboardingTicketsView({ coachEmail }: { coachEmail?: str
   const [viewSection, setViewSection] = useState<SectionView | null>(null);
   const [detailLoadingId, setDetailLoadingId] = useState<string | null>(null);
   const [reportStatuses, setReportStatuses] = useState<Map<string, string>>(new Map());
-  type OnboardingSortKey = "learner" | "programme" | "organisation" | "coach" | "risk" | "score" | "reports" | "date" | "notes" | "evidence" | "status";
+  type OnboardingSortKey = "learner" | "programme" | "organisation" | "coach" | "risk" | "score" | "reports" | "date" | "assigned" | "notes" | "evidence" | "status";
   const [sortConfig, setSortConfig] = useState<{ key: OnboardingSortKey; direction: SortDirection }>({
     key: "date",
     direction: "desc",
@@ -2569,6 +2604,7 @@ export default function OnboardingTicketsView({ coachEmail }: { coachEmail?: str
       if (key === "score") return sortNumber(report.overall_score);
       if (key === "reports") return sortNumber(report.completed_reports);
       if (key === "date") return sortDate(report.created_at);
+      if (key === "assigned") return sortText(onboardingAssignedLabel(report));
       if (key === "notes") return sortNumber(report.notes_count ?? 0);
       if (key === "evidence") return sortNumber(report.evidence_count ?? 0);
       return sortText(reportStatuses.get(report.id) || report.status || "active");
@@ -3033,7 +3069,7 @@ export default function OnboardingTicketsView({ coachEmail }: { coachEmail?: str
         {/* Table */}
         <div className="mt-6 overflow-hidden rounded-3xl border border-[#E9E3F5]">
           <div className="custom-scroll overflow-auto" style={{ maxHeight: "calc(100vh - 380px)" }}>
-            <table className="w-full min-w-[980px] text-sm">
+            <table className="w-full min-w-[1080px] text-sm">
               <thead className="sticky top-0 z-10 bg-[#FCFBFE]">
                 <tr className="border-b border-[#EEE8F8] text-left text-[#7B6D9B]">
                   <th className="px-5 py-4 font-medium">{sortHeader("learner", "Learner")}</th>
@@ -3044,6 +3080,7 @@ export default function OnboardingTicketsView({ coachEmail }: { coachEmail?: str
                   <th className="px-5 py-4 font-medium">{sortHeader("score", "Score")}</th>
                   <th className="px-5 py-4 font-medium">{sortHeader("reports", "Reports")}</th>
                   <th className="px-5 py-4 font-medium">{sortHeader("date", "Date")}</th>
+                  <th className="px-5 py-4 font-medium">{sortHeader("assigned", "Assigned")}</th>
                   <th className="px-5 py-4 font-medium">{sortHeader("notes", "Notes")}</th>
                   <th className="px-5 py-4 font-medium">{sortHeader("evidence", "Evidence")}</th>
                   <th className="px-5 py-4 font-medium">{sortHeader("status", "Status")}</th>
@@ -3054,15 +3091,15 @@ export default function OnboardingTicketsView({ coachEmail }: { coachEmail?: str
               <tbody>
                 {loading ? (
                   <tr>
-                    <td colSpan={13} className="px-5 py-10 text-center text-slate-500">Loading reports...</td>
+                    <td colSpan={14} className="px-5 py-10 text-center text-slate-500">Loading reports...</td>
                   </tr>
                 ) : error ? (
                   <tr>
-                    <td colSpan={13} className="px-5 py-10 text-center text-red-500">{error}</td>
+                    <td colSpan={14} className="px-5 py-10 text-center text-red-500">{error}</td>
                   </tr>
                 ) : sorted.length === 0 ? (
                   <tr>
-                    <td colSpan={13} className="px-5 py-10 text-center text-slate-500">No reports found</td>
+                    <td colSpan={14} className="px-5 py-10 text-center text-slate-500">No reports found</td>
                   </tr>
                 ) : (
                   sorted.map((r) => {
@@ -3082,7 +3119,7 @@ export default function OnboardingTicketsView({ coachEmail }: { coachEmail?: str
                         </td>
                         <td className="px-5 py-4">
                           <span className={`inline-flex rounded-full px-2.5 py-1 text-xs font-semibold ${riskBadgeClass(nr)}`}>
-                            {nr}
+                            {displayRiskLabel(nr)}
                           </span>
                         </td>
                         <td className="px-5 py-4">
@@ -3153,6 +3190,40 @@ export default function OnboardingTicketsView({ coachEmail }: { coachEmail?: str
                           })()}
                         </td>
                         <td className="px-5 py-4 text-xs text-slate-500">{formatDate(r.created_at)}</td>
+
+                        {/* Assigned */}
+                        <td className="px-5 py-4">
+                          {onboardingAssignedLabel(r) ? (
+                            (() => {
+                              const color = onboardingAssignedColor(r);
+                              return (
+                                <div className="min-w-[130px]">
+                                  <span
+                                    className="inline-flex rounded-full border px-2.5 py-1 text-xs font-semibold"
+                                    style={{
+                                      backgroundColor: color.bg,
+                                      borderColor: color.border,
+                                      color: color.text,
+                                    }}
+                                  >
+                                    {onboardingAssignedLabel(r)}
+                                  </span>
+                                  {r.assigned_owner_email && (
+                                    <div
+                                      className="mt-1 max-w-[160px] truncate text-[11px]"
+                                      style={{ color: color.text, opacity: 0.58 }}
+                                      title={r.assigned_owner_email}
+                                    >
+                                      {r.assigned_owner_email}
+                                    </div>
+                                  )}
+                                </div>
+                              );
+                            })()
+                          ) : (
+                            <span className="text-xs text-slate-300">Unassigned</span>
+                          )}
+                        </td>
 
                         {/* Notes */}
                         <td className="px-5 py-4">

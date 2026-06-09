@@ -6847,7 +6847,7 @@ export default function CoachWellbeingPage({ setMobileOpen, isDesktop }: CoachWe
   const [error, setError] = useState("");
   const [coachOptions, setCoachOptions] = useState<CoachOption[]>([]);
   const [selectedCoachEmail, setSelectedCoachEmail] = useState<string>(
-    () => localStorage.getItem("wb_coach_email") || (role === "qa" ? "__all__" : "")
+    () => (role === "qa" ? "__all__" : "")
   );
 
   const [ticketModalOpen, setTicketModalOpen] = useState(false);
@@ -7007,7 +7007,9 @@ export default function CoachWellbeingPage({ setMobileOpen, isDesktop }: CoachWe
     }
   }, [activeView]);
 
-  useEffect(() => { if (selectedCoachEmail) localStorage.setItem("wb_coach_email", selectedCoachEmail); }, [selectedCoachEmail]);
+  useEffect(() => {
+    localStorage.removeItem("wb_coach_email");
+  }, []);
 
   // ticket management handlers
   useEffect(() => {

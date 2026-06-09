@@ -3446,6 +3446,26 @@ ONBOARDING_SECTION_COLS = [
 ]
 
 
+def _onboarding_assigned_owner_from_notes(notes):
+    if not isinstance(notes, list):
+        return {"name": "", "email": ""}
+
+    for note in reversed(notes):
+        if not isinstance(note, dict):
+            continue
+
+        created_by = (note.get("created_by") or "").strip()
+        if not created_by:
+            continue
+
+        email = created_by.lower() if "@" in created_by else ""
+        raw_name = created_by.split("@", 1)[0] if email else created_by
+        name = _title_from_local_part(raw_name) or created_by
+        return {"name": name, "email": email}
+
+    return {"name": "", "email": ""}
+
+
 def _serialize_onboarding_report(r, include_detail=False):
     master = _parse_json_field(r.master_report)
     overview = master.get("overview", {}) if isinstance(master, dict) else {}
@@ -3488,6 +3508,8 @@ def _serialize_onboarding_report(r, include_detail=False):
 
     derived_overview = _derive_onboarding_overview(overview, section_progress)
 
+    assigned_owner = _onboarding_assigned_owner_from_notes(r.notes)
+
     return {
         "id": r.id,
         "learner_id": r.learner_id,
@@ -3509,6 +3531,8 @@ def _serialize_onboarding_report(r, include_detail=False):
         "section_progress": response_section_progress,
         "master_report": master if include_detail else {},
         "status": r.status or "active",
+        "assigned_owner": assigned_owner["name"],
+        "assigned_owner_email": assigned_owner["email"],
         "notes_count": len(r.notes) if isinstance(r.notes, list) else 0,
         "evidence_count": len(r.evidence) if isinstance(r.evidence, list) else 0,
         "created_at": r.created_at.isoformat() if r.created_at else None,
@@ -3577,6 +3601,8 @@ def _serialize_onboarding_report_summary(r):
     created_at = get_value("created_at")
     updated_at = get_value("updated_at")
 
+    assigned_owner = _onboarding_assigned_owner_from_notes(notes)
+
     return {
         "id": get_value("id"),
         "learner_id": get_value("learner_id"),
@@ -3598,6 +3624,8 @@ def _serialize_onboarding_report_summary(r):
         "section_progress": section_progress,
         "master_report": {},
         "status": get_value("status") or "active",
+        "assigned_owner": assigned_owner["name"],
+        "assigned_owner_email": assigned_owner["email"],
         "notes_count": len(notes) if isinstance(notes, list) else 0,
         "evidence_count": len(evidence) if isinstance(evidence, list) else 0,
         "created_at": created_at.isoformat() if created_at else None,
