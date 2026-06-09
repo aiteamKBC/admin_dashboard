@@ -8,6 +8,17 @@ export async function getCoachWellbeing(coachEmail?: string, compact = false) {
   return await fetchWithAuth(`/coach-wellbeing-dashboard/${query}`);
 }
 
+export async function getLearnerWellbeingReport(learnerId: string | number) {
+  return await fetchWithAuth(`/learner-wellbeing-report/${encodeURIComponent(String(learnerId))}/`);
+}
+
+export async function getCoachWellbeingWorkflow(coachEmail?: string) {
+  const params = new URLSearchParams();
+  if (coachEmail) params.set("coach_email", coachEmail);
+  const query = params.toString() ? `?${params.toString()}` : "";
+  return await fetchWithAuth(`/coach-wellbeing-workflow/${query}`);
+}
+
 export async function getCoachOptions() {
   return await fetchWithAuth("/coach-options/");
 }

@@ -19,8 +19,10 @@ import re
 # wellbeing
 from datetime import datetime
 from rest_framework.decorators import api_view, permission_classes
+from django.db import connections
 from django.db.models import Case, IntegerField, Q, Value, When
 from django.db.models.expressions import RawSQL
+from django.db.models.functions import Lower, Trim
 
 # to read the json 
 import json
@@ -463,13 +465,57 @@ def map_urgency_to_risk(value, safeguarding_flag=False):
 
 CLOSED_TICKET_STATUSES = {"closed", "outcome recorded"}
 
-# Learner program statuses excluded from active caseload counts
-EXCLUDED_PROGRAM_STATUSES = {"Withdrawn", "OnBreak", "ReadyToEnrol", "UnderReview"}
+# Learner program status counted in active caseloads
+ACTIVE_PROGRAM_STATUS = "Active"
+
+HIDDEN_COACH_OPTION_LABELS = {"admin", "admin rewan", "coach demo", "omar ham", "marwa mahmoud"}
 
 
 def is_active_ticket_status(value):
     value = (value or "").strip().lower()
     return value not in CLOSED_TICKET_STATUSES
+
+
+def get_aptem_active_learner_count(coach_email=""):
+    try:
+        sql = '''
+            select count(*)
+            from public.kbc_users_data
+            where "Program-Status" = %s
+        '''
+        params = [ACTIVE_PROGRAM_STATUS]
+        normalized_coach_email = (coach_email or "").strip().lower()
+        if normalized_coach_email:
+            sql += ' and lower(trim("OwnerEmail")) = %s'
+            params.append(normalized_coach_email)
+
+        with connections["default"].cursor() as cursor:
+            cursor.execute(sql, params)
+            row = cursor.fetchone()
+            return int((row or [0])[0] or 0)
+    except Exception:
+        return None
+
+
+def get_aptem_active_learner_ids(coach_email=""):
+    try:
+        sql = '''
+            select "ID"
+            from public.kbc_users_data
+            where "Program-Status" = %s
+              and "ID" is not null
+        '''
+        params = [ACTIVE_PROGRAM_STATUS]
+        normalized_coach_email = (coach_email or "").strip().lower()
+        if normalized_coach_email:
+            sql += ' and lower(trim("OwnerEmail")) = %s'
+            params.append(normalized_coach_email)
+
+        with connections["default"].cursor() as cursor:
+            cursor.execute(sql, params)
+            return [int(row[0]) for row in cursor.fetchall() if row and row[0] is not None]
+    except Exception:
+        return None
 
 
 def safe_date(value):
@@ -552,15 +598,28 @@ def coach_options(request):
     if cached is not None and now < float(_COACH_OPTIONS_CACHE.get("expires_at") or 0):
         return Response(cached)
 
-    from django.contrib.auth import get_user_model
-    User = get_user_model()
-    rows = [
-        {
-            "coach_name": f"{user.first_name or ''} {user.last_name or ''}".strip() or user.username,
-            "coach_email": (user.email or "").strip().lower(),
-        }
-        for user in User.objects.filter(profile__role="coach").only("email", "username", "first_name", "last_name")
-    ]
+    rows = []
+    try:
+        with connections["default"].cursor() as cursor:
+            cursor.execute(
+                '''
+                    select
+                        coalesce(nullif(trim("OwnerName"), ''), '') as coach_name,
+                        lower(trim("OwnerEmail")) as coach_email
+                    from public.kbc_users_data
+                    where "Program-Status" = %s
+                      and "OwnerEmail" is not null
+                      and trim("OwnerEmail") <> ''
+                    group by coalesce(nullif(trim("OwnerName"), ''), ''), lower(trim("OwnerEmail"))
+                ''',
+                [ACTIVE_PROGRAM_STATUS],
+            )
+            rows = [
+                {"coach_name": row[0] or "", "coach_email": row[1] or ""}
+                for row in cursor.fetchall()
+            ]
+    except Exception:
+        rows = []
 
     cleaned_rows = []
     seen_emails = set()
@@ -591,7 +650,14 @@ def coach_options(request):
         email_label = _title_from_local_part(local)
 
         # الأفضل نستخدم الاسم المشتق من الإيميل لأنه أوضح وأدق في حال الداتا فيها أسماء غلط
-        label = email_label or name or email
+        label = name or email_label or email
+        normalized_options = {
+            (label or "").strip().lower(),
+            (name or "").strip().lower(),
+            local.replace(".", " ").replace("_", " ").replace("-", " ").strip(),
+        }
+        if normalized_options & HIDDEN_COACH_OPTION_LABELS:
+            continue
 
         data.append({
             "value": email,
@@ -1473,6 +1539,267 @@ def create_support_ticket(request):
     )
 
 
+def _check_learner_access(request, learner_id):
+    user = request.user
+    profile = getattr(user, "profile", None)
+    role = (getattr(profile, "role", "") or "").strip().lower()
+
+    if role not in ["coach", "qa"]:
+        return None, Response({"detail": "Forbidden"}, status=status.HTTP_403_FORBIDDEN)
+
+    learner = (
+        WellbeingSafeguardingMonitoringSystem.objects.using("wellbeing")
+        .filter(id=learner_id)
+        .first()
+    )
+    if not learner:
+        return None, Response({"detail": "Learner not found"}, status=status.HTTP_404_NOT_FOUND)
+
+    if role == "coach":
+        coach_email = (getattr(user, "email", "") or "").strip().lower()
+        learner_coach_email = (getattr(learner, "coach_email", "") or "").strip().lower()
+        if not coach_email or coach_email != learner_coach_email:
+            return None, Response({"detail": "Forbidden"}, status=status.HTTP_403_FORBIDDEN)
+
+    return learner, None
+
+
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+def learner_wellbeing_report(request, learner_id):
+    learner, err = _check_learner_access(request, learner_id)
+    if err:
+        return err
+
+    question_map = _active_question_map()
+    submission_json = getattr(learner, "submission_json", None)
+    survey_responses = extract_survey_responses_for_report(submission_json, question_map)
+    triggered_questions = compute_true_triggered_questions_from_submission(submission_json, question_map)
+    if not triggered_questions:
+        triggered_questions = extract_triggered_questions(getattr(learner, "triggered_questions", None))
+
+    automation = (
+        SafeguardingWellbeingAutomation.objects.using("wellbeing")
+        .filter(wellbeing_record_id=learner.id)
+        .order_by("-updated_at", "-wellbeing_record_id")
+        .first()
+    )
+    apprentice_dashboard = parse_json_field(
+        getattr(automation, "apprentice_dashboard", None) if automation else None,
+        {},
+    )
+
+    return Response({
+        "studentId": int(learner.id),
+        "apprenticeDashboard": apprentice_dashboard if isinstance(apprentice_dashboard, dict) else {},
+        "surveyResponses": survey_responses,
+        "triggeredQuestions": triggered_questions,
+        "triggerCount": len(triggered_questions),
+    })
+
+
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+def coach_wellbeing_workflow(request):
+    user = request.user
+    profile = getattr(user, "profile", None)
+    role = (getattr(profile, "role", "") or "").strip().lower()
+
+    if role == "coach":
+        requested_coach_email = (getattr(user, "email", "") or "").strip().lower()
+        if not requested_coach_email:
+            return Response({"detail": "Coach email not found"}, status=status.HTTP_400_BAD_REQUEST)
+    elif role == "qa":
+        requested_coach_email = (request.query_params.get("coach_email") or "").strip().lower()
+    else:
+        return Response({"detail": "Forbidden"}, status=status.HTTP_403_FORBIDDEN)
+
+    active_learner_ids = get_aptem_active_learner_ids(requested_coach_email)
+
+    monitoring_qs = (
+        WellbeingSafeguardingMonitoringSystem.objects.using("wellbeing")
+        .only(
+            "id",
+            "learner_name",
+            "learner_email",
+            "coach_name",
+            "coach_email",
+            "risk_level",
+            "total_score",
+            "safeguarding_vulnerability_score",
+            "trigger_count",
+            "history_json",
+        )
+        .annotate(program_status_normalized=Lower(Trim("program_status")))
+        .filter(program_status_normalized=ACTIVE_PROGRAM_STATUS.lower())
+    )
+    if active_learner_ids is not None:
+        monitoring_qs = monitoring_qs.filter(id__in=active_learner_ids)
+    if requested_coach_email:
+        monitoring_qs = monitoring_qs.filter(coach_email__iexact=requested_coach_email)
+
+    monitoring_rows = list(monitoring_qs)
+    monitoring_by_id = {str(row.id): row for row in monitoring_rows}
+    monitoring_ids = [row.id for row in monitoring_rows]
+
+    automation_rows = []
+    if monitoring_ids:
+        automation_rows = list(
+            SafeguardingWellbeingAutomation.objects.using("wellbeing")
+            .only("wellbeing_record_id", "follow_up_by_coach", "suggested_coach_actions", "apprentice_dashboard", "updated_at")
+            .filter(wellbeing_record_id__in=monitoring_ids)
+            .order_by("-updated_at", "-wellbeing_record_id")
+        )
+
+    follow_ups = []
+    suggested_actions = []
+    seen_followups = set()
+    seen_actions = set()
+
+    for row in automation_rows:
+        follow = parse_json_field(row.follow_up_by_coach, {})
+        suggested = parse_json_field(row.suggested_coach_actions, {})
+        apprentice = parse_json_field(row.apprentice_dashboard, {})
+        learner_id = extract_learner_id(follow, suggested, apprentice) or str(getattr(row, "wellbeing_record_id", "") or "").strip()
+        learner = monitoring_by_id.get(learner_id)
+        if not learner:
+            continue
+
+        learner_name = (
+            (getattr(learner, "learner_name", "") or "").strip()
+            or follow.get("learnerName")
+            or suggested.get("learnerName")
+            or apprentice.get("learnerName")
+            or "Unknown learner"
+        )
+        learner_email = (getattr(learner, "learner_email", "") or "").strip()
+        coach_name = (getattr(learner, "coach_name", "") or "").strip()
+        coach_email = (getattr(learner, "coach_email", "") or "").strip().lower()
+
+        summary = parse_json_field(follow.get("summary"), {})
+        issues = parse_json_field(follow.get("issues"), {})
+        indicators = parse_json_field(follow.get("indicators"), {})
+        urgency = (follow.get("urgency") or suggested.get("urgency") or "").strip().lower()
+        title = summary.get("cardTitle") or follow.get("title") or "Coach follow-up required"
+        reason = (
+            summary.get("followUpReason")
+            or follow.get("reason")
+            or follow.get("followUpReason")
+            or ", ".join(issues.get("mainIssues") or [])
+        )
+        if isinstance(follow, dict) and (summary or issues or indicators or reason):
+            followup_key = f"{learner_id}|{title}|{reason}"
+            if followup_key not in seen_followups:
+                seen_followups.add(followup_key)
+                follow_ups.append({
+                    "id": str(row.wellbeing_record_id),
+                    "priority": map_urgency_to_priority(urgency),
+                    "title": title,
+                    "learnerName": learner_name,
+                    "learnerEmail": learner_email,
+                    "coachName": coach_name,
+                    "coachEmail": coach_email,
+                    "dueDate": "Within 24 hours" if urgency == "critical" else "Review soon",
+                    "reason": reason or "",
+                })
+
+        actions = parse_json_field(suggested.get("actions"), [])
+        valid_actions = [a for a in actions if isinstance(a, dict)]
+        if valid_actions and learner_id not in seen_actions:
+            seen_actions.add(learner_id)
+            top_urgency = (suggested.get("urgency") or urgency or "").strip().lower()
+            suggested_actions.append({
+                "id": str(row.wellbeing_record_id),
+                "urgency": top_urgency,
+                "priority": map_urgency_to_priority(top_urgency),
+                "learnerName": learner_name,
+                "learnerEmail": learner_email,
+                "coachName": coach_name,
+                "coachEmail": coach_email,
+                "actions": [
+                    {
+                        "id": a.get("id") or f"{row.wellbeing_record_id}-{i}",
+                        "title": a.get("title") or a.get("bulletTitle") or "Action",
+                        "description": a.get("reason") or a.get("bulletText") or "",
+                        "priority": map_urgency_to_priority(a.get("urgency") or a.get("priority") or top_urgency),
+                        "actionType": a.get("actionType") or "",
+                        "recommendedOwner": a.get("recommendedOwner") or "",
+                        "timeline": a.get("suggestedTimeline") or "",
+                        "category": a.get("category") or a.get("actionType") or "",
+                    }
+                    for i, a in enumerate(valid_actions)
+                ],
+            })
+
+    trend_buckets = {}
+    for learner in monitoring_rows:
+        history_entries = getattr(learner, "history_json", None) or []
+        if not isinstance(history_entries, list):
+            continue
+        month_entries = {}
+        for entry in history_entries:
+            if isinstance(entry, str):
+                try:
+                    entry = json.loads(entry)
+                except Exception:
+                    continue
+            if not isinstance(entry, dict):
+                continue
+            entry_date = safe_date(entry.get("submitted_at") or entry.get("date") or entry.get("timestamp"))
+            if not entry_date:
+                continue
+            mk = entry_date[:7]
+            existing = month_entries.get(mk)
+            existing_date = safe_date(
+                (existing or {}).get("submitted_at") or (existing or {}).get("date") or (existing or {}).get("timestamp")
+            ) if existing else ""
+            if not existing or entry_date > (existing_date or ""):
+                month_entries[mk] = entry
+
+        if not month_entries:
+            latest_date = latest_history_date(history_entries)
+            if latest_date:
+                month_entries[latest_date[:7]] = {}
+
+        current_risk = (
+            derive_frontend_risk_level(
+                getattr(learner, "total_score", None),
+                getattr(learner, "safeguarding_vulnerability_score", None),
+                getattr(learner, "trigger_count", None) or 0,
+            )
+            or map_db_risk_level(getattr(learner, "risk_level", None))
+            or "green"
+        )
+        for mk, entry in month_entries.items():
+            entry_risk = map_db_risk_level(entry.get("risk_level")) if isinstance(entry, dict) else None
+            entry_risk = entry_risk or current_risk
+            bucket = trend_buckets.setdefault(mk, {"count": 0, "red_count": 0, "amber_count": 0, "green_count": 0})
+            bucket["count"] += 1
+            if entry_risk == "red":
+                bucket["red_count"] += 1
+            elif entry_risk == "amber":
+                bucket["amber_count"] += 1
+            else:
+                bucket["green_count"] += 1
+
+    trends = [
+        {
+            "month": month_key,
+            "total": item["count"],
+            "red": item["red_count"],
+            "amber": item["amber_count"],
+            "green": item["green_count"],
+        }
+        for month_key, item in sorted(trend_buckets.items())
+    ]
+
+    return Response({
+        "followUps": follow_ups[:50],
+        "suggestedActions": suggested_actions[:50],
+        "trends": trends,
+    })
+
+
 @api_view(["GET"])
 @permission_classes([IsAuthenticated])
 def coach_wellbeing_dashboard(request):
@@ -1492,8 +1819,11 @@ def coach_wellbeing_dashboard(request):
     else:
         return Response({"detail": "Forbidden"}, status=status.HTTP_403_FORBIDDEN)
 
+    active_caseload = get_aptem_active_learner_count(requested_coach_email)
+    active_learner_ids = get_aptem_active_learner_ids(requested_coach_email)
+
     if compact:
-        cache_key = ("dashboard_compact_learners_v4", role, requested_coach_email)
+        cache_key = ("dashboard_compact_learners_v7", role, requested_coach_email)
         cached = _DASHBOARD_COMPACT_CACHE.get(cache_key)
         now = time.monotonic()
         if cached and now < cached.get("expires_at", 0):
@@ -1521,8 +1851,12 @@ def coach_wellbeing_dashboard(request):
 
     monitoring_qs = WellbeingSafeguardingMonitoringSystem.objects.using("wellbeing").only(*monitoring_fields)
 
-    # Exclude inactive program statuses from caseload
-    monitoring_qs = monitoring_qs.exclude(program_status__in=EXCLUDED_PROGRAM_STATUSES)
+    # Count only learners whose DB program status is Active.
+    monitoring_qs = monitoring_qs.annotate(
+        program_status_normalized=Lower(Trim("program_status"))
+    ).filter(program_status_normalized=ACTIVE_PROGRAM_STATUS.lower())
+    if active_learner_ids is not None:
+        monitoring_qs = monitoring_qs.filter(id__in=active_learner_ids)
 
     if requested_coach_email:
         monitoring_qs = monitoring_qs.filter(coach_email__iexact=requested_coach_email)
@@ -1632,11 +1966,12 @@ def coach_wellbeing_dashboard(request):
             stored_risk = map_db_risk_level(student_meta.get("risk_level"))
             db_risk = derive_frontend_risk_level(total_score, safeguarding_score, trigger_count) if has_score_data else stored_risk
             has_monitoring_data = has_score_data or db_risk is not None or last_monitoring_survey_date is not None
+            has_survey_data = has_score_data or last_monitoring_survey_date is not None
 
             caseload += 1
             if db_risk == "red":
                 at_risk += 1
-            elif db_risk == "green":
+            elif db_risk == "green" and has_survey_data:
                 green_risk += 1
 
             if last_monitoring_survey_date or has_monitoring_data:
@@ -1684,7 +2019,7 @@ def coach_wellbeing_dashboard(request):
 
         data = {
             "summary": {
-                "caseload": caseload,
+                "caseload": active_caseload if active_caseload is not None else caseload,
                 "atRisk": at_risk,
                 "greenRisk": green_risk,
                 "nonResponders": non_responders,
@@ -1697,7 +2032,7 @@ def coach_wellbeing_dashboard(request):
             "followUps": [],
             "suggestedActions": [],
         }
-        _DASHBOARD_COMPACT_CACHE[("dashboard_compact_learners_v4", role, requested_coach_email)] = {
+        _DASHBOARD_COMPACT_CACHE[("dashboard_compact_learners_v7", role, requested_coach_email)] = {
             "expires_at": time.monotonic() + 60,
             "data": data,
         }
@@ -1828,12 +2163,13 @@ def coach_wellbeing_dashboard(request):
         ) or trigger_count > 0 or bool(triggered_questions)
         db_risk = derive_frontend_risk_level(total_score, safeguarding_score, trigger_count) if has_score_data else stored_risk
         has_monitoring_data = has_score_data or db_risk is not None or bool(history_raw)
+        has_survey_data = has_score_data or bool(history_raw) or bool(survey_responses)
 
         caseload += 1
 
         if db_risk == "red":
             at_risk += 1
-        elif db_risk == "green":
+        elif db_risk == "green" and has_survey_data:
             green_risk += 1
 
         if not matched:
@@ -1925,15 +2261,14 @@ def coach_wellbeing_dashboard(request):
         # Prefer DB risk_level; fall back to computed value from urgency
         risk_level = db_risk or map_urgency_to_risk(urgency, safeguarding_flag=safeguarding_flag)
 
-        if risk_level == "red":
-            if db_risk is None:
-                at_risk += 1
-        elif risk_level == "green":
-            if db_risk is None:
-                green_risk += 1
-
         if last_survey_date is None and last_monitoring_survey_date is not None:
             last_survey_date = last_monitoring_survey_date
+
+        if db_risk is None:
+            if risk_level == "red":
+                at_risk += 1
+            elif risk_level == "green" and (last_survey_date is not None or has_survey_data):
+                green_risk += 1
 
         if last_survey_date is None:
             non_responders += 1
@@ -2105,7 +2440,7 @@ def coach_wellbeing_dashboard(request):
 
     data = {
         "summary": {
-            "caseload": caseload,
+            "caseload": active_caseload if active_caseload is not None else caseload,
             "atRisk": at_risk,
             "greenRisk": green_risk,
             "nonResponders": non_responders,

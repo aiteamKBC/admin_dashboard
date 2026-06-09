@@ -27,7 +27,7 @@ import {
   ArchiveRestore,
 } from "lucide-react";
 import { jsPDF } from "jspdf";
-import autoTable from "jspdf-autotable";
+import autoTable, { CellHookData } from "jspdf-autotable";
 import * as XLSX from "xlsx";
 import kbcLogoSrc from "@/assets/logo-icon.png";
 import {
@@ -908,7 +908,7 @@ async function downloadInclusivenessPDF(report: OnboardingReport) {
       headStyles: { fillColor: C.purpleBg, textColor: C.purpleMid, fontStyle: "bold", fontSize: 7.5 },
       columnStyles: { 0: { cellWidth: 18 }, 1: { cellWidth: 22 }, 2: { cellWidth: contentW - 18 - 22 - 26 }, 3: { cellWidth: 26 } },
       margin: { left: mx, right: mx },
-      didParseCell: (data) => {
+      didParseCell: (data: CellHookData) => {
         if (data.section === "body" && data.column.index === 0) {
           const v = String(data.cell.raw || "").toLowerCase();
           data.cell.styles.fontStyle = "bold";
@@ -2766,7 +2766,7 @@ export default function OnboardingTicketsView({ coachEmail }: { coachEmail?: str
         0: { fontStyle: "bold", textColor: C.purple },
       },
       margin: { left: mx, right: mx },
-      didParseCell: (data) => {
+      didParseCell: (data: CellHookData) => {
         if (data.section === "body" && data.column.index === 5) {
           data.cell.styles.textColor = riskColor(String(data.cell.raw || ""));
           data.cell.styles.fontStyle = "bold";

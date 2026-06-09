@@ -70,21 +70,21 @@ export default function Sidebar({
 
         {/* Top */}
         <div>
-          <div className="p-6 text-2xl font-bold text-white flex items-center gap-3">
-            <span className="inline-flex items-center justify-center w-10 h-10 rounded-full bg-white/10">
+          <div className="flex items-center gap-3 p-5 text-xl font-bold text-white">
+            <span className="inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-white/10">
               <i className="fa-solid fa-file-shield"/>
             </span>
 
-            {(!collapsed || !isDesktop) && <span>Safeguarding</span>}
+            {(!collapsed || !isDesktop) && <span className="min-w-0 flex-1 truncate">Safeguarding</span>}
 
             {!isDesktop && (
               <button
                 type="button"
                 onClick={() => setMobileOpen(false)}
-                className="ml-auto w-10 h-10 rounded-xl bg-white/10 hover:bg-white/15 transition flex items-center justify-center"
+                className="ml-auto inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-white/10 text-white/90 transition hover:bg-white/20 hover:text-white focus:outline-none focus:ring-2 focus:ring-white/40"
                 aria-label="Close menu"
               >
-                ✕
+                <i className="fa-solid fa-xmark text-lg" aria-hidden="true" />
               </button>
             )}
           </div>

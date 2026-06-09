@@ -60,7 +60,7 @@ import {
   YAxis,
 } from "recharts";
 
-import { getCoachWellbeing, getCoachOptions, createSupportTicket, getSupportTickets, updateSupportTicket, deleteTicket, archiveTicket, restoreTicket, getArchivedTickets, createTicketNote, uploadEvidenceFile, createTicketEvidence, getTicketNotes, getTicketEvidence, getTicketSurveyResponses, createBookingAppointment, getBookingServices, getBookingAvailability, getBookingStaff } from "@/services/coachWellbeing";
+import { getCoachWellbeing, getLearnerWellbeingReport, getCoachWellbeingWorkflow, getCoachOptions, createSupportTicket, getSupportTickets, updateSupportTicket, deleteTicket, archiveTicket, restoreTicket, getArchivedTickets, createTicketNote, uploadEvidenceFile, createTicketEvidence, getTicketNotes, getTicketEvidence, getTicketSurveyResponses, createBookingAppointment, getBookingServices, getBookingAvailability, getBookingStaff } from "@/services/coachWellbeing";
 import OnboardingTicketsView from "@/components/wellbeing/OnboardingTicketsView";
 import type { UpdateSupportTicketPayload } from "@/services/coachWellbeing";
 import type {
@@ -78,6 +78,8 @@ type CoachOption = {
   value: string;
   label: string;
 };
+
+const HIDDEN_COACH_OPTION_LABELS = new Set(["admin", "admin rewan", "coach demo", "omar ham", "marwa mahmoud"]);
 
 type TicketableLearnerRow = CoachLearnerRow & {
   hasOpenTicket?: boolean;
@@ -237,6 +239,10 @@ function hasLearnerWellbeingData(row: TicketableLearnerRow) {
   );
 }
 
+function isCompletedGreenRiskLearner(row: TicketableLearnerRow) {
+  return hasLearnerWellbeingData(row) && String(row.riskLevel || "").toLowerCase() === "green";
+}
+
 
 function isLearnerEvidence(ev: TicketEvidenceRow) { return ev.uploaded_by === "learner"; }
 function evFileUrl(ev: TicketEvidenceRow) { return ev.data_url || resolveMediaUrl(ev.file_url || ev.url || ""); }
@@ -358,6 +364,18 @@ const emptyDashboard: CoachWellbeingResponse = {
   followUps: [],
   suggestedActions: [],
 };
+
+function mergeWorkflowData(
+  dashboard: CoachWellbeingResponse | null | undefined,
+  workflow: Partial<Pick<CoachWellbeingResponse, "followUps" | "suggestedActions" | "trends">> | null | undefined
+): CoachWellbeingResponse {
+  return {
+    ...(dashboard || emptyDashboard),
+    followUps: workflow?.followUps || dashboard?.followUps || [],
+    suggestedActions: workflow?.suggestedActions || dashboard?.suggestedActions || [],
+    trends: workflow?.trends || dashboard?.trends || [],
+  };
+}
 
 function riskBadgeClass(risk: RiskLevel) {
   if (risk === "green") return "bg-emerald-500 text-white";
@@ -528,6 +546,17 @@ function InlineLoadingNotice({ label }: { label: string }) {
     <div className="flex items-center justify-between rounded-2xl border border-[#E7E2F3] bg-[#FBFAFE] px-4 py-3">
       <LoadingBadge label={label} />
       <span className="text-xs text-[#8E82AA]">Keeping the current data visible while refreshing.</span>
+    </div>
+  );
+}
+
+function RefreshingOverlay({ show, label }: { show: boolean; label: string }) {
+  if (!show) return null;
+  return (
+    <div className="absolute inset-0 z-20 flex items-center justify-center rounded-[inherit] bg-white/70 backdrop-blur-sm">
+      <div className="rounded-2xl border border-[#DCCFF6] bg-white px-4 py-3 shadow-lg">
+        <LoadingBadge label={label} />
+      </div>
     </div>
   );
 }
@@ -1770,6 +1799,7 @@ function LearnerTable({
   onViewTickets: (row: TicketableLearnerRow) => void;
 }) {
   const [reportLearner, setReportLearner] = React.useState<TicketableLearnerRow | null>(null);
+  const [reportLoadingId, setReportLoadingId] = React.useState<string | number | null>(null);
   const [referralLearner, setReferralLearner] = React.useState<TicketableLearnerRow | null>(null);
   type LearnerSortKey = "learner" | "lastSurvey" | "totalScore" | "safeguarding" | "wellbeing" | "engagement" | "provider" | "risk" | "triggered" | "action" | "reports";
   const [sortConfig, setSortConfig] = React.useState<{ key: LearnerSortKey; direction: SortDirection }>({
@@ -1801,6 +1831,29 @@ function LearnerTable({
   const learnerHeader = (key: LearnerSortKey, label: string) => (
     <SortHeaderButton label={label} active={sortConfig.key === key} direction={sortConfig.direction} onClick={() => setSort(key)} />
   );
+  async function openLearnerReport(row: TicketableLearnerRow) {
+    if (!row.studentId) {
+      setReportLearner(row);
+      return;
+    }
+
+    setReportLoadingId(row.studentId);
+    try {
+      const detail = await getLearnerWellbeingReport(row.studentId);
+      setReportLearner({
+        ...row,
+        apprenticeDashboard: detail?.apprenticeDashboard || {},
+        surveyResponses: Array.isArray(detail?.surveyResponses) ? detail.surveyResponses : row.surveyResponses || [],
+        triggeredQuestions: Array.isArray(detail?.triggeredQuestions) ? detail.triggeredQuestions : row.triggeredQuestions || [],
+        triggerCount: Number(detail?.triggerCount ?? row.triggerCount ?? 0),
+      });
+    } catch (err) {
+      console.error("Failed to load learner wellbeing report", err);
+      setReportLearner(row);
+    } finally {
+      setReportLoadingId(null);
+    }
+  }
 
   return (
     <div className="overflow-hidden rounded-2xl border border-[#EEE8F8]">
@@ -1903,11 +1956,12 @@ function LearnerTable({
                     <td className="px-4 py-3">
                       <button
                         type="button"
-                        onClick={() => setReportLearner(row)}
+                        onClick={() => openLearnerReport(row)}
+                        disabled={reportLoadingId === row.studentId}
                         className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-[#D9CFF3] bg-[#F5F1FC] px-3 text-xs font-semibold text-[#6248BE] hover:bg-[#EEE7FB]"
                       >
                         <FileText className="h-3.5 w-3.5" />
-                        View
+                        {reportLoadingId === row.studentId ? "Loading..." : "View"}
                       </button>
                     </td>
 
@@ -1957,11 +2011,12 @@ function LearnerTable({
                       ) : isGreenRisk ? (
                         <button
                           type="button"
-                          onClick={() => setReportLearner(row)}
+                          onClick={() => openLearnerReport(row)}
+                          disabled={reportLoadingId === row.studentId}
                           className="inline-flex h-9 items-center justify-center gap-1.5 rounded-xl border border-[#D9CFF3] bg-[#F5F1FC] px-4 text-xs font-semibold text-[#6248BE] transition hover:bg-[#EEE7FB] whitespace-nowrap"
                         >
                           <FileText className="h-3.5 w-3.5" />
-                          View answers
+                          {reportLoadingId === row.studentId ? "Loading..." : "View answers"}
                         </button>
                       ) : (
                         <button
@@ -2009,31 +2064,76 @@ function CoachSelect({
   placeholder?: string;
   onChange: (value: string) => void;
 }) {
+  const [open, setOpen] = React.useState(false);
+  const rootRef = React.useRef<HTMLDivElement | null>(null);
   const selected = options.find((opt) => opt.value === value);
 
+  React.useEffect(() => {
+    if (!open) return;
+    function handleClick(event: MouseEvent) {
+      if (!rootRef.current?.contains(event.target as Node)) setOpen(false);
+    }
+    function handleKey(event: KeyboardEvent) {
+      if (event.key === "Escape") setOpen(false);
+    }
+    document.addEventListener("mousedown", handleClick);
+    document.addEventListener("keydown", handleKey);
+    return () => {
+      document.removeEventListener("mousedown", handleClick);
+      document.removeEventListener("keydown", handleKey);
+    };
+  }, [open]);
+
   return (
-    <label className="relative block w-full sm:w-[300px]">
-      <span className="sr-only">{placeholder}</span>
-      <select
-        value={selected?.value ?? ""}
-        onChange={(event) => onChange(event.target.value)}
-        className="h-12 w-full appearance-none rounded-2xl border border-[#DED5F3] bg-white px-4 pr-10 text-sm font-medium text-[#241453] shadow-sm transition hover:border-[#CFC2EE] focus:outline-none focus:ring-2 focus:ring-[#E7DFFD]"
+    <div ref={rootRef} className="relative block w-full sm:w-[300px]">
+      <button
+        type="button"
+        onClick={() => setOpen((prev) => !prev)}
+        className={`flex h-12 w-full items-center justify-between gap-3 rounded-2xl border bg-white px-4 text-left text-sm font-semibold text-[#241453] shadow-sm transition ${
+          open
+            ? "border-[#BFAFEA] ring-4 ring-[#F1ECFF]"
+            : "border-[#DED5F3] hover:border-[#CFC2EE]"
+        }`}
+        aria-haspopup="listbox"
+        aria-expanded={open}
       >
-        {!selected && (
-          <option value="" disabled>
-            {placeholder}
-          </option>
-        )}
-        {options.map((item) => (
-          <option key={item.value} value={item.value}>
-            {item.label}
-          </option>
-        ))}
-      </select>
+        <span className="min-w-0 truncate">{selected?.label || placeholder}</span>
+        <ChevronDown className={`h-4 w-4 shrink-0 text-[#7B6D9B] transition ${open ? "rotate-180" : ""}`} />
+      </button>
+
+      {open && (
+        <div className="absolute left-0 right-0 top-[calc(100%+8px)] z-50 overflow-hidden rounded-2xl border border-[#DED5F3] bg-white shadow-xl shadow-[#241453]/10">
+          <div className="custom-scroll max-h-72 overflow-y-auto p-1.5">
+            {options.map((item) => {
+              const isActive = item.value === value;
+              return (
+                <button
+                  key={item.value}
+                  type="button"
+                  onClick={() => {
+                    onChange(item.value);
+                    setOpen(false);
+                  }}
+                  className={`flex min-h-10 w-full items-center justify-between gap-3 rounded-xl px-3 py-2 text-left text-sm transition ${
+                    isActive
+                      ? "bg-[#241453] font-semibold text-white"
+                      : "text-[#241453] hover:bg-[#F5F1FC]"
+                  }`}
+                  role="option"
+                  aria-selected={isActive}
+                >
+                  <span className="min-w-0 truncate">{item.label}</span>
+                  {isActive ? <span className="h-2 w-2 shrink-0 rounded-full bg-white" /> : null}
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      )}
       <ChevronDown
-        className="pointer-events-none absolute right-4 top-1/2 h-4 w-4 -translate-y-1/2 text-[#7B6D9B]"
+        className="hidden"
       />
-    </label>
+    </div>
   );
 }
 
@@ -6574,7 +6674,8 @@ function DashboardTicketOverview({
   const showingLearners = statusGroup === "all";
 
   return (
-    <div className="mb-6 rounded-3xl bg-white p-4 shadow-sm sm:p-6">
+    <div className="relative mb-6 rounded-3xl bg-white p-4 shadow-sm sm:p-6">
+      <RefreshingOverlay show={loading} label="Refreshing tickets and learners..." />
       <div className="mb-4 flex flex-col gap-2 sm:flex-row sm:items-end sm:justify-between">
         <div>
           <h2 className="text-md font-semibold text-[#241453]">Ticket Status Overview</h2>
@@ -6584,7 +6685,7 @@ function DashboardTicketOverview({
           {loading && (
             <span className="inline-flex items-center gap-2 rounded-full border border-[#E7E2F3] bg-[#FBFAFE] px-3 py-1.5 text-xs font-semibold text-[#644D93]">
               <span className="h-2 w-2 animate-pulse rounded-full bg-[#8B6BC8]" />
-              Loading tickets...
+              Refreshing overview...
             </span>
           )}
           <button
@@ -6796,7 +6897,11 @@ export default function CoachWellbeingPage({ setMobileOpen, isDesktop }: CoachWe
         const normalized: CoachOption[] = (res || []).map((item: any) => ({
           value: String(item.value ?? item.coach_email ?? "").trim().toLowerCase(),
           label: String(item.label ?? item.coach_name ?? item.coach_email ?? "Coach").trim(),
-        }));
+        })).filter((item: CoachOption) => {
+          const label = item.label.trim().toLowerCase();
+          const local = (item.value.split("@")[0] || "").replace(/[._-]+/g, " ").trim().toLowerCase();
+          return !HIDDEN_COACH_OPTION_LABELS.has(label) && !HIDDEN_COACH_OPTION_LABELS.has(local);
+        });
 
         const deduped = Array.from(
           new Map(
@@ -7265,16 +7370,14 @@ export default function CoachWellbeingPage({ setMobileOpen, isDesktop }: CoachWe
       });
 
       const refreshEmailParam2 = selectedCoachEmail === "__all__" ? undefined : selectedCoachEmail;
-      const refreshed =
-        role === "qa"
-          ? await getCoachWellbeing(refreshEmailParam2, true)
-          : await getCoachWellbeing(undefined, true);
-      const refreshedTickets =
-        role === "qa"
-          ? await getSupportTickets(refreshEmailParam2)
-          : await getSupportTickets();
+      const refreshedEmail = role === "qa" ? refreshEmailParam2 : undefined;
+      const [refreshed, refreshedWorkflow, refreshedTickets] = await Promise.all([
+        getCoachWellbeing(refreshedEmail, true),
+        getCoachWellbeingWorkflow(refreshedEmail),
+        getSupportTickets(refreshedEmail),
+      ]);
 
-      setData(refreshed || emptyDashboard);
+      setData(mergeWorkflowData(refreshed, refreshedWorkflow));
       if (refreshedTickets?.tickets) {
         setTicketsData(refreshedTickets);
       }
@@ -7306,14 +7409,15 @@ export default function CoachWellbeingPage({ setMobileOpen, isDesktop }: CoachWe
         setError("");
 
         const dashEmailParam = selectedCoachEmail === "__all__" ? undefined : selectedCoachEmail;
-        const res =
-          role === "qa"
-            ? await getCoachWellbeing(dashEmailParam, true)
-            : await getCoachWellbeing(undefined, true);
+        const dashboardEmail = role === "qa" ? dashEmailParam : undefined;
+        const [res, workflow] = await Promise.all([
+          getCoachWellbeing(dashboardEmail, true),
+          getCoachWellbeingWorkflow(dashboardEmail),
+        ]);
 
         if (!mounted) return;
 
-        setData(res || emptyDashboard);
+        setData(mergeWorkflowData(res, workflow));
 
       } catch (err: any) {
         if (!mounted) return;
@@ -7350,6 +7454,7 @@ export default function CoachWellbeingPage({ setMobileOpen, isDesktop }: CoachWe
   const dashboardSummary = useMemo(() => {
     const learners = scopedLearners;
     const apiSummary = data?.summary;
+    const apiCaseload = Number(apiSummary?.caseload ?? NaN);
     if (apiSummary && learners.length === 0) {
       return {
         caseload: apiSummary.caseload ?? 0,
@@ -7360,10 +7465,10 @@ export default function CoachWellbeingPage({ setMobileOpen, isDesktop }: CoachWe
       };
     }
     return {
-      caseload: learners.length,
+      caseload: Number.isFinite(apiCaseload) ? apiCaseload : learners.length,
       openTickets: learners.reduce((sum, row) => sum + Number(row.openTicketCount ?? 0), 0),
       atRisk: learners.filter((row) => String(row.riskLevel || "").toLowerCase() === "red").length,
-      greenRisk: learners.filter((row) => String(row.riskLevel || "").toLowerCase() === "green").length,
+      greenRisk: learners.filter(isCompletedGreenRiskLearner).length,
       nonResponders: learners.filter((row) => !hasLearnerWellbeingData(row)).length,
     };
   }, [scopedLearners, data?.summary]);
@@ -7457,12 +7562,15 @@ export default function CoachWellbeingPage({ setMobileOpen, isDesktop }: CoachWe
       all: dashboardLearnerSearchRows.length,
       red: dashboardLearnerSearchRows.filter((learner) => String(learner.riskLevel || "").toLowerCase() === "red").length,
       amber: dashboardLearnerSearchRows.filter((learner) => String(learner.riskLevel || "").toLowerCase() === "amber").length,
-      green: dashboardLearnerSearchRows.filter((learner) => String(learner.riskLevel || "").toLowerCase() === "green").length,
+      green: dashboardLearnerSearchRows.filter(isCompletedGreenRiskLearner).length,
     };
   }, [dashboardLearnerSearchRows]);
 
   const dashboardLearnerRows = useMemo(() => {
     if (dashboardTicketRiskFilter === "all") return dashboardLearnerSearchRows;
+    if (dashboardTicketRiskFilter === "green") {
+      return dashboardLearnerSearchRows.filter(isCompletedGreenRiskLearner);
+    }
     return dashboardLearnerSearchRows.filter((learner) => (
       String(learner.riskLevel || "").toLowerCase() === dashboardTicketRiskFilter
     ));
@@ -7688,6 +7796,9 @@ export default function CoachWellbeingPage({ setMobileOpen, isDesktop }: CoachWe
     return <WellbeingPageSkeleton view={activeView} />;
   }
 
+  const dashboardRefreshing = loading && Boolean(data);
+  const ticketOverviewRefreshing = dashboardRefreshing || (ticketsLoading && Boolean(ticketsData));
+
   return (
     <div
       id="report-area"
@@ -7752,7 +7863,7 @@ export default function CoachWellbeingPage({ setMobileOpen, isDesktop }: CoachWe
                       setTicketFilters(emptyFilters);
                       setTicketsLoading(true);
                     }}
-                    className="inline-flex h-12 items-center justify-center gap-2 rounded-2xl border border-[#a88cd9] bg-[#f9f5ff] px-5 text-sm font-medium text-[#442F73] shadow-sm transition hover:bg-[#F3EBFF] hover:border-[#866cb6]"
+                    className="inline-flex h-12 items-center justify-center gap-2 rounded-2xl bg-[#3B1F72] px-5 text-sm font-semibold text-white shadow-sm transition hover:bg-[#2D1768]"
                   >
                     <Ticket className="h-4 w-4" />
                     Safeguarding Tickets
@@ -7760,7 +7871,7 @@ export default function CoachWellbeingPage({ setMobileOpen, isDesktop }: CoachWe
                 )}
                 <a
                   href={wellbeingPathForView("onboarding")}
-                  className="inline-flex h-12 items-center justify-center gap-2 rounded-2xl border border-[#DDC398] bg-[#F9F4EC] px-5 text-sm font-medium text-[#9D6912] shadow-sm transition hover:bg-[#F3E9DA] hover:border-[#CEA869]"
+                  className="inline-flex h-12 items-center justify-center gap-2 rounded-2xl bg-[#A56408] px-5 text-sm font-semibold text-white shadow-sm transition hover:bg-[#7A4300]"
                 >
                   <ClipboardList className="h-4 w-4" />
                   Onboarding Tickets
@@ -7795,61 +7906,64 @@ export default function CoachWellbeingPage({ setMobileOpen, isDesktop }: CoachWe
         />
       ) : activeView === "dashboard" ? (
         <>
-          <div className="mb-6 grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
-            <StatCard
-              title="Active Learners"
-              value={dashboardSummary.caseload}
-              icon={<Users className="h-4 w-4" />}
-              valueColor="text-[#0F9B8E]"
-              iconBg="bg-[#E6F7F6]"
-              iconColor="text-[#0F9B8E]"
-              source="Calculated from the current learners returned by the wellbeing dashboard API."
-            />
-            <StatCard
-              title="Survey Response"
-              value={`${surveyResponsePct}%`}
-              icon={<ClipboardCheck className="h-4 w-4" />}
-              valueColor="text-[#0F9B8E]"
-              iconBg="bg-[#E6F7F6]"
-              iconColor="text-[#0F9B8E]"
-              source="Learners with wellbeing response data divided by active learners."
-            />
-            <StatCard
-              title="Open Tickets"
-              value={ticketsLoading && !ticketsData ? "…" : ticketsData ? dashboardTotalTicketStatusCounts.open : dashboardSummary.openTickets}
-              icon={<ClipboardList className="h-4 w-4" />}
-              valueColor="text-amber-500"
-              iconBg="bg-amber-50"
-              iconColor="text-amber-500"
-              source="Currently loaded safeguarding tickets whose status is not closed or outcome recorded."
-            />
-            <StatCard
-              title="Red Risk Learners"
-              value={dashboardSummary.atRisk}
-              icon={<AlertTriangle className="h-4 w-4" />}
-              valueColor="text-red-500"
-              iconBg="bg-red-50"
-              iconColor="text-red-500"
-              source="Learners where riskLevel is red."
-            />
-            <StatCard
-              title="Green Risk Learners"
-              value={dashboardSummary.greenRisk}
-              icon={<Shield className="h-4 w-4" />}
-              valueColor="text-[#3D7A55]"
-              iconBg="bg-[#F2FAF6]"
-              iconColor="text-[#3D7A55]"
-              source="Learners where riskLevel is green."
-            />
-            <StatCard
-              title="Avg Wellbeing"
-              value={avgWellbeing ?? "—"}
-              icon={<Heart className="h-4 w-4" />}
-              valueColor={wellbeingRiskTextColor(avgWellbeing)}
-              iconBg="bg-[#E6F7F6]"
-              iconColor="text-[#0F9B8E]"
-              source="Average emotional stress and resilience score across learner rows with a score."
-            />
+          <div className="relative mb-6 rounded-2xl">
+            <RefreshingOverlay show={dashboardRefreshing} label="Refreshing dashboard metrics..." />
+            <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
+              <StatCard
+                title="Active Learners"
+                value={dashboardSummary.caseload}
+                icon={<Users className="h-4 w-4" />}
+                valueColor="text-[#0F9B8E]"
+                iconBg="bg-[#E6F7F6]"
+                iconColor="text-[#0F9B8E]"
+                source="Learners whose Aptem Program-Status is Active."
+              />
+              <StatCard
+                title="Survey Response"
+                value={`${surveyResponsePct}%`}
+                icon={<ClipboardCheck className="h-4 w-4" />}
+                valueColor="text-[#0F9B8E]"
+                iconBg="bg-[#E6F7F6]"
+                iconColor="text-[#0F9B8E]"
+                source="Learners with wellbeing response data divided by active learners."
+              />
+              <StatCard
+                title="Open Tickets"
+                value={ticketsLoading && !ticketsData ? "…" : ticketsData ? dashboardTotalTicketStatusCounts.open : dashboardSummary.openTickets}
+                icon={<ClipboardList className="h-4 w-4" />}
+                valueColor="text-amber-500"
+                iconBg="bg-amber-50"
+                iconColor="text-amber-500"
+                source="Currently loaded safeguarding tickets whose status is not closed or outcome recorded."
+              />
+              <StatCard
+                title="Red Risk Learners"
+                value={dashboardSummary.atRisk}
+                icon={<AlertTriangle className="h-4 w-4" />}
+                valueColor="text-red-500"
+                iconBg="bg-red-50"
+                iconColor="text-red-500"
+                source="Learners where riskLevel is red."
+              />
+              <StatCard
+                title="Green Risk Learners"
+                value={dashboardSummary.greenRisk}
+                icon={<Shield className="h-4 w-4" />}
+                valueColor="text-[#3D7A55]"
+                iconBg="bg-[#F2FAF6]"
+                iconColor="text-[#3D7A55]"
+                source="Learners who completed the wellbeing survey and have green risk."
+              />
+              <StatCard
+                title="Avg Wellbeing"
+                value={avgWellbeing ?? "—"}
+                icon={<Heart className="h-4 w-4" />}
+                valueColor={wellbeingRiskTextColor(avgWellbeing)}
+                iconBg="bg-[#E6F7F6]"
+                iconColor="text-[#0F9B8E]"
+                source="Average emotional stress and resilience score across learner rows with a score."
+              />
+            </div>
           </div>
 
           <DashboardTicketOverview
@@ -7862,14 +7976,15 @@ export default function CoachWellbeingPage({ setMobileOpen, isDesktop }: CoachWe
             shownCount={dashboardTicketShownCount}
             tickets={dashboardTicketRows}
             learners={dashboardLearnerRows}
-            loading={ticketsLoading}
+            loading={ticketOverviewRefreshing}
             onView={setViewTicket}
             onCreateFollowUp={handleCreateFollowUp}
             onViewLearnerTickets={handleViewLearnerTickets}
             onOpenTicketsPage={openSafeguardingTicketsView}
           />
 
-          <div className="grid grid-cols-1 gap-6 xl:grid-cols-2">
+          <div className="relative grid grid-cols-1 gap-6 rounded-3xl xl:grid-cols-2">
+            <RefreshingOverlay show={dashboardRefreshing} label="Refreshing follow-ups and actions..." />
             <div className="rounded-3xl bg-white p-4 shadow-sm sm:p-6 xl:h-[420px]">
               <div className="flex h-full flex-col">
                 <h2 className="mb-5 shrink-0 text-md font-semibold text-[#241453]">
@@ -7937,7 +8052,7 @@ export default function CoachWellbeingPage({ setMobileOpen, isDesktop }: CoachWe
                   Suggested Coach Actions
                 </h2>
 
-                <div className="custom-scroll min-h-0 flex-1 overflow-y-auto pr-2">
+                <div className="custom-scroll max-h-[420px] min-h-0 flex-1 overflow-y-auto pr-2 sm:max-h-[460px] xl:max-h-none">
                   <div className="space-y-4">
                     {workflowSuggestedActions.length === 0 ? (
                       <div className="rounded-2xl border border-[#ECE7F7] p-4 text-sm text-slate-500">
@@ -7996,7 +8111,8 @@ export default function CoachWellbeingPage({ setMobileOpen, isDesktop }: CoachWe
             </div>
           </div>
 
-          <div className="mt-6 rounded-3xl bg-white p-4 shadow-sm sm:p-6">
+          <div className="relative mt-6 rounded-3xl bg-white p-4 shadow-sm sm:p-6">
+            <RefreshingOverlay show={dashboardRefreshing} label="Refreshing trends..." />
             <div className="flex flex-col gap-2 sm:flex-row sm:items-end sm:justify-between">
               <div>
                 <h2 className="text-md font-semibold text-[#241453]">Caseload Trends</h2>
