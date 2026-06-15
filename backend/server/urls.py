@@ -21,6 +21,7 @@ urlpatterns = [
     # JWT authentication
     path("api/token/", EmailOrUsernameTokenObtainPairView.as_view(), name="token_obtain_pair"),
     path("api/token/refresh/", TokenRefreshView.as_view(), name="token_refresh"),
+    
 
     # Media files — served by Django in all environments (DEBUG=True or False)
     re_path(r"^media/(?P<path>.*)$", serve, {"document_root": settings.MEDIA_ROOT}),
