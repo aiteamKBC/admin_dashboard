@@ -54,7 +54,7 @@ export default function TableView({ tickets, onViewDetails, onStatusChange, onMa
         <table className="w-full min-w-[1180px] text-sm">
           <thead>
             <tr className="border-b border-background-200 bg-background-100">
-              <th className="text-left px-4 py-3 text-xs font-semibold text-foreground-600 whitespace-nowrap">Ticket ID</th>
+              <th className="text-left px-4 py-3 text-xs font-semibold text-foreground-600 whitespace-nowrap">Learner ID</th>
               <th className="text-left px-4 py-3 text-xs font-semibold text-foreground-600 whitespace-nowrap">Learner</th>
               <th className="text-left px-4 py-3 text-xs font-semibold text-foreground-600 whitespace-nowrap">Email</th>
               <th className="text-left px-4 py-3 text-xs font-semibold text-foreground-600 whitespace-nowrap">Completion</th>
@@ -121,11 +121,10 @@ export default function TableView({ tickets, onViewDetails, onStatusChange, onMa
                     </button>
                     <button
                       onClick={() => onMarkReviewed(ticket.id)}
-                      disabled={ticket.reviewStatus === 'Reviewed'}
-                      className={`w-8 h-8 rounded-md transition-colors flex items-center justify-center ${ticket.reviewStatus === 'Reviewed' ? 'bg-secondary-50 text-secondary-700 cursor-default' : 'bg-background-100 text-foreground-700 hover:bg-background-200 cursor-pointer'}`}
-                      title={ticket.reviewStatus === 'Reviewed' ? 'Reviewed' : 'Mark reviewed'}
+                      className={`w-8 h-8 rounded-md transition-colors flex items-center justify-center cursor-pointer ${ticket.reviewStatus === 'Reviewed' ? 'bg-secondary-50 text-secondary-700 hover:bg-secondary-100' : 'bg-background-100 text-foreground-700 hover:bg-background-200'}`}
+                      title={ticket.reviewStatus === 'Reviewed' ? 'Undo review' : 'Mark reviewed'}
                     >
-                      <i className={ticket.reviewStatus === 'Reviewed' ? 'ri-check-double-line' : 'ri-check-line'}></i>
+                      <i className={ticket.reviewStatus === 'Reviewed' ? 'ri-arrow-go-back-line' : 'ri-check-line'}></i>
                     </button>
                     <button onClick={() => onExport(ticket.id)} className="w-8 h-8 rounded-md bg-background-100 text-foreground-700 hover:bg-background-200 transition-colors cursor-pointer flex items-center justify-center" title="Export PDF">
                       <i className="ri-download-line"></i>

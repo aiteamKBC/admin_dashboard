@@ -13,7 +13,8 @@ from datetime import datetime
 from django.db import connections
 from django.http import JsonResponse
 from django.views.decorators.cache import never_cache
-from django.views.decorators.http import require_GET
+from django.views.decorators.csrf import csrf_exempt
+from django.views.decorators.http import require_GET, require_POST
 
 # Frontend dataset key -> (display label, snake aliases that map to it).
 # assessment_type values in the DB are messy (mixed case, duplicates), so every
@@ -197,7 +198,8 @@ def build_learner_dataset() -> dict:
         cursor.execute(
             """
             SELECT learner_id, learner_name, learner_email, assessment_type,
-                   scores, total_score, submitted_at, updated_at
+                   scores, total_score, submitted_at, updated_at,
+                   "Reviewed" AS reviewed, "Status" AS status
             FROM self_assessment_quiz_responses
             ORDER BY submitted_at ASC
             """
@@ -226,6 +228,10 @@ def build_learner_dataset() -> dict:
             "categories": {},
             "career": None,
             "lastUpdated": None,
+            "reviewedAt": None,
+            "reviewStatus": None,
+            "statusAt": None,
+            "ticketStatus": None,
         })
         # Keep the friendliest name / email we encounter.
         if name and bucket["name"] in ("", "Unknown Learner"):
@@ -236,6 +242,17 @@ def build_learner_dataset() -> dict:
         submitted = row["submitted_at"]
         if submitted and (bucket["lastUpdated"] is None or submitted > bucket["lastUpdated"]):
             bucket["lastUpdated"] = submitted
+
+        # Per-learner review/status come from the Reviewed/Status columns; take
+        # the most recently submitted non-empty value.
+        reviewed_val = (row.get("reviewed") or "").strip()
+        if reviewed_val and submitted and (bucket["reviewedAt"] is None or submitted >= bucket["reviewedAt"]):
+            bucket["reviewStatus"] = reviewed_val
+            bucket["reviewedAt"] = submitted
+        status_val = (row.get("status") or "").strip()
+        if status_val and submitted and (bucket["statusAt"] is None or submitted >= bucket["statusAt"]):
+            bucket["ticketStatus"] = status_val
+            bucket["statusAt"] = submitted
 
         raw_type = (row["assessment_type"] or "").strip().lower()
 
@@ -309,6 +326,22 @@ def build_learner_dataset() -> dict:
         recommended_career = recommendations[0]["title"] if recommendations else "Pending Assessment"
         last_updated = bucket["lastUpdated"].date().isoformat() if bucket["lastUpdated"] else ""
 
+        # Review status: persisted Reviewed column wins, else default.
+        stored_review = (bucket["reviewStatus"] or "").strip()
+        if stored_review.lower() in ("reviewed", "yes", "true", "1"):
+            review_status, reviewed_by = "Reviewed", "Admin"
+        elif stored_review and stored_review.lower() not in ("not reviewed", "no", "false", "0"):
+            review_status, reviewed_by = stored_review, "Admin"
+        else:
+            review_status, reviewed_by = "Not Reviewed", ""
+
+        # Ticket/overview status: persisted Status column wins, else derived.
+        stored_status = (bucket["ticketStatus"] or "").strip()
+        if stored_status:
+            overview_status = stored_status
+        else:
+            overview_status = "Completed" if completion == 100 else "In Progress" if completion > 0 else "Not Started"
+
         dataset["learners"].append({
             "id": ticket_id,
             "name": bucket["name"],
@@ -322,9 +355,9 @@ def build_learner_dataset() -> dict:
             "weakestAreas": _top(all_weak, 4) or ["Not enough data"],
             "recommendedCareer": recommended_career,
             "lastUpdated": last_updated,
-            "reviewStatus": "Not Reviewed",
-            "reviewedBy": "",
-            "ticketStatus": "Completed" if completion == 100 else "In Progress" if completion > 0 else "Not Started",
+            "reviewStatus": review_status,
+            "reviewedBy": reviewed_by,
+            "ticketStatus": overview_status,
             "flagged": risk == "High",
             "adminNotes": "",
         })
@@ -338,3 +371,46 @@ def learner_result_tickets(_request):
     """Return the live learner-result dataset consumed by the
     Learner Result Tickets page."""
     return JsonResponse(build_learner_dataset())
+
+
+@csrf_exempt
+@require_POST
+@never_cache
+def update_learner_review(request):
+    """Persist per-learner review/status into the wellbeing table.
+
+    Body (JSON): { "email": "...", "reviewStatus"?: "Reviewed"|"Not Reviewed",
+                   "ticketStatus"?: "Completed"|"In Progress"|... }
+    Updates the Reviewed / Status columns for every row belonging to that learner
+    so the state is shared across their submissions.
+    """
+    try:
+        payload = json.loads(request.body or b"{}")
+    except (ValueError, TypeError):
+        return JsonResponse({"error": "Invalid JSON body."}, status=400)
+
+    email = (payload.get("email") or "").strip()
+    if not email:
+        return JsonResponse({"error": "email is required."}, status=400)
+
+    sets, params = [], []
+    if "reviewStatus" in payload:
+        sets.append('"Reviewed" = %s')
+        params.append((payload.get("reviewStatus") or "").strip() or None)
+    if "ticketStatus" in payload:
+        sets.append('"Status" = %s')
+        params.append((payload.get("ticketStatus") or "").strip() or None)
+
+    if not sets:
+        return JsonResponse({"error": "Nothing to update."}, status=400)
+
+    params.append(email)
+    with connections["wellbeing"].cursor() as cursor:
+        cursor.execute(
+            f"UPDATE self_assessment_quiz_responses SET {', '.join(sets)} "
+            f"WHERE lower(learner_email) = lower(%s)",
+            params,
+        )
+        updated = cursor.rowcount
+
+    return JsonResponse({"ok": True, "rowsUpdated": updated})

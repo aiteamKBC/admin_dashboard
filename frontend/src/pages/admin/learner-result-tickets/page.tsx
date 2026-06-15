@@ -333,14 +333,36 @@ export default function AdminLearnerResultTickets() {
     setSortBy('newest');
   };
 
+  const persistReview = async (email: string, body: Record<string, string>) => {
+    if (!email) return;
+    try {
+      await fetch('/api/accounts/learner-result-tickets/review/', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email, ...body }),
+      });
+    } catch (err) {
+      console.warn('Failed to persist review state', err);
+    }
+  };
+
   const handleStatusChange = (id: string, status: string) => {
+    const learner = learners.find(l => l.id === id);
     setTicketOverrides(prev => ({ ...prev, [id]: { ...prev[id], ticketStatus: status } }));
+    if (learner) persistReview(learner.email, { ticketStatus: status });
   };
 
   const handleMarkReviewed = (id: string) => {
-    if (!learners.find(l => l.id === id)) return;
-    setTicketOverrides(prev => ({ ...prev, [id]: { ...prev[id], reviewStatus: 'Reviewed', reviewedBy: 'Admin' } }));
-    setShowReviewedToast(`Ticket ${id} marked as reviewed.`);
+    const learner = learners.find(l => l.id === id);
+    if (!learner) return;
+    const isReviewed = learner.reviewStatus === 'Reviewed';
+    const nextStatus = isReviewed ? 'Not Reviewed' : 'Reviewed';
+    setTicketOverrides(prev => ({
+      ...prev,
+      [id]: { ...prev[id], reviewStatus: nextStatus, reviewedBy: isReviewed ? '' : 'Admin' },
+    }));
+    persistReview(learner.email, { reviewStatus: nextStatus });
+    setShowReviewedToast(isReviewed ? `Review undone for ${learner.name}.` : `${learner.name} marked as reviewed.`);
     setTimeout(() => setShowReviewedToast(''), 3000);
   };
 
@@ -348,7 +370,7 @@ export default function AdminLearnerResultTickets() {
     const learner = learners.find(l => l.id === id);
     if (!learner) return;
     downloadLearnerSummaryPdf(learner, displayData);
-    setShowExportToast(`PDF exported for ticket ${id}.`);
+    setShowExportToast(`PDF exported for ${learner.name}.`);
     setTimeout(() => setShowExportToast(''), 3000);
   };
 
@@ -360,7 +382,7 @@ export default function AdminLearnerResultTickets() {
 
   return (
     <div className="min-h-screen">
-      <div className="max-w-[100rem] mx-auto space-y-7">
+      <div className="w-full space-y-7">
         <div className="relative overflow-hidden rounded-3xl px-5 md:px-8 py-8 shadow-lg min-h-[14rem] xl:min-h-[15rem] bg-gradient-to-br from-[#241453] via-[#3B1F72] to-[#5B3AA6]">
           {/* decorative glow */}
           <div aria-hidden="true" className="pointer-events-none absolute -top-24 -right-10 h-72 w-72 rounded-full bg-white/10 blur-3xl"></div>
@@ -369,9 +391,9 @@ export default function AdminLearnerResultTickets() {
           <div className="relative z-10 flex flex-col lg:flex-row lg:items-start lg:justify-between gap-5 lg:pr-72 xl:pr-[26rem]">
             <div className="max-w-3xl">
               <span className="inline-flex items-center gap-1.5 rounded-full bg-white/15 px-3 py-1 text-xs font-medium text-white/90 backdrop-blur-sm">
-                <i className="ri-bar-chart-box-line"></i>Learner Results
+                <i className="ri-bar-chart-box-line"></i>Who I Am
               </span>
-              <h2 className="mt-3 text-2xl md:text-3xl font-bold text-white">Learner Result Dashboard</h2>
+              <h2 className="mt-3 text-2xl md:text-3xl font-bold text-white">Who I Am Overview</h2>
               <p className="text-sm text-white/70 mt-1.5">Monitor assessment completion, risk patterns, review workload, and career recommendations.</p>
             </div>
             <div className="flex flex-col sm:flex-row gap-3">
@@ -382,7 +404,7 @@ export default function AdminLearnerResultTickets() {
           </div>
 
           <div className="relative z-10 flex flex-wrap gap-2 mt-5 lg:pr-72 xl:pr-[26rem]">
-            <span className="px-3 py-1 rounded-full text-xs font-medium bg-white/15 text-white backdrop-blur-sm whitespace-nowrap"><strong>{totalTickets}</strong> Total Tickets</span>
+            <span className="px-3 py-1 rounded-full text-xs font-medium bg-white/15 text-white backdrop-blur-sm whitespace-nowrap"><strong>{totalTickets}</strong> Total Learners</span>
             <span className="px-3 py-1 rounded-full text-xs font-medium bg-emerald-400/20 text-emerald-50 backdrop-blur-sm whitespace-nowrap"><strong>{completedTickets}</strong> Completed</span>
             <span className="px-3 py-1 rounded-full text-xs font-medium bg-amber-400/20 text-amber-50 backdrop-blur-sm whitespace-nowrap"><strong>{incompleteTickets}</strong> Incomplete</span>
             <span className="px-3 py-1 rounded-full text-xs font-medium bg-red-400/25 text-red-50 backdrop-blur-sm whitespace-nowrap"><strong>{highRiskLearners}</strong> High Risk</span>
@@ -399,7 +421,7 @@ export default function AdminLearnerResultTickets() {
         <div className="bg-background-50 rounded-3xl border border-background-200/70 px-5 md:px-7 py-6 shadow-sm space-y-5">
           <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-3">
             <div>
-              <h3 className="text-lg font-bold text-foreground-900">Result Ticket Queue</h3>
+              <h3 className="text-lg font-bold text-foreground-900">Learner Review Queue</h3>
               <p className="text-sm text-foreground-500 mt-1">Use the quick filters below to move through the review workload faster.</p>
             </div>
             <button onClick={clearAllFilters} className="self-start lg:self-auto px-4 py-2 text-sm font-medium bg-background-100 border border-background-200 text-foreground-700 rounded-lg hover:bg-background-200 transition-colors cursor-pointer whitespace-nowrap">
@@ -409,7 +431,7 @@ export default function AdminLearnerResultTickets() {
 
           <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
             {[
-              { label: 'All Tickets', sub: 'Every learner result case', icon: 'ri-ticket-2-line', count: queueCounts.all, filter: 'All' },
+              { label: 'All Learners', sub: 'Every learner result case', icon: 'ri-group-line', count: queueCounts.all, filter: 'All' },
               { label: 'Open Reviews', sub: 'Not yet marked reviewed', icon: 'ri-clipboard-line', count: queueCounts.open, filter: 'Open' },
               { label: 'Closed Reviews', sub: 'Reviewed result cases', icon: 'ri-check-double-line', count: queueCounts.closed, filter: 'Reviewed' },
             ].map(item => (
@@ -482,7 +504,7 @@ export default function AdminLearnerResultTickets() {
 
         <div className="flex items-center justify-between">
           <p className="text-xs text-foreground-500">
-            Showing <strong className="text-foreground-800">{filteredTickets.length}</strong> ticket{filteredTickets.length !== 1 ? 's' : ''}
+            Showing <strong className="text-foreground-800">{filteredTickets.length}</strong> learner{filteredTickets.length !== 1 ? 's' : ''}
             {filteredTickets.length !== learners.length && <span> of <strong className="text-foreground-800">{learners.length}</strong></span>}
           </p>
           <div className="flex items-center gap-1 bg-background-100 rounded-full p-1">
@@ -498,10 +520,10 @@ export default function AdminLearnerResultTickets() {
         {filteredTickets.length === 0 ? (
           <div className="bg-background-50 rounded-lg border border-background-200/70 p-12 text-center">
             <div className="w-14 h-14 mx-auto rounded-full bg-background-100 flex items-center justify-center mb-3">
-              <i className="ri-ticket-line text-2xl text-foreground-300"></i>
+              <i className="ri-user-search-line text-2xl text-foreground-300"></i>
             </div>
-            <h4 className="text-sm font-semibold text-foreground-800 mb-1">No Tickets Found</h4>
-            <p className="text-xs text-foreground-500 mb-4">No learner tickets match your current filters.</p>
+            <h4 className="text-sm font-semibold text-foreground-800 mb-1">No Learners Found</h4>
+            <p className="text-xs text-foreground-500 mb-4">No learners match your current filters.</p>
             <button onClick={clearAllFilters} className="px-4 py-2 text-xs font-medium bg-primary-500 text-background-50 rounded-md hover:bg-primary-600 transition-colors cursor-pointer whitespace-nowrap">
               Clear All Filters
             </button>
@@ -509,7 +531,7 @@ export default function AdminLearnerResultTickets() {
         ) : viewMode === 'cards' ? (
           <div className="grid grid-cols-1 lg:grid-cols-2 2xl:grid-cols-3 gap-4">
             {filteredTickets.map((ticket) => (
-              <TicketCard key={ticket.id} ticket={ticket} onViewDetails={(id) => { setSelectedLearnerId(id); setIsDrawerOpen(true); }} onMarkReviewed={handleMarkReviewed} onExport={handleExport} />
+              <TicketCard key={ticket.id} ticket={ticket} onViewDetails={(id) => { setSelectedLearnerId(id); setIsDrawerOpen(true); }} onMarkReviewed={handleMarkReviewed} onExport={handleExport} onStatusChange={handleStatusChange} />
             ))}
           </div>
         ) : (
@@ -524,6 +546,7 @@ export default function AdminLearnerResultTickets() {
         data={displayData}
         onMarkReviewed={handleMarkReviewed}
         onExport={handleExport}
+        onStatusChange={handleStatusChange}
       />
 
       {showExportToast && (

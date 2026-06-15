@@ -18,7 +18,10 @@ interface TicketCardProps {
   onViewDetails: (id: string) => void;
   onMarkReviewed: (id: string) => void;
   onExport: (id: string) => void;
+  onStatusChange: (id: string, status: string) => void;
 }
+
+const STATUS_OPTIONS = ['Completed', 'In Progress', 'Not Started', 'Needs Review'] as const;
 
 function getStatusColor(status: string) {
   const colors: Record<string, string> = {
@@ -39,7 +42,7 @@ function getRiskColor(risk: string) {
   return colors[risk] || 'bg-background-200 text-foreground-600';
 }
 
-export default function TicketCard({ ticket, onViewDetails, onMarkReviewed, onExport }: TicketCardProps) {
+export default function TicketCard({ ticket, onViewDetails, onMarkReviewed, onExport, onStatusChange }: TicketCardProps) {
   const isReviewed = ticket.reviewStatus === 'Reviewed';
 
   return (
@@ -57,9 +60,23 @@ export default function TicketCard({ ticket, onViewDetails, onMarkReviewed, onEx
             <p className="text-xs text-foreground-500">{ticket.email}</p>
           </div>
         </div>
-        <span className={`px-2.5 py-0.5 rounded-full text-xs font-medium whitespace-nowrap ${getStatusColor(ticket.ticketStatus)}`}>
-          {ticket.ticketStatus}
-        </span>
+        <div className="flex flex-col items-end gap-1.5">
+          <div className="relative">
+            <select
+              value={STATUS_OPTIONS.includes(ticket.ticketStatus as typeof STATUS_OPTIONS[number]) ? ticket.ticketStatus : 'Completed'}
+              onChange={(e) => onStatusChange(ticket.id, e.target.value)}
+              onClick={(e) => e.stopPropagation()}
+              className={`appearance-none pl-2.5 pr-6 py-0.5 rounded-full text-xs font-medium cursor-pointer border-0 focus:outline-none focus:ring-2 focus:ring-primary-200 ${getStatusColor(ticket.ticketStatus)}`}
+            >
+              {STATUS_OPTIONS.map((s) => <option key={s} value={s}>{s}</option>)}
+            </select>
+            <i className="ri-arrow-down-s-line absolute right-1.5 top-1/2 -translate-y-1/2 text-[10px] pointer-events-none opacity-70"></i>
+          </div>
+          <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-medium whitespace-nowrap ${isReviewed ? 'bg-secondary-100 text-secondary-800' : 'bg-background-200 text-foreground-600'}`}>
+            <i className={isReviewed ? 'ri-check-double-line' : 'ri-time-line'}></i>
+            {isReviewed ? 'Reviewed' : 'Not Reviewed'}
+          </span>
+        </div>
       </div>
 
       <div className="flex flex-wrap gap-4 mb-3 text-xs">
@@ -113,15 +130,15 @@ export default function TicketCard({ ticket, onViewDetails, onMarkReviewed, onEx
         </button>
         <button
           onClick={() => onMarkReviewed(ticket.id)}
-          disabled={isReviewed}
-          className={`px-3 py-1.5 text-xs font-medium rounded-lg transition-colors whitespace-nowrap ${
+          title={isReviewed ? 'Undo review' : 'Mark as reviewed'}
+          className={`px-3 py-1.5 text-xs font-medium rounded-lg transition-colors whitespace-nowrap cursor-pointer ${
             isReviewed
-              ? 'bg-secondary-50 text-secondary-700 cursor-default'
-              : 'bg-background-100 text-foreground-700 hover:bg-background-200 cursor-pointer'
+              ? 'bg-secondary-50 text-secondary-700 hover:bg-secondary-100'
+              : 'bg-background-100 text-foreground-700 hover:bg-background-200'
           }`}
         >
-          <i className={`${isReviewed ? 'ri-check-double-line' : 'ri-check-line'} mr-1`}></i>
-          {isReviewed ? 'Reviewed' : 'Mark Reviewed'}
+          <i className={`${isReviewed ? 'ri-arrow-go-back-line' : 'ri-check-line'} mr-1`}></i>
+          {isReviewed ? 'Undo Review' : 'Mark Reviewed'}
         </button>
         <button
           onClick={() => onExport(ticket.id)}

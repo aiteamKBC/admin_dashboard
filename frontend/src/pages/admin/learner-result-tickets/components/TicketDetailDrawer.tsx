@@ -8,7 +8,10 @@ interface TicketDetailDrawerProps {
   data: LearnerDataset;
   onMarkReviewed: (id: string) => void;
   onExport: (id: string) => void;
+  onStatusChange: (id: string, status: string) => void;
 }
+
+const STATUS_OPTIONS = ['Completed', 'In Progress', 'Not Started', 'Needs Review'] as const;
 
 const assessmentSections = [
   ['wellbeingAssessment', 'Wellbeing Assessment'],
@@ -55,7 +58,7 @@ function ScoreBar({ score }: { score: number | null | undefined }) {
   );
 }
 
-export default function TicketDetailDrawer({ learnerId, isOpen, onClose, data, onMarkReviewed, onExport }: TicketDetailDrawerProps) {
+export default function TicketDetailDrawer({ learnerId, isOpen, onClose, data, onMarkReviewed, onExport, onStatusChange }: TicketDetailDrawerProps) {
   const learner = data.learners.find(l => l.id === learnerId);
   const [activeTab, setActiveTab] = useState<'overview' | 'career'>('overview');
   const recommendations = useMemo(
@@ -75,11 +78,16 @@ export default function TicketDetailDrawer({ learnerId, isOpen, onClose, data, o
   return (
     <div className="fixed inset-0 z-50 flex justify-end">
       <div className="absolute inset-0 bg-foreground-950/40" onClick={onClose}></div>
-      <div className="relative w-full max-w-3xl bg-background-50 h-full overflow-y-auto shadow-lg">
+      <div className="relative w-full max-w-4xl bg-background-50 h-full overflow-y-auto shadow-lg">
         <div className="sticky top-0 z-10 bg-background-50 border-b border-background-200 px-5 py-3 flex items-center justify-between">
-          <div>
-            <h3 className="text-sm font-semibold text-foreground-900">Ticket: {learner.id}</h3>
-            <p className="text-xs text-foreground-500">{learner.name}</p>
+          <div className="flex items-center gap-3">
+            <div className="w-9 h-9 rounded-full bg-gradient-to-br from-primary-500 to-primary-700 flex items-center justify-center flex-shrink-0 shadow-sm">
+              <span className="text-xs font-bold text-white">{learner.name.split(' ').map(n => n[0]).join('')}</span>
+            </div>
+            <div>
+              <h3 className="text-sm font-semibold text-foreground-900">{learner.name}</h3>
+              <p className="text-xs text-foreground-500">{learner.email}</p>
+            </div>
           </div>
           <button onClick={onClose} className="w-8 h-8 rounded-lg hover:bg-background-100 flex items-center justify-center cursor-pointer transition-colors">
             <i className="ri-close-line text-foreground-600"></i>
@@ -87,16 +95,30 @@ export default function TicketDetailDrawer({ learnerId, isOpen, onClose, data, o
         </div>
 
         <div className="p-5 space-y-5">
-          <div className="bg-background-50 rounded-lg border border-background-200/70 p-4">
+          <div className="bg-background-50 rounded-2xl border border-background-200/70 p-4 shadow-sm">
             <div className="flex flex-col md:flex-row md:items-start md:justify-between gap-4">
-              <div>
-                <h4 className="text-lg font-bold text-foreground-900">{learner.name}</h4>
-                <p className="text-sm text-foreground-500">{learner.email}</p>
-              </div>
-              <div className="flex flex-wrap gap-2">
-                <span className={`px-2 py-0.5 rounded-full text-xs font-medium ${getBadgeColor(learner.ticketStatus)}`}>{learner.ticketStatus}</span>
+              <div className="flex flex-wrap items-center gap-2">
                 <span className={`px-2 py-0.5 rounded-full text-xs font-medium ${getBadgeColor(learner.overallRisk)}`}>{learner.overallRisk} Risk</span>
-                <span className={`px-2 py-0.5 rounded-full text-xs font-medium ${getBadgeColor(learner.reviewStatus)}`}>{learner.reviewStatus}</span>
+                <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium ${getBadgeColor(learner.reviewStatus)}`}>
+                  <i className={learner.reviewStatus === 'Reviewed' ? 'ri-check-double-line' : 'ri-time-line'}></i>{learner.reviewStatus}
+                </span>
+                {learner.flagged && (
+                  <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-red-50 text-red-700">
+                    <i className="ri-flag-line"></i>Flagged
+                  </span>
+                )}
+              </div>
+              <div className="flex items-center gap-2">
+                <div className="relative">
+                  <select
+                    value={STATUS_OPTIONS.includes(learner.ticketStatus as typeof STATUS_OPTIONS[number]) ? learner.ticketStatus : 'Completed'}
+                    onChange={(e) => onStatusChange(learner.id, e.target.value)}
+                    className={`appearance-none pl-3 pr-7 py-1 rounded-lg text-xs font-medium cursor-pointer border focus:outline-none focus:ring-2 focus:ring-primary-200 ${getBadgeColor(learner.ticketStatus)}`}
+                  >
+                    {STATUS_OPTIONS.map((s) => <option key={s} value={s}>{s}</option>)}
+                  </select>
+                  <i className="ri-arrow-down-s-line absolute right-2 top-1/2 -translate-y-1/2 text-xs pointer-events-none opacity-70"></i>
+                </div>
               </div>
             </div>
 
@@ -105,6 +127,29 @@ export default function TicketDetailDrawer({ learnerId, isOpen, onClose, data, o
               <div><span className="text-foreground-500">Completion</span><p className="font-medium text-foreground-800 mt-0.5">{learner.assessmentCompletion}% ({learner.completedAssessments}/{learner.totalAssessments})</p></div>
               <div><span className="text-foreground-500">Last Updated</span><p className="font-medium text-foreground-800 mt-0.5">{learner.lastUpdated}</p></div>
               <div><span className="text-foreground-500">Reviewed By</span><p className="font-medium text-foreground-800 mt-0.5">{learner.reviewedBy || '-'}</p></div>
+            </div>
+
+            <div className="mt-4 pt-4 border-t border-background-100 grid grid-cols-1 md:grid-cols-3 gap-4 text-xs">
+              <div>
+                <span className="text-foreground-500">Recommended Career</span>
+                <p className="font-semibold text-primary-700 mt-1">{learner.recommendedCareer}</p>
+              </div>
+              <div>
+                <span className="text-foreground-500">Top Strengths</span>
+                <div className="flex flex-wrap gap-1 mt-1">
+                  {learner.topStrengths.length ? learner.topStrengths.map((s) => (
+                    <span key={s} className="px-2 py-0.5 rounded-full bg-secondary-50 text-secondary-700">{s}</span>
+                  )) : <span className="text-foreground-400">—</span>}
+                </div>
+              </div>
+              <div>
+                <span className="text-foreground-500">Weakest Areas</span>
+                <div className="flex flex-wrap gap-1 mt-1">
+                  {learner.weakestAreas.length ? learner.weakestAreas.map((a) => (
+                    <span key={a} className="px-2 py-0.5 rounded-full bg-red-50 text-red-600">{a}</span>
+                  )) : <span className="text-foreground-400">—</span>}
+                </div>
+              </div>
             </div>
           </div>
 
@@ -182,11 +227,11 @@ export default function TicketDetailDrawer({ learnerId, isOpen, onClose, data, o
             <div className="flex flex-wrap gap-2">
               <button
                 onClick={() => onMarkReviewed(learner.id)}
-                disabled={learner.reviewStatus === 'Reviewed'}
-                className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors whitespace-nowrap ${learner.reviewStatus === 'Reviewed' ? 'bg-secondary-50 text-secondary-700 cursor-default' : 'bg-primary-500 text-background-50 hover:bg-primary-600 cursor-pointer'}`}
+                title={learner.reviewStatus === 'Reviewed' ? 'Undo review' : 'Mark as reviewed'}
+                className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors whitespace-nowrap cursor-pointer ${learner.reviewStatus === 'Reviewed' ? 'bg-secondary-50 text-secondary-700 hover:bg-secondary-100' : 'bg-primary-700 text-white hover:bg-primary-800'}`}
               >
-                <i className={`${learner.reviewStatus === 'Reviewed' ? 'ri-check-double-line' : 'ri-check-line'} mr-1`}></i>
-                {learner.reviewStatus === 'Reviewed' ? 'Reviewed' : 'Mark as Reviewed'}
+                <i className={`${learner.reviewStatus === 'Reviewed' ? 'ri-arrow-go-back-line' : 'ri-check-line'} mr-1`}></i>
+                {learner.reviewStatus === 'Reviewed' ? 'Undo Review' : 'Mark as Reviewed'}
               </button>
               <button onClick={() => onExport(learner.id)} className="px-3 py-1.5 text-xs font-medium bg-background-100 text-foreground-600 rounded-md hover:bg-background-200 transition-colors cursor-pointer whitespace-nowrap">
                 <i className="ri-download-line mr-1"></i>Export PDF
