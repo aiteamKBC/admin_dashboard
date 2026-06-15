@@ -1,8 +1,10 @@
 from django.urls import path
 from .views import LoginView, MicrosoftCallbackView, MicrosoftLoginView, MicrosoftResultView
 from .evidence_views import GetStudentComponentsView, MarkEvidenceView, PollMarkingReportView
+from .learner_views import learner_result_tickets
 
 urlpatterns = [
+    path("learner-result-tickets/", learner_result_tickets, name="learner_result_tickets"),
     path("login/", LoginView.as_view(), name="login"),
     path("microsoft/login/", MicrosoftLoginView.as_view(), name="microsoft_login"),
     path("microsoft/result/", MicrosoftResultView.as_view(), name="microsoft_result"),

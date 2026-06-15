@@ -12,6 +12,7 @@ import RequireRole from "./components/auth/RequireRole";
 import useMediaQuery from "./helpers/useMediaQuery";
 
 const CoachWellbeingPage = lazy(() => import("./components/wellbeing/CoachWellbeingPage"));
+const LearnerResultTickets = lazy(() => import("./pages/admin/learner-result-tickets/page"));
 
 function DashboardPage({ onOpenSidebar }: { onOpenSidebar: () => void }) {
   return <AnalyticsMeetings onOpenSidebar={onOpenSidebar} />;
@@ -119,6 +120,18 @@ export default function App() {
                       setMobileOpen={setMobileOpen}
                       isDesktop={isDesktop}
                     />
+                  </Suspense>
+                </RequireRole>
+              }
+            />
+
+            {/* Learner Result Tickets */}
+            <Route
+              path="/learner-result-tickets"
+              element={
+                <RequireRole allow={["qa", "coach"]}>
+                  <Suspense fallback={<div className="min-h-screen rounded-3xl bg-white p-6 text-sm text-slate-500">Loading learner results...</div>}>
+                    <LearnerResultTickets />
                   </Suspense>
                 </RequireRole>
               }

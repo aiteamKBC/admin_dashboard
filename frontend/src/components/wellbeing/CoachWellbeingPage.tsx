@@ -7878,6 +7878,13 @@ export default function CoachWellbeingPage({ setMobileOpen, isDesktop }: CoachWe
                   <ClipboardList className="h-4 w-4" />
                   Onboarding Tickets
                 </a>
+                <a
+                  href="/learner-result-tickets"
+                  className="inline-flex h-12 items-center justify-center gap-2 rounded-2xl bg-[#0F7E73] px-5 text-sm font-semibold text-white shadow-sm transition hover:bg-[#0B5E56]"
+                >
+                  <ClipboardCheck className="h-4 w-4" />
+                  Who I am Tickets
+                </a>
               </>
             )}
 
