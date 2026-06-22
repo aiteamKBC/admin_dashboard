@@ -1,11 +1,12 @@
 from django.urls import path
 from .views import LoginView, MicrosoftCallbackView, MicrosoftLoginView, MicrosoftResultView
 from .evidence_views import GetStudentComponentsView, MarkEvidenceView, PollMarkingReportView
-from .learner_views import learner_result_tickets, update_learner_review
+from .learner_views import learner_result_tickets, update_learner_review, learner_history
 
 urlpatterns = [
     path("learner-result-tickets/", learner_result_tickets, name="learner_result_tickets"),
     path("learner-result-tickets/review/", update_learner_review, name="update_learner_review"),
+    path("learner-result-tickets/history/", learner_history, name="learner_history"),
     path("login/", LoginView.as_view(), name="login"),
     path("microsoft/login/", MicrosoftLoginView.as_view(), name="microsoft_login"),
     path("microsoft/result/", MicrosoftResultView.as_view(), name="microsoft_result"),

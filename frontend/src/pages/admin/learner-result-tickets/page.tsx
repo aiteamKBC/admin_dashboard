@@ -140,6 +140,7 @@ function createPdfBlob(lines: PdfLine[]) {
 function buildLearnerPdfLines(learner: Learner, data: LearnerDataset) {
   const lines: PdfLine[] = [];
   const recommendations = ((data.careerRecommendations as Record<string, any[]>)[learner.id] ?? []);
+  const skillsToDevelop: string[] = ((data as any).skillsToDevelop as Record<string, string[]>)?.[learner.id] ?? [];
 
   addWrappedLine(lines, 'Kent Business College', { size: 18, bold: true });
   addWrappedLine(lines, 'Learner Result Summary', { size: 14, bold: true });
@@ -185,6 +186,15 @@ function buildLearnerPdfLines(learner: Learner, data: LearnerDataset) {
     });
   }
 
+  addWrappedLine(lines, 'Skills to Develop', { size: 14, bold: true, gapBefore: 12 });
+  if (skillsToDevelop.length === 0) {
+    addWrappedLine(lines, 'No skills identified yet.');
+  } else {
+    skillsToDevelop.forEach((skill, index) => {
+      addWrappedLine(lines, `${index + 1}. ${skill}`);
+    });
+  }
+
   return lines;
 }
 
@@ -213,7 +223,7 @@ export default function AdminLearnerResultTickets() {
   const [careerFilter, setCareerFilter] = useState('All');
   const [completionRange, setCompletionRange] = useState<[number, number]>([0, 100]);
   const [sortBy, setSortBy] = useState('newest');
-  const [viewMode, setViewMode] = useState<'cards' | 'table'>('cards');
+  const [viewMode, setViewMode] = useState<'cards' | 'table'>('table');
   const [selectedLearnerId, setSelectedLearnerId] = useState<string | null>(null);
   const [isDrawerOpen, setIsDrawerOpen] = useState(false);
   const [ticketOverrides, setTicketOverrides] = useState<Record<string, Partial<Learner>>>({});
@@ -364,6 +374,16 @@ export default function AdminLearnerResultTickets() {
     persistReview(learner.email, { reviewStatus: nextStatus });
     setShowReviewedToast(isReviewed ? `Review undone for ${learner.name}.` : `${learner.name} marked as reviewed.`);
     setTimeout(() => setShowReviewedToast(''), 3000);
+  };
+
+  const handleReviewedByChange = (id: string, name: string) => {
+    const learner = learners.find(l => l.id === id);
+    if (!learner) return;
+    setTicketOverrides(prev => ({
+      ...prev,
+      [id]: { ...prev[id], reviewedBy: name, reviewStatus: 'Reviewed' },
+    }));
+    persistReview(learner.email, { reviewStatus: 'Reviewed', reviewedBy: name });
   };
 
   const handleExport = (id: string) => {
@@ -535,7 +555,7 @@ export default function AdminLearnerResultTickets() {
             ))}
           </div>
         ) : (
-          <TableView tickets={filteredTickets} onViewDetails={(id) => { setSelectedLearnerId(id); setIsDrawerOpen(true); }} onStatusChange={handleStatusChange} onMarkReviewed={handleMarkReviewed} onExport={handleExport} />
+          <TableView tickets={filteredTickets} data={displayData} onViewDetails={(id) => { setSelectedLearnerId(id); setIsDrawerOpen(true); }} onStatusChange={handleStatusChange} onMarkReviewed={handleMarkReviewed} onExport={handleExport} onReviewedByChange={handleReviewedByChange} />
         )}
       </div>
 

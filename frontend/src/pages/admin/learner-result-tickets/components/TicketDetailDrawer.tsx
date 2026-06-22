@@ -1,5 +1,211 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import type { LearnerDataset } from '../useLearnerData';
+
+// ── Types ────────────────────────────────────────────────────────────────────
+type HistoryAssessment = {
+  overallScore: number | null;
+  rating: string;
+  subScores: Record<string, number | null>;
+  submittedAt: string | null;
+};
+type HistorySubmission = {
+  submissionId: number;
+  date: string;
+  assessments: Record<string, HistoryAssessment>;
+};
+
+// ── History Modal ─────────────────────────────────────────────────────────────
+const HISTORY_LABELS: [string, string][] = [
+  ['wellbeingAssessment',   'Wellbeing'],
+  ['psychologicalCapital',  'Psychological Capital'],
+  ['personalityTraits',     'Personality Traits'],
+  ['careerAdaptability',    'Career Adaptability'],
+  ['careerInterests',       'Career Interests'],
+  ['emotionalIntelligence', 'Emotional Intelligence'],
+  ['workValues',            'Work Values'],
+  ['englishCognitive',      'English & Cognitive'],
+  ['mathLogical',           'Math & Logical'],
+  ['knowledgeAssessment',   'Knowledge'],
+  ['skillsAssessment',      'Skills'],
+  ['behaviorsAssessment',   'Behaviors'],
+  ['learningStyle',         'Learning Style'],
+];
+
+function scoreDeltaStyle(current: number | null, prev: number | null) {
+  if (current === null || prev === null) return '';
+  if (current > prev) return 'text-green-600';
+  if (current < prev) return 'text-red-500';
+  return 'text-foreground-400';
+}
+
+function scoreDeltaIcon(current: number | null, prev: number | null) {
+  if (current === null || prev === null) return '';
+  if (current > prev) return '▲';
+  if (current < prev) return '▼';
+  return '—';
+}
+
+function HistoryModal({ learnerName, email, onClose }: { learnerName: string; email: string; onClose: () => void }) {
+  const [submissions, setSubmissions] = useState<HistorySubmission[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [err, setErr] = useState<string | null>(null);
+
+  useEffect(() => {
+    setLoading(true);
+    fetch(`/api/accounts/learner-result-tickets/history/?email=${encodeURIComponent(email)}`)
+      .then(r => r.ok ? r.json() : Promise.reject(r.status))
+      .then(d => { setSubmissions(d.submissions ?? []); setLoading(false); })
+      .catch(() => { setErr('Failed to load history.'); setLoading(false); });
+  }, [email]);
+
+  return (
+    <div className="fixed inset-0 z-[60] flex items-center justify-center p-4">
+      <div className="absolute inset-0 bg-foreground-950/50" onClick={onClose} />
+      <div className="relative bg-background-50 rounded-2xl shadow-xl w-full max-w-4xl max-h-[85vh] flex flex-col overflow-hidden">
+        {/* Header */}
+        <div className="flex items-center justify-between px-5 py-4 border-b border-background-200">
+          <div>
+            <h3 className="text-sm font-semibold text-foreground-900">Assessment History</h3>
+            <p className="text-xs text-foreground-500 mt-0.5">{learnerName} · {email}</p>
+          </div>
+          <button onClick={onClose} className="w-7 h-7 rounded-lg hover:bg-background-100 flex items-center justify-center cursor-pointer transition-colors">
+            <i className="ri-close-line text-foreground-500 text-sm" />
+          </button>
+        </div>
+
+        {/* Body */}
+        <div className="overflow-auto p-5">
+          {loading && <p className="text-xs text-foreground-400 text-center py-8">Loading history…</p>}
+          {err && <p className="text-xs text-red-500 text-center py-8">{err}</p>}
+          {!loading && !err && submissions.length === 0 && (
+            <p className="text-xs text-foreground-400 text-center py-8">No submissions found.</p>
+          )}
+          {!loading && !err && submissions.length > 0 && (
+            <div className="space-y-5">
+              {/* Score comparison table */}
+              <table className="w-full text-xs border-collapse">
+                <thead>
+                  <tr>
+                    <th className="text-left py-2 px-3 font-semibold text-foreground-600 bg-background-100 rounded-l-lg sticky left-0 min-w-[160px]">Assessment</th>
+                    {submissions.map((s, i) => (
+                      <th key={s.submissionId} className="text-center py-2 px-3 font-semibold text-foreground-600 bg-background-100 whitespace-nowrap min-w-[110px]">
+                        <span className="block text-foreground-400 font-normal">#{i + 1}</span>
+                        {s.date}
+                      </th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {HISTORY_LABELS.map(([key, label]) => {
+                    const hasAny = submissions.some(s => s.assessments[key]);
+                    if (!hasAny) return null;
+                    return (
+                      <tr key={key} className="border-t border-background-100 hover:bg-background-50">
+                        <td className="py-2.5 px-3 font-medium text-foreground-700 sticky left-0 bg-background-50">{label}</td>
+                        {submissions.map((s, i) => {
+                          const curr = s.assessments[key];
+                          const prev = i > 0 ? submissions[i - 1]!.assessments[key] : null;
+                          const score = curr?.overallScore ?? null;
+                          const prevScore = prev?.overallScore ?? null;
+                          const barColor = score === null ? 'bg-background-200' : score >= 80 ? 'bg-secondary-500' : score >= 60 ? 'bg-accent-500' : score >= 40 ? 'bg-accent-400' : 'bg-red-400';
+                          return (
+                            <td key={s.submissionId} className="py-2.5 px-3 text-center">
+                              {score === null ? (
+                                <span className="text-foreground-300">—</span>
+                              ) : (
+                                <div className="flex flex-col items-center gap-1">
+                                  <div className="w-full h-1.5 rounded-full bg-background-200 overflow-hidden">
+                                    <div className={`h-full rounded-full ${barColor}`} style={{ width: `${score}%` }} />
+                                  </div>
+                                  <div className="flex items-center gap-1">
+                                    <span className="font-semibold text-foreground-800">{score}%</span>
+                                    {i > 0 && (
+                                      <span className={`text-[10px] font-bold ${scoreDeltaStyle(score, prevScore)}`}>
+                                        {scoreDeltaIcon(score, prevScore)}
+                                        {score !== null && prevScore !== null && score !== prevScore
+                                          ? ` ${Math.abs(score - prevScore)}`
+                                          : ''}
+                                      </span>
+                                    )}
+                                  </div>
+                                  <span className="text-[10px] text-foreground-400">{curr?.rating}</span>
+                                </div>
+                              )}
+                            </td>
+                          );
+                        })}
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+
+              {/* Completion checklist per submission */}
+              <div>
+                <h4 className="text-xs font-semibold text-foreground-600 uppercase tracking-wider mb-3">Completion per Submission</h4>
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+                  {submissions.map((s, i) => {
+                    const total = HISTORY_LABELS.length;
+                    const done = HISTORY_LABELS.filter(([key]) => !!s.assessments[key]).length;
+                    const allDone = done === total;
+                    return (
+                      <div key={s.submissionId} className="bg-background-100 rounded-xl p-4 flex flex-col gap-2">
+                        {/* Header */}
+                        <div className="flex items-center justify-between">
+                          <div>
+                            <span className="text-[10px] text-foreground-400 font-medium">Submission #{i + 1}</span>
+                            <p className="text-xs font-semibold text-foreground-800 mt-0.5">{s.date}</p>
+                          </div>
+                          <div className={`flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold ${allDone ? 'bg-secondary-100 text-secondary-700' : 'bg-accent-100 text-accent-700'}`}>
+                            {allDone
+                              ? <><i className="ri-checkbox-circle-fill text-secondary-500" /> {done}/{total} Done</>
+                              : <><i className="ri-time-line text-accent-500" /> {done}/{total} In Progress</>
+                            }
+                          </div>
+                        </div>
+                        {/* Progress bar */}
+                        <div className="h-1.5 rounded-full bg-background-200 overflow-hidden">
+                          <div
+                            className={`h-full rounded-full transition-all ${allDone ? 'bg-secondary-500' : 'bg-accent-500'}`}
+                            style={{ width: `${Math.round((done / total) * 100)}%` }}
+                          />
+                        </div>
+                        {/* Checklist */}
+                        <div className="grid grid-cols-1 gap-0.5 mt-1">
+                          {HISTORY_LABELS.map(([key, label]) => {
+                            const isDone = !!s.assessments[key];
+                            return (
+                              <div key={key} className="flex items-center gap-1.5">
+                                {isDone
+                                  ? <i className="ri-checkbox-circle-fill text-secondary-500 text-xs flex-shrink-0" />
+                                  : <i className="ri-circle-line text-foreground-300 text-xs flex-shrink-0" />
+                                }
+                                <span className={`text-[11px] ${isDone ? 'text-foreground-700' : 'text-foreground-300'}`}>{label}</span>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+
+        {/* Legend */}
+        {!loading && !err && submissions.length > 1 && (
+          <div className="px-5 py-3 border-t border-background-100 flex items-center gap-4 text-[10px] text-foreground-400">
+            <span><span className="text-green-600 font-bold">▲</span> Improved</span>
+            <span><span className="text-red-500 font-bold">▼</span> Declined</span>
+            <span><span className="font-bold">—</span> No change</span>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
 
 interface TicketDetailDrawerProps {
   learnerId: string;
@@ -58,12 +264,66 @@ function ScoreBar({ score }: { score: number | null | undefined }) {
   );
 }
 
+function SubScoresModal({ title, subScores, onClose }: { title: string; subScores: Record<string, number | null>; onClose: () => void }) {
+  const entries = Object.entries(subScores);
+  const max = Math.max(...entries.map(([, v]) => v ?? 0), 5);
+
+  return (
+    <div className="fixed inset-0 z-[60] flex items-center justify-center p-4">
+      <div className="absolute inset-0 bg-foreground-950/50" onClick={onClose} />
+      <div className="relative bg-background-50 rounded-2xl shadow-xl w-full max-w-lg max-h-[80vh] flex flex-col overflow-hidden">
+        <div className="flex items-center justify-between px-5 py-4 border-b border-background-200">
+          <h3 className="text-sm font-semibold text-foreground-900">{title} — Detailed Scores</h3>
+          <button onClick={onClose} className="w-7 h-7 rounded-lg hover:bg-background-100 flex items-center justify-center cursor-pointer transition-colors">
+            <i className="ri-close-line text-foreground-500 text-sm" />
+          </button>
+        </div>
+        <div className="overflow-y-auto p-5 space-y-3">
+          {entries.length === 0 ? (
+            <p className="text-xs text-foreground-400 text-center py-4">No sub-score data available.</p>
+          ) : entries.map(([dim, val]) => {
+            const pct = val !== null && val !== undefined ? Math.round((val / max) * 100) : null;
+            const barColor = pct === null ? 'bg-background-200' : pct >= 80 ? 'bg-secondary-500' : pct >= 60 ? 'bg-accent-500' : pct >= 40 ? 'bg-accent-400' : 'bg-red-400';
+            const level = val === null ? 'N/A' : val >= 4.2 ? 'Very High' : val >= 3.4 ? 'High' : val >= 2.6 ? 'Moderate' : val >= 1.8 ? 'Low' : 'Very Low';
+            const levelColor = val === null ? 'text-foreground-400' : val >= 4.2 ? 'text-secondary-700' : val >= 3.4 ? 'text-secondary-600' : val >= 2.6 ? 'text-accent-700' : val >= 1.8 ? 'text-orange-600' : 'text-red-600';
+            return (
+              <div key={dim}>
+                <div className="flex items-center justify-between mb-1">
+                  <span className="text-xs font-medium text-foreground-700">{dim}</span>
+                  <div className="flex items-center gap-2">
+                    <span className={`text-xs font-semibold ${levelColor}`}>{level}</span>
+                    <span className="text-xs text-foreground-500 w-8 text-right">{val !== null && val !== undefined ? val.toFixed(2) : '—'}</span>
+                  </div>
+                </div>
+                <div className="h-2 rounded-full bg-background-200 overflow-hidden">
+                  <div className={`h-full rounded-full transition-all ${barColor}`} style={{ width: `${pct ?? 0}%` }} />
+                </div>
+              </div>
+            );
+          })}
+        </div>
+        <div className="px-5 py-3 border-t border-background-100 text-right">
+          <span className="text-xs text-foreground-400">Score scale: 1 (Very Low) → 5 (Very High)</span>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export default function TicketDetailDrawer({ learnerId, isOpen, onClose, data, onMarkReviewed, onExport, onStatusChange }: TicketDetailDrawerProps) {
   const learner = data.learners.find(l => l.id === learnerId);
   const [activeTab, setActiveTab] = useState<'overview' | 'career'>('overview');
+  const [viewDataFor, setViewDataFor] = useState<{ title: string; subScores: Record<string, number | null> } | null>(null);
+  const [showHistory, setShowHistory] = useState(false);
+  const openHistory = useCallback(() => setShowHistory(true), []);
+  const closeHistory = useCallback(() => setShowHistory(false), []);
   const recommendations = useMemo(
     () => learner ? ((data.careerRecommendations as Record<string, any[]>)[learner.id] ?? []) : [],
     [data.careerRecommendations, learner],
+  );
+  const skillsToDevelop: string[] = useMemo(
+    () => learner ? (((data as any).skillsToDevelop as Record<string, string[]>)?.[learner.id] ?? []) : [],
+    [(data as any).skillsToDevelop, learner],
   );
 
   useEffect(() => {
@@ -76,6 +336,17 @@ export default function TicketDetailDrawer({ learnerId, isOpen, onClose, data, o
   if (!isOpen || !learner) return null;
 
   return (
+    <>
+    {showHistory && learner && (
+      <HistoryModal learnerName={learner.name} email={learner.email} onClose={closeHistory} />
+    )}
+    {viewDataFor && (
+      <SubScoresModal
+        title={viewDataFor.title}
+        subScores={viewDataFor.subScores}
+        onClose={() => setViewDataFor(null)}
+      />
+    )}
     <div className="fixed inset-0 z-50 flex justify-end">
       <div className="absolute inset-0 bg-foreground-950/40" onClick={onClose}></div>
       <div className="relative w-full max-w-4xl bg-background-50 h-full overflow-y-auto shadow-lg">
@@ -178,7 +449,15 @@ export default function TicketDetailDrawer({ learnerId, isOpen, onClose, data, o
                   <div key={key} className="bg-background-50 rounded-lg border border-background-200/70 p-4">
                     <div className="flex items-start justify-between gap-3 mb-2">
                       <h5 className="text-sm font-semibold text-foreground-900">{title}</h5>
-                      <span className={`px-2 py-0.5 rounded-full text-xs font-medium ${getBadgeColor(section.rating)}`}>{section.rating}</span>
+                      <div className="flex items-center gap-2">
+                        <button
+                          onClick={() => setViewDataFor({ title, subScores: section.subScores ?? {} })}
+                          className="px-2 py-0.5 rounded-md text-xs font-medium bg-primary-50 text-primary-700 hover:bg-primary-100 transition-colors cursor-pointer whitespace-nowrap"
+                        >
+                          <i className="ri-bar-chart-2-line mr-1" />View Data
+                        </button>
+                        <span className={`px-2 py-0.5 rounded-full text-xs font-medium ${getBadgeColor(section.rating)}`}>{section.rating}</span>
+                      </div>
                     </div>
                     <ScoreBar score={section.overallScore} />
                     <p className="text-xs text-foreground-600 mt-3">{section.interpretation}</p>
@@ -219,6 +498,22 @@ export default function TicketDetailDrawer({ learnerId, isOpen, onClose, data, o
                   </div>
                 </div>
               ))}
+
+              {skillsToDevelop.length > 0 && (
+                <div className="bg-background-50 rounded-lg border border-background-200/70 p-4">
+                  <div className="flex items-center gap-2 mb-3">
+                    <i className="ri-tools-line text-primary-600 text-sm" />
+                    <h5 className="text-sm font-semibold text-foreground-900">Skills to Develop</h5>
+                  </div>
+                  <div className="flex flex-wrap gap-2">
+                    {skillsToDevelop.map((skill) => (
+                      <span key={skill} className="inline-flex items-center gap-1 px-3 py-1 rounded-full text-xs font-medium bg-primary-50 text-primary-700 border border-primary-100">
+                        <i className="ri-seedling-line text-[10px]" />{skill}
+                      </span>
+                    ))}
+                  </div>
+                </div>
+              )}
             </div>
           )}
 
@@ -236,13 +531,14 @@ export default function TicketDetailDrawer({ learnerId, isOpen, onClose, data, o
               <button onClick={() => onExport(learner.id)} className="px-3 py-1.5 text-xs font-medium bg-background-100 text-foreground-600 rounded-md hover:bg-background-200 transition-colors cursor-pointer whitespace-nowrap">
                 <i className="ri-download-line mr-1"></i>Export PDF
               </button>
-              <button className="px-3 py-1.5 text-xs font-medium bg-background-100 text-foreground-600 rounded-md hover:bg-background-200 transition-colors cursor-pointer whitespace-nowrap">
-                <i className="ri-send-plane-line mr-1"></i>Send Summary
+              <button onClick={openHistory} className="px-3 py-1.5 text-xs font-medium bg-background-100 text-foreground-600 rounded-md hover:bg-background-200 transition-colors cursor-pointer whitespace-nowrap">
+                <i className="ri-history-line mr-1"></i>History
               </button>
             </div>
           </div>
         </div>
       </div>
     </div>
+    </>
   );
 }

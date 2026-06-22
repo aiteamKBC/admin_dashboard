@@ -3,12 +3,12 @@
 Builds the dataset consumed by the frontend Learner Result Tickets page from the
 live wellbeing database (``self_assessment_quiz_responses`` in the ``wellbeing``
 connection). One ticket is produced per learner (grouped by email); the latest
-submission with real scores wins for each assessment category.
+submission wins for each assessment column.
 """
 from __future__ import annotations
 
 import json
-from datetime import datetime
+from datetime import datetime, timezone
 
 from django.db import connections
 from django.http import JsonResponse
@@ -16,44 +16,33 @@ from django.views.decorators.cache import never_cache
 from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_GET, require_POST
 
-# Frontend dataset key -> (display label, snake aliases that map to it).
-# assessment_type values in the DB are messy (mixed case, duplicates), so every
-# raw value is lower-cased and looked up here.
-ASSESSMENT_CATEGORIES = {
-    "wellbeingAssessment": ("Wellbeing Assessment", {"wellbeing", "wellbeing assessment"}),
-    "psychologicalCapital": ("Psychological Capital", {"psychological", "psychological capital"}),
-    "personalityTraits": ("Personality Traits", {"personality", "personality traits"}),
-    "careerAdaptability": ("Career Adaptability", {"career adaptability", "career_adaptability"}),
-    "careerInterests": ("Career Interests (RIASEC)", {"career interests (riasec)", "career_interests_riasec", "career interests"}),
-    "emotionalIntelligence": ("Emotional Intelligence", {"emotional intelligence (ei)", "emotional_intelligence", "emotional intelligence"}),
-    "workValues": ("Work Values", {"work values", "work_values"}),
-    "englishCognitive": ("English & Cognitive Skills", {"english", "english & cognitive skills", "english cognitive"}),
-    "mathLogical": ("Mathematics & Logical Skills", {"mathematics", "math", "mathematics & logical skills", "math logical"}),
-    "knowledgeAssessment": ("Knowledge Assessment", {"knowledge assessment", "knowledge_assessment"}),
-    "skillsAssessment": ("Skills Assessment", {"skills assessment", "skills_assessment"}),
-    "behaviorsAssessment": ("Behaviors Assessment", {"behaviours assessment", "behaviors assessment", "behaviors_assessment", "behaviours", "behaviors"}),
-    "learningStyle": ("Learning Style", {"learning style", "learning_style"}),
+# DB column name -> (dataset key, is_inverted)
+# is_inverted=True means a HIGH raw score = bad (e.g. stress/anxiety)
+COLUMN_TO_KEY: dict[str, tuple[str, bool]] = {
+    "wellbeing":    ("wellbeingAssessment",   True),
+    "psychological":("psychologicalCapital",  False),
+    "personality":  ("personalityTraits",     False),
+    "career":       ("careerAdaptability",    False),
+    "riasec":       ("careerInterests",       False),
+    "ei":           ("emotionalIntelligence", False),
+    "work":         ("workValues",            False),
+    "cognitive":    ("englishCognitive",      False),
+    "logical":      ("mathLogical",           False),
+    "knowledge":    ("knowledgeAssessment",   False),
+    "skills":       ("skillsAssessment",      False),
+    "behaviors":    ("behaviorsAssessment",   False),
+    "learning_style":("learningStyle",        False),
 }
 
-# Build a flat alias -> dataset-key lookup.
-ALIAS_TO_KEY: dict[str, str] = {}
-for key, (_label, aliases) in ASSESSMENT_CATEGORIES.items():
-    for alias in aliases:
-        ALIAS_TO_KEY[alias] = key
+ASSESSMENT_CATEGORIES = {key: None for _, (key, _) in COLUMN_TO_KEY.items()}
+TOTAL_ASSESSMENTS = len(COLUMN_TO_KEY)
 
-CAREER_PATH_ALIASES = {"career_path", "career path", "career recommendations", "career_recommendations"}
-
-TOTAL_ASSESSMENTS = len(ASSESSMENT_CATEGORIES)
-
-# Map textual level -> numeric rank used for strong/weak derivation.
 LEVEL_RANK = {
     "very low": 1, "low": 2, "moderate": 3, "high": 4, "very high": 5,
 }
 
 
 def _as_json(value):
-    """jsonb columns may arrive already-parsed (dict/list) or as a raw string
-    depending on the cursor; normalise to a Python object."""
     if value is None or isinstance(value, (dict, list)):
         return value
     if isinstance(value, str):
@@ -69,7 +58,6 @@ def _humanize(token: str) -> str:
 
 
 def _rating_from_score(score):
-    """A 1-5 mean -> a coarse rating label."""
     if score is None:
         return "Not assessed"
     if score >= 4.2:
@@ -83,13 +71,44 @@ def _rating_from_score(score):
     return "Needs Support"
 
 
-def _build_assessment_result(row, inverted: bool = False) -> dict:
-    """Convert one DB row (scores jsonb + total_score + timestamps) into the
-    AssessmentResult shape the frontend expects.
+def _parse_datetime(s) -> datetime | None:
+    if not s:
+        return None
+    if isinstance(s, datetime):
+        return s
+    try:
+        return datetime.fromisoformat(str(s).replace("Z", "+00:00"))
+    except (ValueError, TypeError):
+        return None
 
-    ``inverted`` is used for the wellbeing assessment, where a HIGH score on a
-    dimension (stress, anxiety, depression) signals concern rather than strength.
-    """
+
+def _extract_assessment_row(col_data: dict, row_updated_at) -> dict | None:
+    """Convert a JSON column value into the pseudo-row _build_assessment_result expects."""
+    scores = col_data.get("scores") or {}
+    if not scores:
+        return None
+
+    total_score = col_data.get("total_score")
+    if total_score is None:
+        # Some columns store overall as overall_X.mean
+        for k, v in col_data.items():
+            if k.startswith("overall_") and isinstance(v, dict):
+                total_score = v.get("mean")
+                break
+
+    submitted_at = _parse_datetime(
+        col_data.get("submitted_at") or col_data.get("completed_at")
+    )
+
+    return {
+        "scores": scores,
+        "total_score": total_score,
+        "submitted_at": submitted_at,
+        "updated_at": row_updated_at,
+    }
+
+
+def _build_assessment_result(row, inverted: bool = False) -> dict:
     scores = row["scores"] or {}
     sub_scores: dict[str, float | None] = {}
     strong_areas: list[str] = []
@@ -107,30 +126,24 @@ def _build_assessment_result(row, inverted: bool = False) -> dict:
         if rank is None and mean is not None:
             rank = 5 if mean >= 4.2 else 4 if mean >= 3.4 else 3 if mean >= 2.6 else 2 if mean >= 1.8 else 1
         if rank is not None:
-            high_is_good = rank >= 4
-            low_is_bad = rank <= 2
             if inverted:
-                # High distress = concern; low distress = doing well.
-                if low_is_bad:
+                if rank <= 2:
                     strong_areas.append(label)
-                elif high_is_good:
+                elif rank >= 4:
                     weak_areas.append(label)
             else:
-                if high_is_good:
+                if rank >= 4:
                     strong_areas.append(label)
-                elif low_is_bad:
+                elif rank <= 2:
                     weak_areas.append(label)
 
     total = row["total_score"]
-    # Store overall as a 0-100 percentage (means are on a 1-5 scale). For an
-    # inverted (distress) assessment, invert so a high distress total reads as a
-    # low wellbeing score.
     if total is None:
         overall = None
         rating_score = None
     elif inverted:
         overall = round((1 - (total / 5.0)) * 100)
-        rating_score = 6 - total  # flip onto the 1-5 rating scale
+        rating_score = 6 - total
     else:
         overall = round((total / 5.0) * 100)
         rating_score = total
@@ -142,6 +155,9 @@ def _build_assessment_result(row, inverted: bool = False) -> dict:
         interpretation_bits.append("Needs support in " + ", ".join(weak_areas[:3]) + ".")
     interpretation = " ".join(interpretation_bits) or "Assessment completed."
 
+    submitted = row["submitted_at"]
+    updated = row["updated_at"]
+
     return {
         "overallScore": overall,
         "rating": _rating_from_score(rating_score),
@@ -149,70 +165,38 @@ def _build_assessment_result(row, inverted: bool = False) -> dict:
         "subScores": sub_scores,
         "weakAreas": weak_areas,
         "strongAreas": strong_areas,
-        "submittedAt": row["submitted_at"].isoformat() if row["submitted_at"] else None,
-        "updatedAt": row["updated_at"].isoformat() if row["updated_at"] else None,
+        "submittedAt": submitted.isoformat() if submitted else None,
+        "updatedAt": updated.isoformat() if updated else None,
     }
 
 
-def _parse_career_recommendations(scores) -> list[dict]:
-    """career_path rows store recommendations as a JSON string in
-    scores.career_recommendations."""
-    if not scores:
-        return []
-    raw = scores.get("career_recommendations")
-    if isinstance(raw, str):
-        try:
-            raw = json.loads(raw)
-        except (ValueError, TypeError):
-            return []
-    if not isinstance(raw, list):
-        return []
-
-    recommendations = []
-    for item in raw:
-        if not isinstance(item, dict):
-            continue
-        recommendations.append({
-            "title": item.get("title", "Recommendation"),
-            "description": item.get("description", ""),
-            "matchReason": item.get("matchReason", item.get("match_reason", "")),
-            "relatedStrengths": item.get("relatedStrengths", item.get("related_strengths", [])) or [],
-            "areasToImprove": item.get("areasToImprove", item.get("areas_to_improve", [])) or [],
-            "adminNote": item.get("adminNote", item.get("admin_note", "")),
-        })
-    return recommendations
-
-
 def _empty_dataset() -> dict:
-    dataset = {"learners": [], "careerRecommendations": {}}
-    for key in ASSESSMENT_CATEGORIES:
+    dataset: dict = {"learners": [], "careerRecommendations": {}, "skillsToDevelop": {}}
+    for _, (key, _) in COLUMN_TO_KEY.items():
         dataset[key] = {}
     return dataset
 
 
 def build_learner_dataset() -> dict:
-    """Query the wellbeing DB and assemble the full LearnerDataset."""
     dataset = _empty_dataset()
+
+    assessment_cols = list(COLUMN_TO_KEY.keys())
+    col_select = ", ".join(assessment_cols + ["career_recommendations", "skills_to_develop"])
 
     with connections["wellbeing"].cursor() as cursor:
         cursor.execute(
-            """
-            SELECT learner_id, learner_name, learner_email, assessment_type,
-                   scores, total_score, submitted_at, updated_at,
-                   "Reviewed" AS reviewed, "Status" AS status
+            f"""
+            SELECT id, learner_id, learner_name, learner_email,
+                   created_at, updated_at,
+                   "Reviewed" AS reviewed, "Status" AS status,
+                   {col_select}
             FROM self_assessment_quiz_responses
-            ORDER BY submitted_at ASC
+            ORDER BY updated_at ASC NULLS FIRST
             """
         )
         columns = [col[0] for col in cursor.description]
         rows = [dict(zip(columns, record)) for record in cursor.fetchall()]
 
-    # Normalise jsonb (some cursors return it as a raw string).
-    for row in rows:
-        row["scores"] = _as_json(row["scores"]) or {}
-
-    # Group rows per learner (keyed by email, falling back to name).
-    # learners[email] = {meta, categories: {key: best_row}, career: best_row}
     learners: dict[str, dict] = {}
 
     for row in rows:
@@ -227,55 +211,54 @@ def build_learner_dataset() -> dict:
             "name": name or (row["learner_email"] or "Unknown Learner"),
             "categories": {},
             "career": None,
+            "career_generated_at": None,
             "lastUpdated": None,
-            "reviewedAt": None,
             "reviewStatus": None,
-            "statusAt": None,
             "ticketStatus": None,
         })
-        # Keep the friendliest name / email we encounter.
+
         if name and bucket["name"] in ("", "Unknown Learner"):
             bucket["name"] = name
         if row["learner_email"] and not bucket["email"]:
             bucket["email"] = row["learner_email"]
 
-        submitted = row["submitted_at"]
-        if submitted and (bucket["lastUpdated"] is None or submitted > bucket["lastUpdated"]):
-            bucket["lastUpdated"] = submitted
+        row_updated = row.get("updated_at")
+        if row_updated and (bucket["lastUpdated"] is None or row_updated > bucket["lastUpdated"]):
+            bucket["lastUpdated"] = row_updated
 
-        # Per-learner review/status come from the Reviewed/Status columns; take
-        # the most recently submitted non-empty value.
         reviewed_val = (row.get("reviewed") or "").strip()
-        if reviewed_val and submitted and (bucket["reviewedAt"] is None or submitted >= bucket["reviewedAt"]):
+        if reviewed_val:
             bucket["reviewStatus"] = reviewed_val
-            bucket["reviewedAt"] = submitted
         status_val = (row.get("status") or "").strip()
-        if status_val and submitted and (bucket["statusAt"] is None or submitted >= bucket["statusAt"]):
+        if status_val:
             bucket["ticketStatus"] = status_val
-            bucket["statusAt"] = submitted
 
-        raw_type = (row["assessment_type"] or "").strip().lower()
+        # Process each assessment column
+        for col_name, (dataset_key, _inverted) in COLUMN_TO_KEY.items():
+            col_data = _as_json(row.get(col_name))
+            if not col_data or not isinstance(col_data, dict):
+                continue
 
-        if raw_type in CAREER_PATH_ALIASES:
-            prev = bucket["career"]
-            if prev is None or (submitted and submitted > prev["submitted_at"]):
-                bucket["career"] = row
-            continue
+            assessment_row = _extract_assessment_row(col_data, row_updated)
+            if assessment_row is None or assessment_row["total_score"] is None:
+                continue
 
-        key = ALIAS_TO_KEY.get(raw_type)
-        if key is None:
-            continue
+            prev = bucket["categories"].get(dataset_key)
+            prev_submitted = prev["submitted_at"] if prev else None
+            cur_submitted = assessment_row["submitted_at"]
+            if prev is None or (cur_submitted and (prev_submitted is None or cur_submitted > prev_submitted)):
+                bucket["categories"][dataset_key] = assessment_row
 
-        # Skip empty stub submissions (no scores / no total).
-        has_data = bool(row["scores"]) and row["total_score"] is not None
-        if not has_data:
-            continue
+        # Career recommendations
+        career_data = _as_json(row.get("career_recommendations"))
+        if career_data and isinstance(career_data, dict):
+            gen_at = _parse_datetime(career_data.get("generated_at"))
+            prev_gen = bucket["career_generated_at"]
+            if bucket["career"] is None or (gen_at and (prev_gen is None or gen_at > prev_gen)):
+                bucket["career"] = career_data
+                bucket["career_generated_at"] = gen_at
 
-        prev = bucket["categories"].get(key)
-        if prev is None or (submitted and submitted > prev["submitted_at"]):
-            bucket["categories"][key] = row
-
-    # Emit dataset entries.
+    # Emit dataset entries
     for index, (identity, bucket) in enumerate(sorted(learners.items()), start=1):
         ticket_id = f"LR-{index:04d}"
         category_rows = bucket["categories"]
@@ -284,21 +267,40 @@ def build_learner_dataset() -> dict:
         all_weak: list[str] = []
 
         for key, row in category_rows.items():
-            result = _build_assessment_result(row, inverted=(key == "wellbeingAssessment"))
+            _, inverted = next(v for v in COLUMN_TO_KEY.values() if v[0] == key)
+            result = _build_assessment_result(row, inverted=inverted)
             dataset[key][ticket_id] = result
             all_strong.extend(result["strongAreas"])
             all_weak.extend(result["weakAreas"])
 
-        recommendations = _parse_career_recommendations(
-            bucket["career"]["scores"] if bucket["career"] else None
-        )
+        # Parse career recommendations from new schema
+        career_data = bucket["career"]
+        recommendations = []
+        if career_data and isinstance(career_data, dict):
+            for item in career_data.get("recommendations", []):
+                if isinstance(item, dict):
+                    recommendations.append({
+                        "title": item.get("title", "Recommendation"),
+                        "description": item.get("description", ""),
+                        "matchReason": item.get("matchReason", ""),
+                        "relatedStrengths": [],
+                        "areasToImprove": [],
+                        "adminNote": "",
+                    })
         dataset["careerRecommendations"][ticket_id] = recommendations
+
+        # Skills to develop from career_recommendations column
+        skills_raw = career_data.get("skills_to_develop", []) if career_data else []
+        if isinstance(skills_raw, str):
+            try:
+                skills_raw = json.loads(skills_raw)
+            except (ValueError, TypeError):
+                skills_raw = []
+        dataset["skillsToDevelop"][ticket_id] = skills_raw if isinstance(skills_raw, list) else []
 
         completed = len(category_rows)
         completion = round((completed / TOTAL_ASSESSMENTS) * 100) if TOTAL_ASSESSMENTS else 0
 
-        # Risk: driven primarily by the wellbeing assessment, escalated by the
-        # overall count of weak areas.
         wellbeing = category_rows.get("wellbeingAssessment")
         risk = "Low"
         if wellbeing is not None:
@@ -312,7 +314,6 @@ def build_learner_dataset() -> dict:
         if len(all_weak) >= 7:
             risk = "High"
 
-        # Dedup while preserving order; cap the headline lists.
         def _top(items: list[str], limit: int) -> list[str]:
             seen, out = set(), []
             for item in items:
@@ -326,16 +327,21 @@ def build_learner_dataset() -> dict:
         recommended_career = recommendations[0]["title"] if recommendations else "Pending Assessment"
         last_updated = bucket["lastUpdated"].date().isoformat() if bucket["lastUpdated"] else ""
 
-        # Review status: persisted Reviewed column wins, else default.
         stored_review = (bucket["reviewStatus"] or "").strip()
+        reviewer_name = ""
+        # Support "Reviewed:Name" format for storing reviewer identity
+        if ":" in stored_review:
+            parts = stored_review.split(":", 1)
+            stored_review = parts[0].strip()
+            reviewer_name = parts[1].strip()
+
         if stored_review.lower() in ("reviewed", "yes", "true", "1"):
-            review_status, reviewed_by = "Reviewed", "Admin"
+            review_status, reviewed_by = "Reviewed", reviewer_name or ""
         elif stored_review and stored_review.lower() not in ("not reviewed", "no", "false", "0"):
-            review_status, reviewed_by = stored_review, "Admin"
+            review_status, reviewed_by = stored_review, reviewer_name or ""
         else:
             review_status, reviewed_by = "Not Reviewed", ""
 
-        # Ticket/overview status: persisted Status column wins, else derived.
         stored_status = (bucket["ticketStatus"] or "").strip()
         if stored_status:
             overview_status = stored_status
@@ -368,22 +374,69 @@ def build_learner_dataset() -> dict:
 @require_GET
 @never_cache
 def learner_result_tickets(_request):
-    """Return the live learner-result dataset consumed by the
-    Learner Result Tickets page."""
     return JsonResponse(build_learner_dataset())
+
+
+@require_GET
+@never_cache
+def learner_history(request):
+    """Return all submissions for a learner ordered by date.
+
+    Query param: email (required)
+    Returns a list of submissions, each with per-assessment overallScore + rating.
+    """
+    email = (request.GET.get("email") or "").strip()
+    if not email:
+        return JsonResponse({"error": "email is required."}, status=400)
+
+    assessment_cols = list(COLUMN_TO_KEY.keys())
+    col_select = ", ".join(assessment_cols + ["career_recommendations"])
+
+    with connections["wellbeing"].cursor() as cursor:
+        cursor.execute(
+            f"""
+            SELECT id, created_at, updated_at, {col_select}
+            FROM self_assessment_quiz_responses
+            WHERE lower(learner_email) = lower(%s)
+            ORDER BY created_at ASC
+            """,
+            [email],
+        )
+        columns = [col[0] for col in cursor.description]
+        rows = [dict(zip(columns, record)) for record in cursor.fetchall()]
+
+    submissions = []
+    for row in rows:
+        assessments = {}
+        for col_name, (dataset_key, inverted) in COLUMN_TO_KEY.items():
+            col_data = _as_json(row.get(col_name))
+            if not col_data or not isinstance(col_data, dict):
+                continue
+            assessment_row = _extract_assessment_row(col_data, row.get("updated_at"))
+            if assessment_row is None or assessment_row["total_score"] is None:
+                continue
+            result = _build_assessment_result(assessment_row, inverted=inverted)
+            assessments[dataset_key] = {
+                "overallScore": result["overallScore"],
+                "rating": result["rating"],
+                "subScores": result["subScores"],
+                "submittedAt": result["submittedAt"],
+            }
+
+        created = row.get("created_at")
+        submissions.append({
+            "submissionId": row["id"],
+            "date": created.date().isoformat() if created else None,
+            "assessments": assessments,
+        })
+
+    return JsonResponse({"submissions": submissions})
 
 
 @csrf_exempt
 @require_POST
 @never_cache
 def update_learner_review(request):
-    """Persist per-learner review/status into the wellbeing table.
-
-    Body (JSON): { "email": "...", "reviewStatus"?: "Reviewed"|"Not Reviewed",
-                   "ticketStatus"?: "Completed"|"In Progress"|... }
-    Updates the Reviewed / Status columns for every row belonging to that learner
-    so the state is shared across their submissions.
-    """
     try:
         payload = json.loads(request.body or b"{}")
     except (ValueError, TypeError):
@@ -395,8 +448,11 @@ def update_learner_review(request):
 
     sets, params = [], []
     if "reviewStatus" in payload:
+        status = (payload.get("reviewStatus") or "").strip() or None
+        reviewer = (payload.get("reviewedBy") or "").strip()
+        combined = f"{status}:{reviewer}" if status and reviewer else status
         sets.append('"Reviewed" = %s')
-        params.append((payload.get("reviewStatus") or "").strip() or None)
+        params.append(combined)
     if "ticketStatus" in payload:
         sets.append('"Status" = %s')
         params.append((payload.get("ticketStatus") or "").strip() or None)
