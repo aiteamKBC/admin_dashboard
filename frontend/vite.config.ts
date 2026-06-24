@@ -14,7 +14,7 @@ export default defineConfig({
     proxy: {
       // Local Django accounts API (evidence marking) - MUST BE FIRST
       "/api/accounts": {
-        target: "http://127.0.0.1:8000",
+        target: "http://127.0.0.1:8001",
         changeOrigin: true,
       },
 
@@ -28,13 +28,13 @@ export default defineConfig({
 
       // Local Django tasks API
       "/tasks-api": {
-        target: "http://127.0.0.1:8000",
+        target: "http://127.0.0.1:8001",
         changeOrigin: true,
       },
 
       // Local Django auth API
       "/auth": {
-        target: "http://127.0.0.1:8000",
+        target: "http://127.0.0.1:8001",
         changeOrigin: true,
       },
     },
