@@ -46,6 +46,31 @@ html, body, #root {
   background-color: rgba(17, 24, 39, 0.30);
 }
 
+.whoiam-table-scroll {
+  scrollbar-width: thin;
+  scrollbar-color: #b79ae8 #f5f0ff;
+}
+
+.whoiam-table-scroll::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+.whoiam-table-scroll::-webkit-scrollbar-track {
+  background: #f5f0ff;
+  border-radius: 9999px;
+}
+
+.whoiam-table-scroll::-webkit-scrollbar-thumb {
+  background-color: #b79ae8;
+  border: 2px solid #f5f0ff;
+  border-radius: 9999px;
+}
+
+.whoiam-table-scroll:hover::-webkit-scrollbar-thumb {
+  background-color: #9b78dc;
+}
+
 /* ================== Nice form controls ================== */
 
 .kbc-select,

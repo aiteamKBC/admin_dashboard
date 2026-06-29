@@ -152,7 +152,7 @@ function ExamChecklist({ ticketId, data }: { ticketId: string; data: LearnerData
   const allDone = done === total;
 
   return (
-    <div className="flex flex-col gap-1.5 min-w-[160px]">
+    <div className="flex max-w-[240px] flex-col gap-1.5">
       {/* Badge + progress */}
       <div className="flex items-center gap-2">
         <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold whitespace-nowrap ${allDone ? 'bg-secondary-100 text-secondary-700' : 'bg-accent-100 text-accent-700'}`}>
@@ -171,15 +171,15 @@ function ExamChecklist({ ticketId, data }: { ticketId: string; data: LearnerData
       </div>
       {/* Show tags only if not all done */}
       {!allDone && (
-        <div className="flex flex-wrap gap-1">
+        <div className="grid grid-cols-2 gap-1">
           {EXAM_KEYS.map(([key, label]) => {
             const isDone = !!(data[key as keyof LearnerDataset] as Record<string, unknown>)[ticketId];
             return isDone ? (
-              <span key={key} className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded text-[10px] bg-secondary-50 text-secondary-700">
+              <span key={key} title={label} className="inline-flex min-w-0 items-center gap-0.5 truncate rounded px-1.5 py-0.5 text-[10px] leading-4 bg-secondary-50 text-secondary-700">
                 <i className="ri-check-line text-secondary-500" />{label}
               </span>
             ) : (
-              <span key={key} className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded text-[10px] bg-background-200 text-foreground-400 line-through">
+              <span key={key} title={label} className="inline-flex min-w-0 items-center gap-0.5 truncate rounded px-1.5 py-0.5 text-[10px] leading-4 bg-background-200 text-foreground-500">
                 {label}
               </span>
             );
@@ -192,38 +192,40 @@ function ExamChecklist({ ticketId, data }: { ticketId: string; data: LearnerData
 
 export default function TableView({ tickets, data, onViewDetails, onStatusChange, onMarkReviewed, onExport, onReviewedByChange }: TableViewProps) {
   return (
-    <div className="bg-background-50 rounded-2xl border border-background-200/70 overflow-hidden shadow-sm">
-      <div className="overflow-x-auto">
-        <table className="w-full min-w-[1400px] text-sm">
+    <div className="max-w-full overflow-hidden rounded-2xl border border-background-200/70 bg-background-50 shadow-sm">
+      <div className="whoiam-table-scroll overflow-x-auto pb-1">
+        <table className="w-full min-w-[1120px] text-sm xl:min-w-full">
           <thead>
             <tr className="border-b border-background-200 bg-background-100">
-              <th className="text-left px-4 py-3 text-xs font-semibold text-foreground-600 whitespace-nowrap">Learner ID</th>
-              <th className="text-left px-4 py-3 text-xs font-semibold text-foreground-600 whitespace-nowrap">Learner</th>
-              <th className="text-left px-4 py-3 text-xs font-semibold text-foreground-600 whitespace-nowrap">Email</th>
-              <th className="text-left px-4 py-3 text-xs font-semibold text-foreground-600 whitespace-nowrap">Completion</th>
-              <th className="text-left px-4 py-3 text-xs font-semibold text-foreground-600 whitespace-nowrap">Exams</th>
-              <th className="text-left px-4 py-3 text-xs font-semibold text-foreground-600 whitespace-nowrap">Risk</th>
-              <th className="text-left px-4 py-3 text-xs font-semibold text-foreground-600 whitespace-nowrap">Status</th>
-              <th className="text-left px-4 py-3 text-xs font-semibold text-foreground-600 whitespace-nowrap">Review</th>
-              <th className="text-left px-4 py-3 text-xs font-semibold text-foreground-600 whitespace-nowrap">Last Updated</th>
-              <th className="text-left px-4 py-3 text-xs font-semibold text-foreground-600 whitespace-nowrap">Reviewed By</th>
-              <th className="text-left px-4 py-3 text-xs font-semibold text-foreground-600 whitespace-nowrap">Actions</th>
+              <th className="w-[88px] px-3 py-3 text-left text-xs font-semibold text-foreground-600 whitespace-nowrap">Learner ID</th>
+              <th className="w-[190px] px-3 py-3 text-left text-xs font-semibold text-foreground-600 whitespace-nowrap">Learner</th>
+              <th className="w-[210px] px-3 py-3 text-left text-xs font-semibold text-foreground-600 whitespace-nowrap">Email</th>
+              <th className="w-[120px] px-3 py-3 text-left text-xs font-semibold text-foreground-600 whitespace-nowrap">Completion</th>
+              <th className="w-[260px] px-3 py-3 text-left text-xs font-semibold text-foreground-600 whitespace-nowrap">Exams</th>
+              <th className="w-[88px] px-3 py-3 text-left text-xs font-semibold text-foreground-600 whitespace-nowrap">Risk</th>
+              <th className="w-[145px] px-3 py-3 text-left text-xs font-semibold text-foreground-600 whitespace-nowrap">Status</th>
+              <th className="w-[130px] px-3 py-3 text-left text-xs font-semibold text-foreground-600 whitespace-nowrap">Review</th>
+              <th className="hidden w-[120px] px-3 py-3 text-left text-xs font-semibold text-foreground-600 whitespace-nowrap 2xl:table-cell">Last Updated</th>
+              <th className="hidden w-[130px] px-3 py-3 text-left text-xs font-semibold text-foreground-600 whitespace-nowrap 2xl:table-cell">Reviewed By</th>
+              <th className="w-[116px] px-3 py-3 text-left text-xs font-semibold text-foreground-600 whitespace-nowrap">Actions</th>
             </tr>
           </thead>
           <tbody>
             {tickets.map((ticket) => (
               <tr key={ticket.id} className="border-b border-background-100 hover:bg-background-100/50 transition-colors">
-                <td className="px-4 py-3 text-xs font-mono text-foreground-600 whitespace-nowrap">{ticket.id}</td>
-                <td className="px-4 py-3">
+                <td className="px-3 py-3 text-xs font-mono text-foreground-600 whitespace-nowrap">{ticket.id}</td>
+                <td className="px-3 py-3">
                   <div className="flex items-center gap-2">
                     <div className="w-7 h-7 rounded-full bg-primary-100 flex items-center justify-center flex-shrink-0">
                       <span className="text-xs font-bold text-primary-700">{ticket.name.split(' ').map(n => n[0]).join('')}</span>
                     </div>
-                    <span className="text-xs font-medium text-foreground-800 whitespace-nowrap">{ticket.name}</span>
+                    <span title={ticket.name} className="min-w-0 max-w-[130px] truncate text-xs font-medium text-foreground-800">{ticket.name}</span>
                   </div>
                 </td>
-                <td className="px-4 py-3 text-xs text-foreground-600 whitespace-nowrap">{ticket.email}</td>
-                <td className="px-4 py-3">
+                <td className="px-3 py-3 text-xs text-foreground-600">
+                  <span title={ticket.email} className="block max-w-[180px] truncate">{ticket.email}</span>
+                </td>
+                <td className="px-3 py-3">
                   <div className="flex items-center gap-2">
                     <div className="w-16 h-1.5 bg-background-200 rounded-full overflow-hidden">
                       <div
@@ -234,13 +236,13 @@ export default function TableView({ tickets, data, onViewDetails, onStatusChange
                     <span className="text-xs font-medium text-foreground-800 whitespace-nowrap">{ticket.assessmentCompletion}%</span>
                   </div>
                 </td>
-                <td className="px-4 py-4">
+                <td className="px-3 py-4">
                   <ExamChecklist ticketId={ticket.id} data={data} />
                 </td>
-                <td className="px-4 py-3">
+                <td className="px-3 py-3">
                   <span className={`px-2 py-0.5 rounded-full text-xs font-medium whitespace-nowrap ${getRiskColor(ticket.overallRisk)}`}>{ticket.overallRisk}</span>
                 </td>
-                <td className="px-4 py-3">
+                <td className="px-3 py-3">
                   <div className="relative">
                     <select
                       value={ticket.ticketStatus}
@@ -254,14 +256,14 @@ export default function TableView({ tickets, data, onViewDetails, onStatusChange
                     <i className="ri-arrow-down-s-line absolute right-2 top-1/2 -translate-y-1/2 text-xs text-foreground-500 pointer-events-none"></i>
                   </div>
                 </td>
-                <td className="px-4 py-3">
+                <td className="px-3 py-3">
                   <span className={`px-2 py-0.5 rounded-full text-xs font-medium whitespace-nowrap ${getReviewColor(ticket.reviewStatus)}`}>{ticket.reviewStatus}</span>
                 </td>
-                <td className="px-4 py-3 text-xs text-foreground-600 whitespace-nowrap">{ticket.lastUpdated}</td>
-                <td className="px-4 py-3">
+                <td className="hidden px-3 py-3 text-xs text-foreground-600 whitespace-nowrap 2xl:table-cell">{ticket.lastUpdated}</td>
+                <td className="hidden px-3 py-3 2xl:table-cell">
                   <ReviewedByCell value={ticket.reviewedBy} onChange={(name) => onReviewedByChange(ticket.id, name)} />
                 </td>
-                <td className="px-4 py-3">
+                <td className="px-3 py-3">
                   <div className="flex items-center gap-1.5">
                     <button onClick={() => onViewDetails(ticket.id)} className="w-8 h-8 rounded-md bg-primary-500 text-background-50 hover:bg-primary-600 transition-colors cursor-pointer flex items-center justify-center" title="View details">
                       <i className="ri-eye-line"></i>

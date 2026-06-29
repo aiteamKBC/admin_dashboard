@@ -5,7 +5,6 @@ import TicketCard from './components/TicketCard';
 import TableView from './components/TableView';
 import TicketDetailDrawer from './components/TicketDetailDrawer';
 import { useLearnerData, type Learner, type LearnerDataset } from './useLearnerData';
-import dashboardAdvisor from '@/assets/dashboard-advisor.png';
 
 const assessmentExportKeys = [
   ['wellbeingAssessment', 'Wellbeing Assessment'],
@@ -403,12 +402,12 @@ export default function AdminLearnerResultTickets() {
   return (
     <div className="min-h-screen">
       <div className="w-full space-y-7">
-        <div className="relative overflow-hidden rounded-3xl px-5 md:px-8 py-8 shadow-lg min-h-[14rem] xl:min-h-[15rem] bg-gradient-to-br from-[#241453] via-[#3B1F72] to-[#5B3AA6]">
+        <div className="relative overflow-hidden rounded-3xl px-5 md:px-8 py-8 shadow-lg bg-gradient-to-br from-[#241453] via-[#3B1F72] to-[#5B3AA6]">
           {/* decorative glow */}
           <div aria-hidden="true" className="pointer-events-none absolute -top-24 -right-10 h-72 w-72 rounded-full bg-white/10 blur-3xl"></div>
           <div aria-hidden="true" className="pointer-events-none absolute -bottom-24 left-1/3 h-64 w-64 rounded-full bg-[#A56408]/20 blur-3xl"></div>
 
-          <div className="relative z-10 flex flex-col lg:flex-row lg:items-start lg:justify-between gap-5 lg:pr-72 xl:pr-[26rem]">
+          <div className="relative z-10 flex flex-col gap-5 lg:flex-row lg:items-start lg:justify-between">
             <div className="max-w-3xl">
               <span className="inline-flex items-center gap-1.5 rounded-full bg-white/15 px-3 py-1 text-xs font-medium text-white/90 backdrop-blur-sm">
                 <i className="ri-bar-chart-box-line"></i>Who I Am
@@ -416,26 +415,20 @@ export default function AdminLearnerResultTickets() {
               <h2 className="mt-3 text-2xl md:text-3xl font-bold text-white">Who I Am Overview</h2>
               <p className="text-sm text-white/70 mt-1.5">Monitor assessment completion, risk patterns, review workload, and career recommendations.</p>
             </div>
-            <div className="flex flex-col sm:flex-row gap-3">
-              <a href="/coach-wellbeing" className="inline-flex items-center justify-center px-5 py-3 text-sm font-semibold bg-white text-[#241453] rounded-xl hover:bg-white/90 transition-colors cursor-pointer whitespace-nowrap shadow-sm">
+            <div className="flex shrink-0 flex-col sm:flex-row gap-3">
+              <a href="/coach-wellbeing" className="inline-flex h-10 items-center justify-center px-4 text-sm font-semibold bg-white text-[#241453] rounded-xl hover:bg-white/90 transition-colors cursor-pointer whitespace-nowrap shadow-sm">
                 <i className="ri-arrow-left-line mr-1.5"></i>Back to Dashboard
               </a>
             </div>
           </div>
 
-          <div className="relative z-10 flex flex-wrap gap-2 mt-5 lg:pr-72 xl:pr-[26rem]">
+          <div className="relative z-10 flex flex-wrap gap-2 mt-5">
             <span className="px-3 py-1 rounded-full text-xs font-medium bg-white/15 text-white backdrop-blur-sm whitespace-nowrap"><strong>{totalTickets}</strong> Total Learners</span>
             <span className="px-3 py-1 rounded-full text-xs font-medium bg-emerald-400/20 text-emerald-50 backdrop-blur-sm whitespace-nowrap"><strong>{completedTickets}</strong> Completed</span>
             <span className="px-3 py-1 rounded-full text-xs font-medium bg-amber-400/20 text-amber-50 backdrop-blur-sm whitespace-nowrap"><strong>{incompleteTickets}</strong> Incomplete</span>
             <span className="px-3 py-1 rounded-full text-xs font-medium bg-red-400/25 text-red-50 backdrop-blur-sm whitespace-nowrap"><strong>{highRiskLearners}</strong> High Risk</span>
             <span className="px-3 py-1 rounded-full text-xs font-medium bg-white/15 text-white backdrop-blur-sm whitespace-nowrap"><strong>{readyForReview}</strong> Ready for Review</span>
           </div>
-          <img
-            src={dashboardAdvisor}
-            alt=""
-            aria-hidden="true"
-            className="hidden lg:block pointer-events-none select-none absolute right-8 xl:right-12 bottom-0 h-52 xl:h-56 w-72 xl:w-80 object-contain object-bottom drop-shadow-2xl"
-          />
         </div>
 
         <div className="bg-background-50 rounded-3xl border border-background-200/70 px-5 md:px-7 py-6 shadow-sm space-y-5">

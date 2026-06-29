@@ -4,6 +4,7 @@ export async function getCoachWellbeing(coachEmail?: string, compact = false) {
   const params = new URLSearchParams();
   if (coachEmail) params.set("coach_email", coachEmail);
   if (compact) params.set("compact", "1");
+  params.set("_", String(Date.now()));
   const query = params.toString() ? `?${params.toString()}` : "";
   return await fetchWithAuth(`/coach-wellbeing-dashboard/${query}`);
 }

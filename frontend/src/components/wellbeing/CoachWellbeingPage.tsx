@@ -2085,11 +2085,11 @@ function CoachSelect({
   }, [open]);
 
   return (
-    <div ref={rootRef} className="relative block w-full sm:w-[300px]">
+    <div ref={rootRef} className="relative block w-full sm:w-auto xl:w-[190px]">
       <button
         type="button"
         onClick={() => setOpen((prev) => !prev)}
-        className={`flex h-12 w-full items-center justify-between gap-3 rounded-2xl border bg-white px-4 text-left text-sm font-semibold text-[#241453] shadow-sm transition ${
+        className={`flex h-11 w-full items-center justify-between gap-3 rounded-2xl border bg-white px-4 text-left text-sm font-semibold text-[#241453] shadow-sm transition ${
           open
             ? "border-[#BFAFEA] ring-4 ring-[#F1ECFF]"
             : "border-[#DED5F3] hover:border-[#CFC2EE]"
@@ -7832,7 +7832,7 @@ export default function CoachWellbeingPage({ setMobileOpen, isDesktop }: CoachWe
             </div>
           </div>
 
-          <div className="flex w-full flex-col gap-3 lg:flex-row lg:items-center 2xl:w-auto">
+          <div className="grid w-full grid-cols-1 gap-3 sm:grid-cols-2 xl:flex xl:flex-wrap xl:items-center 2xl:flex-nowrap">
             {role === "qa" ? (
               <CoachSelect
                 value={selectedCoachEmail}
@@ -7848,7 +7848,7 @@ export default function CoachWellbeingPage({ setMobileOpen, isDesktop }: CoachWe
                 onClick={() => {
                   setActiveViewHistory([]);
                 }}
-                className="inline-flex h-12 items-center justify-center gap-2 rounded-2xl bg-[#241453] px-5 text-sm font-medium text-white shadow-sm transition hover:bg-[#362063]"
+                className="inline-flex h-11 w-full items-center justify-center gap-2 whitespace-nowrap rounded-2xl bg-[#241453] px-4 text-sm font-medium text-white shadow-sm transition hover:bg-[#362063] sm:w-auto"
               >
                 <ArrowLeft className="h-4 w-4" />
                 {wellbeingBackLabel}
@@ -7865,7 +7865,7 @@ export default function CoachWellbeingPage({ setMobileOpen, isDesktop }: CoachWe
                       setTicketFilters(emptyFilters);
                       setTicketsLoading(true);
                     }}
-                    className="inline-flex h-12 items-center justify-center gap-2 rounded-2xl bg-[#3B1F72] px-5 text-sm font-semibold text-white shadow-sm transition hover:bg-[#2D1768]"
+                    className="inline-flex h-11 w-full shrink-0 items-center justify-center gap-2 whitespace-nowrap rounded-2xl bg-[#3B1F72] px-4 text-sm font-semibold text-white shadow-sm transition hover:bg-[#2D1768] sm:w-auto xl:w-[198px]"
                   >
                     <Ticket className="h-4 w-4" />
                     Safeguarding Tickets
@@ -7873,29 +7873,29 @@ export default function CoachWellbeingPage({ setMobileOpen, isDesktop }: CoachWe
                 )}
                 <a
                   href={wellbeingPathForView("onboarding")}
-                  className="inline-flex h-12 items-center justify-center gap-2 rounded-2xl bg-[#A56408] px-5 text-sm font-semibold text-white shadow-sm transition hover:bg-[#7A4300]"
+                  className="inline-flex h-11 w-full shrink-0 items-center justify-center gap-2 whitespace-nowrap rounded-2xl bg-[#A56408] px-4 text-sm font-semibold text-white shadow-sm transition hover:bg-[#7A4300] sm:w-auto xl:w-[190px]"
                 >
                   <ClipboardList className="h-4 w-4" />
                   Onboarding Tickets
                 </a>
                 <a
                   href="/learner-result-tickets"
-                  className="inline-flex h-12 items-center justify-center gap-2 rounded-2xl bg-[#0F7E73] px-5 text-sm font-semibold text-white shadow-sm transition hover:bg-[#0B5E56]"
+                  className="inline-flex h-11 w-full shrink-0 items-center justify-center gap-2 whitespace-nowrap rounded-2xl bg-[#64748B] px-4 text-sm font-semibold text-white shadow-sm transition hover:bg-[#475569] sm:w-auto xl:w-[168px]"
                 >
                   <ClipboardCheck className="h-4 w-4" />
-                  Who I Am Reviews
+                  Who I'm Tickets
                 </a>
               </>
             )}
 
             {activeView === "dashboard" && (
-              <div className="flex h-12 w-full items-center gap-2 rounded-2xl border border-[#E7E2F3] bg-[#FBFAFE] px-4 lg:min-w-[320px] lg:max-w-[460px]">
+              <div className="flex h-11 w-full min-w-0 items-center gap-2 overflow-hidden rounded-2xl border border-[#E7E2F3] bg-[#FBFAFE] px-4 sm:col-span-2 xl:min-w-[280px] xl:flex-1 2xl:w-[380px] 2xl:flex-none">
                 <Search className="h-4 w-4 shrink-0 text-[#8E82AA]" />
                 <input
                   value={search}
                   onChange={(e) => setSearch(e.target.value)}
                   placeholder="Search tickets, learners, programme, action..."
-                  className="w-full bg-transparent text-sm outline-none"
+                  className="min-w-0 w-full bg-transparent text-sm outline-none"
                 />
               </div>
             )}

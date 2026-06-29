@@ -1131,6 +1131,17 @@ def _clear_wellbeing_runtime_caches():
     _SUPPORT_TICKETS_LIST_CACHE.clear()
 
 
+def _with_fresh_caseload(data, active_caseload):
+    if active_caseload is None or not isinstance(data, dict):
+        return data
+
+    fresh_data = dict(data)
+    summary = dict(fresh_data.get("summary") or {})
+    summary["caseload"] = active_caseload
+    fresh_data["summary"] = summary
+    return fresh_data
+
+
 def compute_true_triggered_questions_from_submission(submission_json, question_map=None):
     if not submission_json:
         return []
@@ -1827,7 +1838,7 @@ def coach_wellbeing_dashboard(request):
         cached = _DASHBOARD_COMPACT_CACHE.get(cache_key)
         now = time.monotonic()
         if cached and now < cached.get("expires_at", 0):
-            return Response(cached["data"])
+            return Response(_with_fresh_caseload(cached["data"], active_caseload))
 
     monitoring_fields = [
         "id",
