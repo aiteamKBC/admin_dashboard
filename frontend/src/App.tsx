@@ -13,6 +13,7 @@ import useMediaQuery from "./helpers/useMediaQuery";
 
 const CoachWellbeingPage = lazy(() => import("./components/wellbeing/CoachWellbeingPage"));
 const LearnerResultTickets = lazy(() => import("./pages/admin/learner-result-tickets/page"));
+const ConnectMicrosoftPage = lazy(() => import("./components/ConnectMicrosoftPage"));
 
 function DashboardPage({ onOpenSidebar }: { onOpenSidebar: () => void }) {
   return <AnalyticsMeetings onOpenSidebar={onOpenSidebar} />;
@@ -132,6 +133,18 @@ export default function App() {
                 <RequireRole allow={["qa", "coach"]}>
                   <Suspense fallback={<div className="min-h-screen rounded-3xl bg-white p-6 text-sm text-slate-500">Loading learner results...</div>}>
                     <LearnerResultTickets />
+                  </Suspense>
+                </RequireRole>
+              }
+            />
+
+            {/* Connect Microsoft */}
+            <Route
+              path="/connect-microsoft"
+              element={
+                <RequireRole allow={["qa", "coach"]}>
+                  <Suspense fallback={<div className="min-h-screen rounded-3xl bg-white p-6 text-sm text-slate-500">Loading...</div>}>
+                    <ConnectMicrosoftPage />
                   </Suspense>
                 </RequireRole>
               }

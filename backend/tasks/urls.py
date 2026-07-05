@@ -26,6 +26,8 @@ from .views import (
     update_onboarding_report,
     archive_onboarding_report,
     restore_onboarding_report,
+    connect_microsoft,
+    microsoft_callback,
 )
 from accounts.booking_views import CreateBookingView, BookingDiagnosticView, BookingServicesView, BookingAvailabilityView, BookingFixServiceView, BookingTestCreateView, BookingPublishView, BookingStaffView
 
@@ -64,4 +66,6 @@ path("support-tickets/<int:ticket_id>/", update_support_ticket, name="update-sup
     path("onboarding-reports/<str:report_id>/update/", update_onboarding_report, name="update-onboarding-report"),
     path("onboarding-reports/<str:report_id>/archive/", archive_onboarding_report, name="archive-onboarding-report"),
     path("onboarding-reports/<str:report_id>/restore/", restore_onboarding_report, name="restore-onboarding-report"),
+    path("microsoft/connect/", connect_microsoft, name="microsoft-connect"),
+    path("microsoft/callback/", microsoft_callback, name="microsoft-callback"),
 ]

@@ -93,6 +93,12 @@ DATABASES = {
         conn_health_checks=True,
         ssl_require=True,
     ),
+    "transcript": dj_database_url.parse(
+        os.getenv("DATABASE_URL_TRANSCRIPT"),
+        conn_max_age=600,
+        conn_health_checks=True,
+        ssl_require=True,
+    ),
 }
 
 # =========================

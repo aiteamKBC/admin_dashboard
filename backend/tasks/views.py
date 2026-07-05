@@ -28,7 +28,7 @@ from django.db.models.functions import Lower, Trim
 import json
 from collections import Counter
 
-from .models import SafeguardingWellbeingAutomation, WellbeingSafeguardingMonitoringSystem, CoachData, SupportTicket, LearnerInclusivenessReport, SafeguardingQuestion
+from .models import SafeguardingWellbeingAutomation, WellbeingSafeguardingMonitoringSystem, CoachData, SupportTicket, LearnerInclusivenessReport, SafeguardingQuestion, Coach, MicrosoftOAuthState, MicrosoftConnection
 from .serializers import CoachTaskCreateSerializer, CoachTaskUpdateSerializer
 
 import os
@@ -3912,4 +3912,203 @@ def restore_onboarding_report(request, report_id: str):
     report.save(using="wellbeing", update_fields=["is_archived"])
     _clear_onboarding_reports_cache()
     return Response({"detail": "Onboarding ticket restored"})
+
+
+# ─── Microsoft OAuth ──────────────────────────────────────────────────────────
+
+import secrets
+import urllib.parse
+import urllib.request
+import urllib.error
+import json as _json
+from datetime import timedelta
+from django.shortcuts import redirect as _redirect
+from django.http import HttpResponse as _HttpResponse
+
+_MS_SCOPES = " ".join([
+    "offline_access", "openid", "profile", "User.Read",
+    "Calendars.Read", "OnlineMeetings.Read",
+    "OnlineMeetingArtifact.Read.All", "OnlineMeetingTranscript.Read.All",
+])
+
+
+def _connect_ms_settings(request):
+    redirect_uri = os.getenv("MS_CONNECT_REDIRECT_URI", "").strip()
+    if not redirect_uri:
+        redirect_uri = request.build_absolute_uri("/tasks-api/microsoft/callback/")
+
+    return {
+        "client_id": os.getenv("MS_CONNECT_CLIENT_ID", "").strip(),
+        "client_secret": os.getenv("MS_CONNECT_CLIENT_SECRET", "").strip(),
+        "tenant_auth": os.getenv("MS_CONNECT_TENANT_AUTH", "organizations").strip() or "organizations",
+        "tenant_token": os.getenv("MS_CONNECT_TENANT_ID", "").strip(),
+        "redirect_uri": redirect_uri,
+        "frontend_url": os.getenv("FRONTEND_URL", "http://localhost:5173").strip() or "http://localhost:5173",
+    }
+
+
+def _connect_ms_frontend_redirect(request, *, success=False, error=""):
+    cfg = _connect_ms_settings(request)
+    params = {"success": "1"} if success else {"error": error or "Microsoft connection failed"}
+    return _redirect(f"{cfg['frontend_url'].rstrip('/')}/connect-microsoft?{urllib.parse.urlencode(params)}")
+
+
+def _ms_post(url, data: dict):
+    payload = urllib.parse.urlencode(data).encode()
+    req = urllib.request.Request(url, data=payload, method="POST")
+    req.add_header("Content-Type", "application/x-www-form-urlencoded")
+    with urllib.request.urlopen(req, timeout=30) as resp:
+        return _json.loads(resp.read().decode())
+
+
+def _ms_get(url, access_token: str):
+    req = urllib.request.Request(url)
+    req.add_header("Authorization", f"Bearer {access_token}")
+    with urllib.request.urlopen(req, timeout=30) as resp:
+        return _json.loads(resp.read().decode())
+
+
+@api_view(["GET"])
+@permission_classes([AllowAny])
+def connect_microsoft(request):
+    cfg = _connect_ms_settings(request)
+    if not cfg["client_id"] or not cfg["client_secret"]:
+        return _connect_ms_frontend_redirect(
+            request,
+            error="Microsoft connection is not configured on the server.",
+        )
+
+    coach_id_raw = (request.GET.get("coach_id") or "").strip()
+    try:
+        coach_id = int(coach_id_raw)
+        if coach_id <= 0:
+            raise ValueError()
+    except (ValueError, TypeError):
+        return _HttpResponse("Invalid coach_id", status=400)
+
+    coach = Coach.objects.using("transcript").filter(id=coach_id).first()
+    if not coach:
+        return _connect_ms_frontend_redirect(request, error="Coach ID was not found.")
+
+    state = f"coach_{coach_id}_{secrets.token_urlsafe(16)}"
+    redirect_uri = cfg["redirect_uri"]
+    expires_at = timezone.now() + timedelta(minutes=10)
+
+    MicrosoftOAuthState.objects.using("transcript").filter(coach_id=coach_id).delete()
+    MicrosoftOAuthState.objects.using("transcript").create(
+        coach_id=coach_id,
+        state=state,
+        redirect_uri=redirect_uri,
+        expires_at=expires_at,
+        used=False,
+    )
+
+    params = {
+        "client_id": cfg["client_id"],
+        "response_type": "code",
+        "redirect_uri": redirect_uri,
+        "scope": _MS_SCOPES,
+        "response_mode": "query",
+        "state": state,
+    }
+    oauth_url = (
+        f"https://login.microsoftonline.com/{cfg['tenant_auth']}/oauth2/v2.0/authorize?"
+        + urllib.parse.urlencode(params)
+    )
+    return _redirect(oauth_url)
+
+
+@api_view(["GET"])
+@permission_classes([AllowAny])
+def microsoft_callback(request):
+    code  = (request.GET.get("code")  or "").strip()
+    state = (request.GET.get("state") or "").strip()
+    oauth_error = (request.GET.get("error_description") or request.GET.get("error") or "").strip()
+
+    if oauth_error:
+        return _connect_ms_frontend_redirect(request, error=oauth_error)
+
+    if not code or not state:
+        return _connect_ms_frontend_redirect(request, error="Missing code or state from Microsoft.")
+
+    state_row = MicrosoftOAuthState.objects.using("transcript").filter(state=state).first()
+    if not state_row:
+        return _connect_ms_frontend_redirect(request, error="Invalid or expired Microsoft connection link.")
+
+    if state_row.used or state_row.expires_at < timezone.now():
+        return _connect_ms_frontend_redirect(request, error="Invalid or expired Microsoft connection link.")
+
+    try:
+        cfg = _connect_ms_settings(request)
+        token_url = f"https://login.microsoftonline.com/{cfg['tenant_token']}/oauth2/v2.0/token"
+        token_json = _ms_post(token_url, {
+            "client_id":     cfg["client_id"],
+            "client_secret": cfg["client_secret"],
+            "redirect_uri":  state_row.redirect_uri,
+            "code":          code,
+            "grant_type":    "authorization_code",
+        })
+    except urllib.error.HTTPError as exc:
+        try:
+            detail = _json.loads(exc.read().decode()).get("error_description")
+        except Exception:
+            detail = ""
+        return _connect_ms_frontend_redirect(request, error=detail or "Failed to exchange code for token.")
+    except Exception:
+        return _connect_ms_frontend_redirect(request, error="Failed to exchange code for token.")
+
+    access_token = token_json.get("access_token", "")
+    if not access_token:
+        return _connect_ms_frontend_redirect(request, error="Microsoft did not return an access token.")
+
+    try:
+        me = _ms_get("https://graph.microsoft.com/v1.0/me", access_token)
+    except Exception:
+        me = {}
+
+    now = timezone.now()
+    expires_in = int(token_json.get("expires_in", 3600))
+    token_expires_at = now + timedelta(seconds=expires_in)
+
+    try:
+        conn = MicrosoftConnection.objects.using("transcript").get(coach_id=state_row.coach_id)
+        conn.microsoft_user_id = me.get("id")
+        conn.microsoft_email   = me.get("mail") or me.get("userPrincipalName")
+        conn.access_token      = token_json.get("access_token")
+        conn.refresh_token     = token_json.get("refresh_token")
+        conn.token_type        = token_json.get("token_type")
+        conn.scope             = token_json.get("scope")
+        conn.expires_at        = token_expires_at
+        conn.last_refreshed_at = now
+        conn.is_active         = True
+        conn.status            = "connected"
+        conn.updated_at        = now
+        conn.save(using="transcript", update_fields=[
+            "microsoft_user_id", "microsoft_email", "access_token",
+            "refresh_token", "token_type", "scope", "expires_at",
+            "last_refreshed_at", "is_active", "status", "updated_at",
+        ])
+    except MicrosoftConnection.DoesNotExist:
+        MicrosoftConnection.objects.using("transcript").create(
+            coach_id           = state_row.coach_id,
+            microsoft_user_id  = me.get("id"),
+            microsoft_email    = me.get("mail") or me.get("userPrincipalName"),
+            tenant_id          = None,
+            access_token       = token_json.get("access_token"),
+            refresh_token      = token_json.get("refresh_token"),
+            token_type         = token_json.get("token_type"),
+            scope              = token_json.get("scope"),
+            expires_at         = token_expires_at,
+            connected_at       = now,
+            last_refreshed_at  = now,
+            is_active          = True,
+            status             = "connected",
+            created_at         = now,
+            updated_at         = now,
+        )
+
+    state_row.used = True
+    state_row.save(using="transcript", update_fields=["used"])
+
+    return _connect_ms_frontend_redirect(request, success=True)
 

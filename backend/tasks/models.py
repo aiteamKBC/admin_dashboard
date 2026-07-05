@@ -138,3 +138,50 @@ class LearnerInclusivenessReport(models.Model):
     class Meta:
         managed = False
         db_table = "learner_inclusiveness_reports"
+
+
+class Coach(models.Model):
+    id = models.BigAutoField(primary_key=True)
+    full_name = models.TextField(null=True, blank=True)
+    email = models.TextField(null=True, blank=True)
+    created_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        managed = False
+        db_table = "coaches"
+
+
+class MicrosoftOAuthState(models.Model):
+    id = models.BigAutoField(primary_key=True)
+    coach_id = models.BigIntegerField()
+    state = models.TextField()
+    redirect_uri = models.TextField(null=True, blank=True)
+    expires_at = models.DateTimeField()
+    used = models.BooleanField(default=False, null=True)
+
+    class Meta:
+        managed = False
+        db_table = "microsoft_oauth_states"
+
+
+class MicrosoftConnection(models.Model):
+    id = models.BigAutoField(primary_key=True)
+    coach_id = models.BigIntegerField(unique=True)
+    microsoft_user_id = models.TextField(null=True, blank=True)
+    microsoft_email = models.TextField(null=True, blank=True)
+    tenant_id = models.TextField(null=True, blank=True)
+    access_token = models.TextField(null=True, blank=True)
+    refresh_token = models.TextField(null=True, blank=True)
+    token_type = models.TextField(null=True, blank=True)
+    scope = models.TextField(null=True, blank=True)
+    expires_at = models.DateTimeField(null=True, blank=True)
+    connected_at = models.DateTimeField(null=True, blank=True)
+    last_refreshed_at = models.DateTimeField(null=True, blank=True)
+    is_active = models.BooleanField(default=True, null=True)
+    status = models.TextField(null=True, blank=True)
+    created_at = models.DateTimeField(null=True, blank=True)
+    updated_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        managed = False
+        db_table = "microsoft_connections"

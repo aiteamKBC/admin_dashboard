@@ -138,8 +138,8 @@ export default function Sidebar({
               onClick={() => !isDesktop && setMobileOpen(false)}
             />
 
-            <SidebarExternalLink
-              href="https://69d61d0cfa1e73461a9f6dcc--famous-kitten-298c8d.netlify.app/"
+            <SidebarLink
+              to="/connect-microsoft"
               collapsed={collapsed && isDesktop}
               icon="fa-circle-nodes"
               label="Connect Your Microsoft Account"
