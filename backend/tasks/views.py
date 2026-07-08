@@ -3899,7 +3899,7 @@ def archive_onboarding_report(request, report_id: str):
     report.is_archived = True
     report.save(using="wellbeing", update_fields=["is_archived"])
     _clear_onboarding_reports_cache()
-    return Response({"detail": "Onboarding ticket archived"})
+    return Response({"detail": "Inclusion dashboard report archived"})
 
 
 @api_view(["POST"])
@@ -3911,7 +3911,7 @@ def restore_onboarding_report(request, report_id: str):
     report.is_archived = False
     report.save(using="wellbeing", update_fields=["is_archived"])
     _clear_onboarding_reports_cache()
-    return Response({"detail": "Onboarding ticket restored"})
+    return Response({"detail": "Inclusion dashboard report restored"})
 
 
 # ─── Microsoft OAuth ──────────────────────────────────────────────────────────

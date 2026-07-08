@@ -15,6 +15,7 @@ from django.http import JsonResponse
 from django.views.decorators.cache import never_cache
 from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_GET, require_POST
+from rest_framework_simplejwt.authentication import JWTAuthentication
 
 # DB column name -> (dataset key, is_inverted)
 # is_inverted=True means a HIGH raw score = bad (e.g. stress/anxiety)
@@ -40,6 +41,69 @@ TOTAL_ASSESSMENTS = len(COLUMN_TO_KEY)
 LEVEL_RANK = {
     "very low": 1, "low": 2, "moderate": 3, "high": 4, "very high": 5,
 }
+
+
+def _normalise_text(value) -> str:
+    return str(value or "").strip().lower()
+
+
+def _authenticated_user(request):
+    user = getattr(request, "user", None)
+    if getattr(user, "is_authenticated", False):
+        return user
+
+    try:
+        auth_result = JWTAuthentication().authenticate(request)
+    except Exception:
+        return None
+
+    if not auth_result:
+        return None
+
+    return auth_result[0]
+
+
+def _request_profile(request):
+    user = _authenticated_user(request)
+    if not user:
+        return None, JsonResponse({"detail": "Authentication credentials were not provided."}, status=401)
+
+    profile = getattr(user, "profile", None)
+    role = _normalise_text(getattr(profile, "role", ""))
+    if role not in {"qa", "coach"}:
+        return None, JsonResponse({"detail": "User has no valid role."}, status=403)
+
+    return {"user": user, "role": role}, None
+
+
+def _coach_learner_scope(user) -> tuple[set[str], set[str]]:
+    coach_email = _normalise_text(getattr(user, "email", ""))
+    if not coach_email:
+        return set(), set()
+
+    with connections["wellbeing"].cursor() as cursor:
+        cursor.execute(
+            """
+            SELECT DISTINCT
+                   lower(trim(coalesce(learner_email, ''))) AS learner_email,
+                   lower(trim(coalesce(learner_name, ''))) AS learner_name
+            FROM wellbeing_safeguarding_monitoring_system
+            WHERE lower(trim(coalesce(coach_email, ''))) = %s
+            """,
+            [coach_email],
+        )
+        rows = cursor.fetchall()
+
+    emails = {row[0] for row in rows if row[0]}
+    names = {row[1] for row in rows if row[1]}
+    return emails, names
+
+
+def _learner_email_allowed(user, role: str, email: str) -> bool:
+    if role == "qa":
+        return True
+    allowed_emails, _allowed_names = _coach_learner_scope(user)
+    return _normalise_text(email) in allowed_emails
 
 
 def _as_json(value):
@@ -177,7 +241,10 @@ def _empty_dataset() -> dict:
     return dataset
 
 
-def build_learner_dataset() -> dict:
+def build_learner_dataset(
+    allowed_emails: set[str] | None = None,
+    allowed_names: set[str] | None = None,
+) -> dict:
     dataset = _empty_dataset()
 
     assessment_cols = list(COLUMN_TO_KEY.keys())
@@ -202,6 +269,11 @@ def build_learner_dataset() -> dict:
     for row in rows:
         email = (row["learner_email"] or "").strip().lower()
         name = (row["learner_name"] or "").strip()
+
+        if allowed_emails is not None or allowed_names is not None:
+            if email not in (allowed_emails or set()) and name.lower() not in (allowed_names or set()):
+                continue
+
         identity = email or name or f"learner-{row['learner_id']}"
         if not identity:
             continue
@@ -373,8 +445,16 @@ def build_learner_dataset() -> dict:
 
 @require_GET
 @never_cache
-def learner_result_tickets(_request):
-    return JsonResponse(build_learner_dataset())
+def learner_result_tickets(request):
+    scope, error_response = _request_profile(request)
+    if error_response:
+        return error_response
+
+    if scope["role"] == "qa":
+        return JsonResponse(build_learner_dataset())
+
+    allowed_emails, allowed_names = _coach_learner_scope(scope["user"])
+    return JsonResponse(build_learner_dataset(allowed_emails, allowed_names))
 
 
 @require_GET
@@ -388,6 +468,12 @@ def learner_history(request):
     email = (request.GET.get("email") or "").strip()
     if not email:
         return JsonResponse({"error": "email is required."}, status=400)
+
+    scope, error_response = _request_profile(request)
+    if error_response:
+        return error_response
+    if not _learner_email_allowed(scope["user"], scope["role"], email):
+        return JsonResponse({"detail": "You do not have access to this learner."}, status=403)
 
     assessment_cols = list(COLUMN_TO_KEY.keys())
     col_select = ", ".join(assessment_cols + ["career_recommendations"])
@@ -445,6 +531,12 @@ def update_learner_review(request):
     email = (payload.get("email") or "").strip()
     if not email:
         return JsonResponse({"error": "email is required."}, status=400)
+
+    scope, error_response = _request_profile(request)
+    if error_response:
+        return error_response
+    if not _learner_email_allowed(scope["user"], scope["role"], email):
+        return JsonResponse({"detail": "You do not have access to this learner."}, status=403)
 
     sets, params = [], []
     if "reviewStatus" in payload:
