@@ -186,7 +186,7 @@ export async function createOnboardingReportEvidence(
   });
 }
 
-export async function updateOnboardingReport(reportId: string, payload: { status?: string }) {
+export async function updateOnboardingReport(reportId: string, payload: { status?: string; progress_tier?: number | null }) {
   return await fetchWithAuth(`/onboarding-reports/${reportId}/update/`, {
     method: "PATCH",
     body: JSON.stringify(payload),

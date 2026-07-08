@@ -35,6 +35,7 @@ import {
   getOnboardingReportDetail,
   getOnboardingReportNotes,
   getOnboardingReportEvidence,
+  updateOnboardingReport,
   archiveOnboardingReport,
   restoreOnboardingReport,
 } from "@/services/coachWellbeing";
@@ -57,6 +58,8 @@ export type OnboardingReport = {
   manager_name: string;
   manager_email: string;
   overall_risk_level: string;
+  system_tier?: number | null;
+  progress_tier?: number | null;
   overall_score: number | null;
   overall_max_score: number | null;
   percentage: number | null;
@@ -155,6 +158,83 @@ function riskBadgeClass(level: string): string {
   if (v === "moderate" || v === "medium") return "bg-[#FEF9EE] text-[#9A7030] border border-[#EDD8A8]";
   if (v === "low") return "bg-[#F2FAF6] text-[#3D7A55] border border-[#BDDECE]";
   return "bg-slate-100 text-slate-500 border border-slate-200";
+}
+
+type InclusionTier = 1 | 2 | 3 | 4;
+
+const INCLUSION_TIER_OPTIONS: Array<{
+  value: InclusionTier;
+  label: string;
+  shortLabel: string;
+  helper: string;
+}> = [
+  { value: 1, label: "Tier 1 - Awareness", shortLabel: "Tier 1", helper: "Awareness" },
+  { value: 2, label: "Tier 2 - Adaptation", shortLabel: "Tier 2", helper: "Adaptation" },
+  { value: 3, label: "Tier 3 - Structured Support", shortLabel: "Tier 3", helper: "Structured Support" },
+  { value: 4, label: "Tier 4 - Complex / Safeguarding", shortLabel: "Tier 4", helper: "Complex / Safeguarding" },
+];
+
+function normaliseTierValue(value: unknown): InclusionTier | null {
+  const tier = Number(value);
+  return tier === 1 || tier === 2 || tier === 3 || tier === 4 ? tier : null;
+}
+
+function tierFromRisk(level: string): InclusionTier | null {
+  const risk = normaliseRisk(level);
+  if (risk === "Low") return 1;
+  if (risk === "Moderate") return 2;
+  if (risk === "High") return 3;
+  if (risk === "Very High") return 4;
+  return null;
+}
+
+function tierInfo(tier: InclusionTier | null) {
+  return INCLUSION_TIER_OPTIONS.find((item) => item.value === tier) || null;
+}
+
+function tierBadgeClass(tier: InclusionTier): string {
+  if (tier === 1) return "border-[#BDDECE] bg-[#F2FAF6] text-[#3D7A55]";
+  if (tier === 2) return "border-[#EDD8A8] bg-[#FEF9EE] text-[#9A7030]";
+  return "border-[#EDD5D5] bg-[#FEF0F0] text-[#B85858]";
+}
+
+function tierIcon(tier: InclusionTier, className = "h-3.5 w-3.5") {
+  if (tier === 1) return <CheckCircle className={className} />;
+  if (tier === 2) return <Users className={className} />;
+  return <AlertTriangle className={className} />;
+}
+
+function TierBadge({
+  tier,
+  labelMode = "full",
+}: {
+  tier: InclusionTier | null;
+  labelMode?: "full" | "meaning";
+}) {
+  const info = tierInfo(tier);
+  if (!tier || !info) return null;
+  const primaryText = labelMode === "meaning" ? info.helper : info.shortLabel;
+  return (
+    <span
+      title={info.label}
+      className={`inline-flex min-w-[96px] items-center gap-1.5 rounded-xl border px-2 py-1 text-xs font-semibold ${tierBadgeClass(tier)}`}
+    >
+      {tierIcon(tier)}
+      <span>
+        <span className="block max-w-[98px] truncate leading-4">{primaryText}</span>
+        {labelMode === "full" ? (
+          <span className="block max-w-[82px] truncate text-[10px] font-medium opacity-80">{info.helper}</span>
+        ) : null}
+      </span>
+    </span>
+  );
+}
+
+function progressTierSelectClass(tier: InclusionTier | null): string {
+  if (tier === 1) return "border-[#BDDECE] bg-[#F2FAF6] text-[#3D7A55]";
+  if (tier === 2) return "border-[#EDD8A8] bg-[#FEF9EE] text-[#9A7030]";
+  if (tier === 3 || tier === 4) return "border-[#EDD5D5] bg-[#FEF0F0] text-[#B85858]";
+  return "border-[#E7E2F3] bg-white text-[#7B6D9B]";
 }
 
 function reportSectionButtonClass(level?: string | null): string {
@@ -561,10 +641,13 @@ function normaliseOnboardingReportRow(report: OnboardingReport): OnboardingRepor
   const percentage = asNumber(firstPresent(overview.rawPercentage, overview.adjustedPercentage, overview.percentage, report.percentage));
   const completedReports = asNumber(firstPresent(overview.completedReportsCount, report.completed_reports));
   const expectedReports = asNumber(firstPresent(overview.expectedReportsCount, report.expected_reports));
+  const overallRisk = cleanOnboardingRisk(firstPresent(overview.overallRiskLevel, report.overall_risk_level));
 
   return {
     ...report,
-    overall_risk_level: cleanOnboardingRisk(firstPresent(overview.overallRiskLevel, report.overall_risk_level)),
+    overall_risk_level: overallRisk,
+    system_tier: normaliseTierValue(report.system_tier) ?? tierFromRisk(overallRisk),
+    progress_tier: normaliseTierValue(report.progress_tier),
     overall_score: overallScore,
     overall_max_score: overallMaxScore,
     percentage,
@@ -2417,6 +2500,7 @@ function OnboardingTicketsSkeleton() {
 
 export default function OnboardingTicketsView({ coachEmail }: { coachEmail?: string }) {
   const role = String(localStorage.getItem("role") || "").toLowerCase();
+  const canEditProgressTier = role === "qa" || role === "admin";
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [reports, setReports] = useState<OnboardingReport[]>([]);
@@ -2428,7 +2512,7 @@ export default function OnboardingTicketsView({ coachEmail }: { coachEmail?: str
   const [viewSection, setViewSection] = useState<SectionView | null>(null);
   const [detailLoadingId, setDetailLoadingId] = useState<string | null>(null);
   const [reportStatuses, setReportStatuses] = useState<Map<string, string>>(new Map());
-  type OnboardingSortKey = "learner" | "programme" | "organisation" | "coach" | "risk" | "score" | "reports" | "date" | "assigned" | "notes" | "evidence" | "status";
+  type OnboardingSortKey = "learner" | "programme" | "organisation" | "coach" | "risk" | "system_tier" | "progress_tier" | "score" | "reports" | "date" | "assigned" | "notes" | "evidence" | "status";
   const [sortConfig, setSortConfig] = useState<{ key: OnboardingSortKey; direction: SortDirection }>({
     key: "date",
     direction: "desc",
@@ -2438,11 +2522,20 @@ export default function OnboardingTicketsView({ coachEmail }: { coachEmail?: str
   const [archiveConfirmId, setArchiveConfirmId] = useState<string | null>(null);
   const [archivingId, setArchivingId] = useState<string | null>(null);
   const [archivedPanelOpen, setArchivedPanelOpen] = useState(false);
+  const [tierSavingIds, setTierSavingIds] = useState<Set<string>>(new Set());
 
   function applyReportRows(rows: OnboardingReport[]) {
-    setReports(rows);
+    const normalisedRows = rows.map((row) => {
+      const risk = normaliseRisk(row.overall_risk_level);
+      return {
+        ...row,
+        system_tier: normaliseTierValue(row.system_tier) ?? tierFromRisk(risk),
+        progress_tier: normaliseTierValue(row.progress_tier),
+      };
+    });
+    setReports(normalisedRows);
     const statusMap = new Map<string, string>();
-    rows.forEach((r) => statusMap.set(r.id, r.status || "active"));
+    normalisedRows.forEach((r) => statusMap.set(r.id, r.status || "active"));
     setReportStatuses(statusMap);
   }
 
@@ -2497,6 +2590,34 @@ export default function OnboardingTicketsView({ coachEmail }: { coachEmail?: str
       setError(err?.message || "Failed to archive inclusion dashboard report");
     } finally {
       setArchivingId(null);
+    }
+  }
+
+  async function handleProgressTierChange(reportId: string, nextTier: InclusionTier | null) {
+    if (!canEditProgressTier) return;
+    const previousTier = normaliseTierValue(reports.find((report) => report.id === reportId)?.progress_tier);
+    setTierSavingIds((prev) => new Set(prev).add(reportId));
+    setReports((prev) => prev.map((report) => (
+      report.id === reportId ? { ...report, progress_tier: nextTier } : report
+    )));
+    try {
+      const res = await updateOnboardingReport(reportId, { progress_tier: nextTier });
+      const savedTier = normaliseTierValue(res?.progress_tier);
+      setReports((prev) => prev.map((report) => (
+        report.id === reportId ? { ...report, progress_tier: savedTier } : report
+      )));
+      setError("");
+    } catch (err: any) {
+      setReports((prev) => prev.map((report) => (
+        report.id === reportId ? { ...report, progress_tier: previousTier } : report
+      )));
+      setError(err?.message || "Failed to update progress tier");
+    } finally {
+      setTierSavingIds((prev) => {
+        const next = new Set(prev);
+        next.delete(reportId);
+        return next;
+      });
     }
   }
 
@@ -2607,6 +2728,8 @@ export default function OnboardingTicketsView({ coachEmail }: { coachEmail?: str
       if (key === "organisation") return sortText(report.organization_name);
       if (key === "coach") return sortText(report.coach_name || report.coach_email);
       if (key === "risk") return sortText(normaliseRisk(report.overall_risk_level));
+      if (key === "system_tier") return sortNumber(normaliseTierValue(report.system_tier) ?? tierFromRisk(report.overall_risk_level) ?? 0);
+      if (key === "progress_tier") return sortNumber(normaliseTierValue(report.progress_tier) ?? 0);
       if (key === "score") return sortNumber(report.overall_score);
       if (key === "reports") return sortNumber(report.completed_reports);
       if (key === "date") return sortDate(report.created_at);
@@ -3056,7 +3179,7 @@ export default function OnboardingTicketsView({ coachEmail }: { coachEmail?: str
         </div>
 
         {/* Stat Cards */}
-        <div className="mt-6 grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
+        <div className="mt-6 grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-[repeat(4,minmax(0,1fr))_300px]">
           {[
             { title: "Total Reports",        value: loading && reports.length === 0 ? "..." : statCardCounts.total,    icon: <FileText className="h-4 w-4" />,      color: "text-[#0F9B8E]", bg: "bg-[#E6F7F6]", filter: "all" as OnboardingQuickRisk },
             { title: "High Risk", value: loading && reports.length === 0 ? "..." : statCardCounts.red,      icon: <AlertTriangle className="h-4 w-4" />, color: "text-[#C06060]", bg: "bg-[#FEF0F0]", filter: "red" as OnboardingQuickRisk },
@@ -3067,59 +3190,98 @@ export default function OnboardingTicketsView({ coachEmail }: { coachEmail?: str
               key={s.title}
               type="button"
               onClick={() => setQuickRisk(s.filter)}
-              className={`rounded-3xl border p-5 text-left transition hover:-translate-y-0.5 hover:shadow-md focus:outline-none focus:ring-2 focus:ring-[#866CB6] ${
+              className={`min-h-[86px] rounded-2xl border p-3.5 text-left transition hover:-translate-y-0.5 hover:shadow-md focus:outline-none focus:ring-2 focus:ring-[#866CB6] ${
                 quickRiskValue === s.filter
                   ? "border-[#BFAFEA] bg-white shadow-sm ring-1 ring-[#BFAFEA]"
                   : "border-[#ECE7F7] bg-[#F8F6FC]"
               }`}
             >
-              <div className="mb-3 flex items-center justify-between">
-                <span className="text-xs font-semibold uppercase tracking-wide text-[#7B6D9B]">{s.title}</span>
-                <div className={`flex h-8 w-8 items-center justify-center rounded-xl ${s.bg} ${s.color}`}>{s.icon}</div>
+              <div className="mb-2 flex items-center justify-between gap-3">
+                <span className="text-[10px] font-semibold uppercase tracking-wide text-[#7B6D9B]">{s.title}</span>
+                <div className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-xl ${s.bg} ${s.color}`}>{s.icon}</div>
               </div>
-              <div className={`text-3xl font-bold ${s.color}`}>{s.value}</div>
+              <div className={`text-2xl font-bold leading-none ${s.color}`}>{s.value}</div>
             </button>
           ))}
+          <div className="rounded-2xl border border-[#E9E3F5] bg-[#FCFBFE] px-3.5 py-3 sm:col-span-2 xl:col-span-1">
+            <div className="mb-2 text-[10px] font-semibold uppercase tracking-wide text-[#7B6D9B]">Tier guide</div>
+            <div className="grid grid-cols-2 gap-2">
+              {INCLUSION_TIER_OPTIONS.map((tier) => (
+                <div key={tier.value} className="flex min-w-0 items-center gap-2 text-xs text-[#241453]">
+                  <span className={`flex h-6 w-6 shrink-0 items-center justify-center rounded-lg border ${tierBadgeClass(tier.value)}`}>
+                    {tierIcon(tier.value, "h-3 w-3")}
+                  </span>
+                  <span className="min-w-0">
+                    <span className="block truncate text-[11px] font-semibold">{tier.helper}</span>
+                    <span className="block text-[10px] text-[#7B6D9B]">{tier.shortLabel}</span>
+                  </span>
+                </div>
+              ))}
+            </div>
+          </div>
         </div>
 
         {/* Table */}
         <div className="mt-6 overflow-hidden rounded-3xl border border-[#E9E3F5]">
           <div className="custom-scroll overflow-auto" style={{ maxHeight: "calc(100vh - 380px)" }}>
-            <table className="w-full min-w-[1080px] text-sm">
+            <table className="w-full min-w-[1280px] table-fixed text-[13px] 2xl:min-w-0 [&_td]:px-3 [&_td]:py-3 [&_th]:px-3 [&_th]:py-3">
+              <colgroup>
+                <col className="w-[10%]" />
+                <col className="w-[8%]" />
+                <col className="w-[7%]" />
+                <col className="w-[9%]" />
+                <col className="w-[5.5%]" />
+                <col className="w-[7%]" />
+                <col className="w-[8%]" />
+                <col className="w-[5%]" />
+                <col className="w-[7%]" />
+                <col className="w-[5%]" />
+                <col className="w-[6%]" />
+                <col className="w-[4%]" />
+                <col className="w-[4%]" />
+                <col className="w-[5%]" />
+                <col className="w-[4%]" />
+                <col className="w-[4%]" />
+              </colgroup>
               <thead className="sticky top-0 z-10 bg-[#FCFBFE]">
                 <tr className="border-b border-[#EEE8F8] text-left text-[#7B6D9B]">
-                  <th className="px-5 py-4 font-medium">{sortHeader("learner", "Learner")}</th>
-                  <th className="px-5 py-4 font-medium">{sortHeader("programme", "Programme")}</th>
-                  <th className="px-5 py-4 font-medium">{sortHeader("organisation", "Organisation")}</th>
-                  <th className="px-5 py-4 font-medium">{sortHeader("coach", "Coach")}</th>
-                  <th className="px-5 py-4 font-medium">{sortHeader("risk", "Risk")}</th>
-                  <th className="px-5 py-4 font-medium">{sortHeader("score", "Score")}</th>
-                  <th className="px-5 py-4 font-medium">{sortHeader("reports", "Reports")}</th>
-                  <th className="px-5 py-4 font-medium">{sortHeader("date", "Date")}</th>
-                  <th className="px-5 py-4 font-medium">{sortHeader("assigned", "Assigned")}</th>
-                  <th className="px-5 py-4 font-medium">{sortHeader("notes", "Notes")}</th>
-                  <th className="px-5 py-4 font-medium">{sortHeader("evidence", "Evidence")}</th>
-                  <th className="px-5 py-4 font-medium">{sortHeader("status", "Status")}</th>
-                  <th className="px-5 py-4 font-medium">Archive</th>
-                  <th className="px-5 py-4 font-medium">View Report</th>
+                  <th className="px-3 py-3 font-medium">{sortHeader("learner", "Learner")}</th>
+                  <th className="px-3 py-3 font-medium">{sortHeader("programme", "Programme")}</th>
+                  <th className="px-3 py-3 font-medium">{sortHeader("organisation", "Organisation")}</th>
+                  <th className="px-3 py-3 font-medium">{sortHeader("coach", "Coach")}</th>
+                  <th className="px-3 py-3 font-medium">{sortHeader("risk", "Risk")}</th>
+                  <th className="px-3 py-3 font-medium">{sortHeader("system_tier", "System Tier")}</th>
+                  <th className="px-3 py-3 font-medium">{sortHeader("progress_tier", "Progress Tier")}</th>
+                  <th className="px-3 py-3 font-medium">{sortHeader("score", "Score")}</th>
+                  <th className="px-3 py-3 font-medium">{sortHeader("reports", "Reports")}</th>
+                  <th className="px-3 py-3 font-medium">{sortHeader("date", "Date")}</th>
+                  <th className="px-3 py-3 font-medium">{sortHeader("assigned", "Assigned")}</th>
+                  <th className="px-3 py-3 font-medium">{sortHeader("notes", "Notes")}</th>
+                  <th className="px-3 py-3 font-medium">{sortHeader("evidence", "Evidence")}</th>
+                  <th className="px-3 py-3 font-medium">{sortHeader("status", "Status")}</th>
+                  <th className="px-3 py-3 font-medium">Archive</th>
+                  <th className="px-3 py-3 font-medium">View</th>
                 </tr>
               </thead>
               <tbody>
                 {loading ? (
                   <tr>
-                    <td colSpan={14} className="px-5 py-10 text-center text-slate-500">Loading reports...</td>
+                    <td colSpan={16} className="px-5 py-10 text-center text-slate-500">Loading reports...</td>
                   </tr>
                 ) : error ? (
                   <tr>
-                    <td colSpan={14} className="px-5 py-10 text-center text-red-500">{error}</td>
+                    <td colSpan={16} className="px-5 py-10 text-center text-red-500">{error}</td>
                   </tr>
                 ) : sorted.length === 0 ? (
                   <tr>
-                    <td colSpan={14} className="px-5 py-10 text-center text-slate-500">{emptyReportsMessage}</td>
+                    <td colSpan={16} className="px-5 py-10 text-center text-slate-500">{emptyReportsMessage}</td>
                   </tr>
                 ) : (
                   sorted.map((r) => {
                     const nr = normaliseRisk(r.overall_risk_level);
+                    const systemTier = normaliseTierValue(r.system_tier) ?? tierFromRisk(nr);
+                    const progressTier = normaliseTierValue(r.progress_tier);
+                    const tierSaving = tierSavingIds.has(r.id);
                     const isClosed = (reportStatuses.get(r.id) || r.status || "active").toLowerCase() === "closed";
                     return (
                       <tr key={r.id} className={`border-b border-[#F1EDF8] last:border-0 transition ${isClosed ? "bg-slate-50 opacity-70 hover:opacity-100 hover:bg-[#F8F5FF]" : "hover:bg-[#FDFCFF]"}`}>
@@ -3129,14 +3291,46 @@ export default function OnboardingTicketsView({ coachEmail }: { coachEmail?: str
                         </td>
                         <td className="px-5 py-4 text-[#241453]">{r.programme || "—"}</td>
                         <td className="px-5 py-4 text-[#241453]">{r.organization_name || "—"}</td>
-                        <td className="px-5 py-4">
-                          <div className="text-[#241453]">{r.coach_name || "—"}</div>
-                          {r.coach_email && <div className="text-xs text-slate-500">{r.coach_email}</div>}
+                        <td className="overflow-hidden px-3 py-3">
+                          <div className="truncate text-[#241453]" title={r.coach_name || ""}>{r.coach_name || "—"}</div>
+                          {r.coach_email && <div className="truncate text-xs text-slate-500" title={r.coach_email}>{r.coach_email}</div>}
                         </td>
-                        <td className="px-5 py-4">
+                        <td className="px-3 py-3">
                           <span className={`inline-flex rounded-full px-2.5 py-1 text-xs font-semibold ${riskBadgeClass(nr)}`}>
                             {displayRiskLabel(nr)}
                           </span>
+                        </td>
+                        <td className="px-5 py-4">
+                          <TierBadge tier={systemTier} labelMode="meaning" />
+                        </td>
+                        <td className="px-3 py-3">
+                          {canEditProgressTier ? (
+                            <div className="flex items-center gap-1.5">
+                              {progressTier ? (
+                                <span className={`hidden h-8 w-8 shrink-0 items-center justify-center rounded-xl border xl:inline-flex ${tierBadgeClass(progressTier)}`}>
+                                  {tierIcon(progressTier)}
+                                </span>
+                              ) : null}
+                              <select
+                                value={progressTier ?? ""}
+                                onChange={(event) => handleProgressTierChange(r.id, normaliseTierValue(event.target.value))}
+                                disabled={tierSaving}
+                                aria-label={`Progress tier for ${r.learner_name || "learner"}`}
+                                className={`h-9 w-full rounded-xl border px-2 text-xs font-semibold outline-none transition focus:ring-2 focus:ring-[#866CB6] disabled:cursor-wait disabled:opacity-60 ${progressTierSelectClass(progressTier)}`}
+                              >
+                                <option value="">Set tier</option>
+                                {INCLUSION_TIER_OPTIONS.map((tier) => (
+                                  <option key={tier.value} value={tier.value}>
+                                    {tier.helper}
+                                  </option>
+                                ))}
+                              </select>
+                            </div>
+                          ) : progressTier ? (
+                            <TierBadge tier={progressTier} />
+                          ) : (
+                            <span aria-label="No progress tier set" />
+                          )}
                         </td>
                         <td className="px-5 py-4">
                           {r.overall_score != null ? (
@@ -3163,7 +3357,7 @@ export default function OnboardingTicketsView({ coachEmail }: { coachEmail?: str
                               "Very High": "bg-red-100 text-red-700",
                             };
                             return (
-                              <div className="flex flex-col gap-1.5 min-w-[120px]">
+                              <div className="flex flex-col gap-1.5">
                                 {/* fraction + bar */}
                                 <div className="flex items-center gap-1.5">
                                   <span className={`text-sm font-semibold ${complete ? "text-emerald-600" : done > 0 ? "text-[#241453]" : "text-slate-400"}`}>
@@ -3205,34 +3399,26 @@ export default function OnboardingTicketsView({ coachEmail }: { coachEmail?: str
                             );
                           })()}
                         </td>
-                        <td className="px-5 py-4 text-xs text-slate-500">{formatDate(r.created_at)}</td>
+                        <td className="px-3 py-3 text-xs text-slate-500">{formatDate(r.created_at)}</td>
 
                         {/* Assigned */}
-                        <td className="px-5 py-4">
+                        <td className="px-2 py-3">
                           {onboardingAssignedLabel(r) ? (
                             (() => {
                               const color = onboardingAssignedColor(r);
                               return (
-                                <div className="min-w-[130px]">
+                                <div className="max-w-full">
                                   <span
-                                    className="inline-flex rounded-full border px-2.5 py-1 text-xs font-semibold"
+                                    className="inline-flex max-w-full truncate rounded-full border px-2 py-1 text-xs font-semibold"
                                     style={{
                                       backgroundColor: color.bg,
                                       borderColor: color.border,
                                       color: color.text,
                                     }}
+                                    title={r.assigned_owner_email || onboardingAssignedLabel(r)}
                                   >
                                     {onboardingAssignedLabel(r)}
                                   </span>
-                                  {r.assigned_owner_email && (
-                                    <div
-                                      className="mt-1 max-w-[160px] truncate text-[11px]"
-                                      style={{ color: color.text, opacity: 0.58 }}
-                                      title={r.assigned_owner_email}
-                                    >
-                                      {r.assigned_owner_email}
-                                    </div>
-                                  )}
                                 </div>
                               );
                             })()
@@ -3242,7 +3428,7 @@ export default function OnboardingTicketsView({ coachEmail }: { coachEmail?: str
                         </td>
 
                         {/* Notes */}
-                        <td className="px-5 py-4">
+                        <td className="px-2 py-3">
                           {(r.notes_count ?? 0) > 0 ? (
                             <button
                               type="button"
@@ -3334,7 +3520,7 @@ export default function OnboardingTicketsView({ coachEmail }: { coachEmail?: str
                                   disabled={detailLoadingId === r.id}
                                   className="inline-flex h-8 items-center gap-1.5 rounded-xl bg-[#241453] px-3 text-xs font-semibold text-white hover:bg-[#362063] transition whitespace-nowrap"
                                 >
-                                  {detailLoadingId === r.id ? "Loading..." : "View Report"}
+                                  {detailLoadingId === r.id ? "Loading..." : "View"}
                                 </button>
                               );
                             }

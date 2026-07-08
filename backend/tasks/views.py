@@ -3249,6 +3249,29 @@ def _onboarding_risk_rank(level):
     return 0
 
 
+def _onboarding_system_tier_from_risk(level):
+    v = _normalise_onboarding_risk(level)
+    if v == "Very High":
+        return 4
+    if v == "High":
+        return 3
+    if v == "Moderate":
+        return 2
+    if v == "Low":
+        return 1
+    return None
+
+
+def _normalise_onboarding_tier(value):
+    if value is None or value == "":
+        return None
+    try:
+        tier = int(value)
+    except (TypeError, ValueError):
+        return None
+    return tier if tier in {1, 2, 3, 4} else None
+
+
 def _onboarding_risk_from_percentage(value):
     pct = _number_or_none(value)
     if pct is None:
@@ -3518,6 +3541,8 @@ def _serialize_onboarding_report(r, include_detail=False):
             response_section_progress.append(empty_item)
 
     derived_overview = _derive_onboarding_overview(overview, section_progress)
+    system_tier = _onboarding_system_tier_from_risk(derived_overview.get("overallRiskLevel"))
+    progress_tier = _normalise_onboarding_tier(getattr(r, "progress_tier", None))
 
     assigned_owner = _onboarding_assigned_owner_from_notes(r.notes)
 
@@ -3534,6 +3559,8 @@ def _serialize_onboarding_report(r, include_detail=False):
         "manager_name": r.manager_name or "",
         "manager_email": r.manager_email or "",
         "overall_risk_level": derived_overview.get("overallRiskLevel") or "",
+        "system_tier": system_tier,
+        "progress_tier": progress_tier,
         "overall_score": derived_overview.get("overallScore"),
         "overall_max_score": derived_overview.get("overallMaxScore"),
         "percentage": derived_overview.get("percentage"),
@@ -3613,6 +3640,8 @@ def _serialize_onboarding_report_summary(r):
     updated_at = get_value("updated_at")
 
     assigned_owner = _onboarding_assigned_owner_from_notes(notes)
+    system_tier = _onboarding_system_tier_from_risk(derived_overview.get("overallRiskLevel"))
+    progress_tier = _normalise_onboarding_tier(get_value("progress_tier"))
 
     return {
         "id": get_value("id"),
@@ -3627,6 +3656,8 @@ def _serialize_onboarding_report_summary(r):
         "manager_name": get_value("manager_name") or "",
         "manager_email": get_value("manager_email") or "",
         "overall_risk_level": derived_overview.get("overallRiskLevel") or "",
+        "system_tier": system_tier,
+        "progress_tier": progress_tier,
         "overall_score": derived_overview.get("overallScore"),
         "overall_max_score": derived_overview.get("overallMaxScore"),
         "percentage": derived_overview.get("percentage"),
@@ -3662,7 +3693,7 @@ def onboarding_reports_list(request):
                 return Response({"detail": "Coach email not found"}, status=status.HTTP_400_BAD_REQUEST)
         archived_param = (request.query_params.get("archived") or "").strip().lower()
         show_archived = archived_param in {"1", "true", "yes"}
-        cache_key = ("onboarding_list_v2", role, coach_email_filter, show_archived)
+        cache_key = ("onboarding_list_v3", role, coach_email_filter, show_archived)
         cached = _ONBOARDING_REPORTS_LIST_CACHE.get(cache_key)
         now = time.monotonic()
         if cached and now < cached.get("expires_at", 0):
@@ -3682,6 +3713,7 @@ def onboarding_reports_list(request):
             "manager_email",
             "status",
             "is_archived",
+            "progress_tier",
             "notes",
             "evidence",
             "created_at",
@@ -3725,6 +3757,7 @@ def onboarding_reports_list(request):
             "manager_name",
             "manager_email",
             "status",
+            "progress_tier",
             "notes",
             "evidence",
             "created_at",
@@ -3786,6 +3819,7 @@ def onboarding_report_detail(request, report_id: str):
             "social_anxiety_report",
             "mood_learning_capacity_report",
             "status",
+            "progress_tier",
             "notes",
             "evidence",
             "created_at",
@@ -3859,9 +3893,23 @@ def update_onboarding_report(request, report_id: str):
     if err:
         return err
 
+    profile = getattr(request.user, "profile", None)
+    role = (getattr(profile, "role", "") or "").strip().lower()
+
     update_kwargs = {}
     if "status" in request.data:
         update_kwargs["status"] = request.data["status"]
+    if "progress_tier" in request.data:
+        if role != "qa" and not getattr(request.user, "is_staff", False) and not getattr(request.user, "is_superuser", False):
+            return Response({"detail": "Only admin users can update progress tier"}, status=status.HTTP_403_FORBIDDEN)
+        raw_tier = request.data.get("progress_tier")
+        if raw_tier is None or raw_tier == "":
+            update_kwargs["progress_tier"] = None
+        else:
+            progress_tier = _normalise_onboarding_tier(raw_tier)
+            if progress_tier is None:
+                return Response({"detail": "progress_tier must be 1, 2, 3, 4, or null"}, status=status.HTTP_400_BAD_REQUEST)
+            update_kwargs["progress_tier"] = progress_tier
 
     if update_kwargs:
         LearnerInclusivenessReport.objects.using("wellbeing").filter(id=report_id).update(**update_kwargs)
