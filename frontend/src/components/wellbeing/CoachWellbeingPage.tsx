@@ -6372,15 +6372,21 @@ type CoachWellbeingPageProps = {
 
 type WellbeingActiveView = "dashboard" | "tickets" | "onboarding";
 
-const WELLBEING_VIEW_LABELS: Record<WellbeingActiveView, string> = {
-  dashboard: "Dashboard",
+const WELLBEING_VIEW_TITLES: Record<WellbeingActiveView, string> = {
+  dashboard: "Safeguarding & Wellbeing Dashboard",
   tickets: "Safeguarding Tickets",
-  onboarding: "Onboarding Tickets",
+  onboarding: "Student Support",
+};
+
+const WELLBEING_VIEW_SUBTITLES: Record<WellbeingActiveView, string> = {
+  dashboard: "Monitor your caseload, wellbeing patterns, and support needs.",
+  tickets: "Review safeguarding cases, evidence, status changes, and escalation actions.",
+  onboarding: "Review learner support and inclusion needs.",
 };
 
 function wellbeingPathForView(view: WellbeingActiveView) {
   if (view === "tickets") return "/coach-wellbeing?view=tickets";
-  if (view === "onboarding") return "/coach-wellbeing?view=onboarding";
+  if (view === "onboarding") return "/coach-wellbeing?view=inclusion-dashboard";
   return "/coach-wellbeing";
 }
 
@@ -6388,15 +6394,15 @@ function wellbeingViewFromPath(pathname: string, search = "", hash = ""): Wellbe
   const params = new URLSearchParams(search);
   const queryView = String(params.get("view") || params.get("wb_view") || "").toLowerCase();
   if (queryView === "tickets" || queryView === "safeguarding-tickets") return "tickets";
-  if (queryView === "onboarding" || queryView === "onboarding-tickets") return "onboarding";
+  if (queryView === "onboarding" || queryView === "onboarding-tickets" || queryView === "inclusion-dashboard") return "onboarding";
 
   const hashView = hash.replace(/^#/, "").toLowerCase();
   if (hashView === "tickets" || hashView === "safeguarding-tickets") return "tickets";
-  if (hashView === "onboarding" || hashView === "onboarding-tickets") return "onboarding";
+  if (hashView === "onboarding" || hashView === "onboarding-tickets" || hashView === "inclusion-dashboard") return "onboarding";
 
   const cleanPath = pathname.replace(/\/+$/, "").toLowerCase();
   if (cleanPath.endsWith("/tickets") || cleanPath.endsWith("/safeguarding-tickets")) return "tickets";
-  if (cleanPath.endsWith("/onboarding") || cleanPath.endsWith("/onboarding-tickets")) return "onboarding";
+  if (cleanPath.endsWith("/onboarding") || cleanPath.endsWith("/onboarding-tickets") || cleanPath.endsWith("/inclusion-dashboard")) return "onboarding";
   return "dashboard";
 }
 
@@ -6827,7 +6833,21 @@ function WellbeingPageSkeleton({ view }: { view: WellbeingActiveView }) {
 
       {view === "dashboard" ? <DashboardContentSkeleton /> : null}
       {view === "tickets" ? <TicketPageContentSkeleton title="Safeguarding Tickets" /> : null}
-      {view === "onboarding" ? <TicketPageContentSkeleton title="Onboarding Tickets" /> : null}
+      {view === "onboarding" ? <TicketPageContentSkeleton title="Inclusion Dashboard" /> : null}
+    </div>
+  );
+}
+
+function NoAssignedLearnersState() {
+  return (
+    <div className="rounded-3xl border border-[#E7E2F3] bg-white p-8 text-center shadow-sm">
+      <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-2xl bg-[#F4F0FC] text-[#442F73]">
+        <Users className="h-7 w-7" />
+      </div>
+      <h2 className="mt-4 text-lg font-semibold text-[#241453]">No students assigned to you yet</h2>
+      <p className="mx-auto mt-2 max-w-xl text-sm leading-6 text-[#6F6387]">
+        This account is active, but there are no learner records linked to your coach email.
+      </p>
     </div>
   );
 }
@@ -6861,6 +6881,11 @@ export default function CoachWellbeingPage({ setMobileOpen, isDesktop }: CoachWe
     () => wellbeingViewFromPath(location.pathname, location.search, location.hash),
     [location.pathname, location.search, location.hash],
   );
+
+  useEffect(() => {
+    document.title = WELLBEING_VIEW_TITLES[activeView];
+  }, [activeView]);
+
   const [activeViewHistory, setActiveViewHistory] = useState<WellbeingActiveView[]>([]);
   const [ticketsLoading, setTicketsLoading] = useState(false);
   const [ticketsLoadError, setTicketsLoadError] = useState("");
@@ -6938,15 +6963,7 @@ export default function CoachWellbeingPage({ setMobileOpen, isDesktop }: CoachWe
     };
   }, [role]);
 
-  const previousWellbeingViewIndex = useMemo(() => {
-    for (let i = activeViewHistory.length - 1; i >= 0; i -= 1) {
-      if (activeViewHistory[i] !== activeView) return i;
-    }
-    return -1;
-  }, [activeViewHistory, activeView]);
-  const previousWellbeingView = previousWellbeingViewIndex >= 0 ? activeViewHistory[previousWellbeingViewIndex] : undefined;
-  const wellbeingBackTarget = activeView !== "dashboard" ? previousWellbeingView || "dashboard" : undefined;
-  const wellbeingBackLabel = wellbeingBackTarget ? `Back to ${WELLBEING_VIEW_LABELS[wellbeingBackTarget]}` : "Back to Dashboard";
+  const wellbeingBackLabel = "Back to Cards";
 
   function handleDashboardTicketStatusGroup(value: TicketStatusGroup) {
     setDashboardTicketStatusGroup(value);
@@ -6969,28 +6986,11 @@ export default function CoachWellbeingPage({ setMobileOpen, isDesktop }: CoachWe
     navigate(wellbeingPathForView(nextView));
   }
 
-  function goBackWellbeingView() {
-    const targetView = wellbeingBackTarget || "dashboard";
-
-    if (previousWellbeingView && previousWellbeingViewIndex >= 0) {
-      navigate(wellbeingPathForView(targetView));
-      setActiveViewHistory((history) => history.slice(0, previousWellbeingViewIndex));
-      return;
-    }
-
-    navigate(wellbeingPathForView(targetView), { replace: true });
-    setActiveViewHistory([]);
-  }
-
   function openSafeguardingTicketsView() {
     setTicketsSearch("");
     setTicketFilters(emptyFilters);
     setTicketsLoading(true);
     navigateWellbeingView("tickets");
-  }
-
-  function openOnboardingTicketsView() {
-    navigateWellbeingView("onboarding");
   }
 
   useEffect(() => {
@@ -7398,8 +7398,7 @@ export default function CoachWellbeingPage({ setMobileOpen, isDesktop }: CoachWe
     async function loadDashboard() {
       if (activeView !== "dashboard") {
         setLoading(false);
-        if (data?.learners?.length) return;
-        // fall through to fetch learners in background (needed for create-ticket modal)
+        return;
       }
 
       if (role === "qa") {
@@ -7438,6 +7437,32 @@ export default function CoachWellbeingPage({ setMobileOpen, isDesktop }: CoachWe
     };
   }, [activeView, role, selectedCoachEmail]);
 
+  useEffect(() => {
+    if (!createTicketOpen || activeView !== "tickets" || data?.learners?.length) return;
+    if (role === "qa" && selectedCoachEmail === "") return;
+
+    let mounted = true;
+
+    async function loadTicketLearnersForModal() {
+      try {
+        const learnerEmailParam = selectedCoachEmail === "__all__" ? undefined : selectedCoachEmail;
+        const scopedEmail = role === "qa" ? learnerEmailParam : undefined;
+        const res = await getCoachWellbeing(scopedEmail, true);
+        if (!mounted) return;
+        setData(mergeWorkflowData(res, emptyDashboard));
+      } catch (err: any) {
+        if (!mounted) return;
+        setCreateTicketError(err?.message || "Failed to load learners");
+      }
+    }
+
+    loadTicketLearnersForModal();
+
+    return () => {
+      mounted = false;
+    };
+  }, [createTicketOpen, activeView, data?.learners?.length, role, selectedCoachEmail]);
+
   const coachScope = useMemo(() => {
     if (role === "coach") return storedUserCoachScope();
     if (role === "qa" && selectedCoachEmail && selectedCoachEmail !== "__all__") {
@@ -7453,10 +7478,21 @@ export default function CoachWellbeingPage({ setMobileOpen, isDesktop }: CoachWe
     return learners.filter((learner) => learnerMatchesCoachScope(learner, coachScope));
   }, [data, coachScope]);
 
+  const hasCoachScope = Boolean(coachScope.email || coachScope.keys.length > 0);
+
   const dashboardSummary = useMemo(() => {
     const learners = scopedLearners;
     const apiSummary = data?.summary;
     const apiCaseload = Number(apiSummary?.caseload ?? NaN);
+    if (hasCoachScope && learners.length === 0) {
+      return {
+        caseload: 0,
+        openTickets: 0,
+        atRisk: 0,
+        greenRisk: 0,
+        nonResponders: 0,
+      };
+    }
     if (apiSummary && learners.length === 0) {
       return {
         caseload: apiSummary.caseload ?? 0,
@@ -7473,12 +7509,12 @@ export default function CoachWellbeingPage({ setMobileOpen, isDesktop }: CoachWe
       greenRisk: learners.filter(isCompletedGreenRiskLearner).length,
       nonResponders: learners.filter((row) => !hasLearnerWellbeingData(row)).length,
     };
-  }, [scopedLearners, data?.summary]);
+  }, [scopedLearners, data?.summary, hasCoachScope]);
 
   const surveyResponsePct = useMemo(() => {
     const summaryCaseload = Number(data?.summary?.caseload ?? NaN);
     const summaryResponded = Number(data?.summary?.surveyResponded ?? NaN);
-    if (Number.isFinite(summaryCaseload) && summaryCaseload > 0 && Number.isFinite(summaryResponded)) {
+    if (!hasCoachScope && Number.isFinite(summaryCaseload) && summaryCaseload > 0 && Number.isFinite(summaryResponded)) {
       return Math.round((summaryResponded / summaryCaseload) * 100);
     }
     const learners = scopedLearners;
@@ -7486,10 +7522,10 @@ export default function CoachWellbeingPage({ setMobileOpen, isDesktop }: CoachWe
     if (!total) return 0;
     const responded = learners.filter((row) => (row.surveyResponses?.length ?? 0) > 0 || Boolean(row.lastSurveyDate)).length;
     return Math.round((responded / total) * 100);
-  }, [scopedLearners, data?.summary]);
+  }, [scopedLearners, data?.summary, hasCoachScope]);
 
   const avgWellbeing = useMemo(() => {
-    if (data?.summary?.avgWellbeing != null) return data.summary.avgWellbeing;
+    if (!hasCoachScope && data?.summary?.avgWellbeing != null) return data.summary.avgWellbeing;
     const learners = scopedLearners;
     const scores = learners
       .filter((l) => (l.surveyResponses?.length ?? 0) > 0)
@@ -7497,7 +7533,7 @@ export default function CoachWellbeingPage({ setMobileOpen, isDesktop }: CoachWe
       .filter((s): s is number => s != null && s > 0);
     if (!scores.length) return null;
     return Math.round((scores.reduce((a, b) => a + b, 0) / scores.length) * 10) / 10;
-  }, [scopedLearners, data?.summary?.avgWellbeing]);
+  }, [scopedLearners, data?.summary?.avgWellbeing, hasCoachScope]);
 
   const scopedTicketRows = useMemo<SupportTicketRow[]>(() => {
     return ticketsData?.tickets || [];
@@ -7719,8 +7755,8 @@ export default function CoachWellbeingPage({ setMobileOpen, isDesktop }: CoachWe
   const workflowFollowUps = useMemo(() => {
     const q = search.trim().toLowerCase();
     const rows = data?.followUps || [];
-    const scopeIsActive = Boolean((coachScope.email || coachScope.keys.length > 0) && scopedLearners.length > 0);
-    const scopedRows = scopeIsActive
+    if (hasCoachScope && scopedLearners.length === 0) return [];
+    const scopedRows = hasCoachScope
       ? rows.filter((item) => workflowLearnerKeys.names.has(String(item.learnerName || "").trim().toLowerCase()))
       : rows;
 
@@ -7732,7 +7768,7 @@ export default function CoachWellbeingPage({ setMobileOpen, isDesktop }: CoachWe
       String(item.reason || "").toLowerCase().includes(q) ||
       String(item.priority || "").toLowerCase().includes(q)
     ));
-  }, [data, search, coachScope, scopedLearners, workflowLearnerKeys]);
+  }, [data, search, hasCoachScope, scopedLearners, workflowLearnerKeys]);
 
   const visibleWorkflowFollowUps = followUpExpanded
     ? workflowFollowUps
@@ -7741,8 +7777,8 @@ export default function CoachWellbeingPage({ setMobileOpen, isDesktop }: CoachWe
   const workflowSuggestedActions = useMemo(() => {
     const q = search.trim().toLowerCase();
     const rows = data?.suggestedActions || [];
-    const scopeIsActive = Boolean((coachScope.email || coachScope.keys.length > 0) && scopedLearners.length > 0);
-    const scopedRows = scopeIsActive
+    if (hasCoachScope && scopedLearners.length === 0) return [];
+    const scopedRows = hasCoachScope
       ? rows.filter((item) => {
         const learnerName = String(item.learnerName || "").trim().toLowerCase();
         const learnerEmail = String(item.learnerEmail || "").trim().toLowerCase();
@@ -7766,7 +7802,7 @@ export default function CoachWellbeingPage({ setMobileOpen, isDesktop }: CoachWe
         actionText.toLowerCase().includes(q)
       );
     });
-  }, [data, search, coachScope, scopedLearners, workflowLearnerKeys]);
+  }, [data, search, hasCoachScope, scopedLearners, workflowLearnerKeys]);
 
   const chartData = useMemo(() => {
     return (data?.trends || []).map((item: any) => ({
@@ -7791,8 +7827,8 @@ export default function CoachWellbeingPage({ setMobileOpen, isDesktop }: CoachWe
   }
 
   const isPageBootstrapping =
-    data === null ||
-    (role === "qa" && selectedCoachEmail === "");
+    (role === "qa" && selectedCoachEmail === "") ||
+    (activeView === "dashboard" && data === null);
 
   if (isPageBootstrapping) {
     return <WellbeingPageSkeleton view={activeView} />;
@@ -7800,6 +7836,7 @@ export default function CoachWellbeingPage({ setMobileOpen, isDesktop }: CoachWe
 
   const dashboardRefreshing = loading && Boolean(data);
   const ticketOverviewRefreshing = dashboardRefreshing || (ticketsLoading && Boolean(ticketsData));
+  const coachHasNoAssignedLearners = role === "coach" && activeView === "dashboard" && scopedLearners.length === 0;
 
   return (
     <div
@@ -7823,11 +7860,11 @@ export default function CoachWellbeingPage({ setMobileOpen, isDesktop }: CoachWe
 
             <div className="min-w-0">
               <h1 className="text-[24px] font-semibold leading-tight text-[#241453] sm:text-xl">
-                Safeguarding & Wellbeing Dashboard
+                {WELLBEING_VIEW_TITLES[activeView]}
               </h1>
 
               <p className="mt-1 text-sm leading-6 text-[#7B6D9B]">
-                Monitor your caseload, wellbeing patterns, and support needs.
+                {WELLBEING_VIEW_SUBTITLES[activeView]}
               </p>
             </div>
           </div>
@@ -7844,7 +7881,7 @@ export default function CoachWellbeingPage({ setMobileOpen, isDesktop }: CoachWe
 
             {activeView !== "dashboard" && (
               <a
-                href={wellbeingPathForView(wellbeingBackTarget || "dashboard")}
+                href="/"
                 onClick={() => {
                   setActiveViewHistory([]);
                 }}
@@ -7855,37 +7892,19 @@ export default function CoachWellbeingPage({ setMobileOpen, isDesktop }: CoachWe
               </a>
             )}
 
-            {(role === "qa" || role === "coach") && activeView === "dashboard" && (
-              <>
-                {role === "qa" && (
-                  <a
-                    href={wellbeingPathForView("tickets")}
-                    onClick={() => {
-                      setTicketsSearch("");
-                      setTicketFilters(emptyFilters);
-                      setTicketsLoading(true);
-                    }}
-                    className="inline-flex h-11 w-full shrink-0 items-center justify-center gap-2 whitespace-nowrap rounded-2xl bg-[#3B1F72] px-4 text-sm font-semibold text-white shadow-sm transition hover:bg-[#2D1768] sm:w-auto xl:w-[198px]"
-                  >
-                    <Ticket className="h-4 w-4" />
-                    Safeguarding Tickets
-                  </a>
-                )}
-                <a
-                  href={wellbeingPathForView("onboarding")}
-                  className="inline-flex h-11 w-full shrink-0 items-center justify-center gap-2 whitespace-nowrap rounded-2xl bg-[#A56408] px-4 text-sm font-semibold text-white shadow-sm transition hover:bg-[#7A4300] sm:w-auto xl:w-[190px]"
-                >
-                  <ClipboardList className="h-4 w-4" />
-                  Onboarding Tickets
-                </a>
-                <a
-                  href="/learner-result-tickets"
-                  className="inline-flex h-11 w-full shrink-0 items-center justify-center gap-2 whitespace-nowrap rounded-2xl bg-[#64748B] px-4 text-sm font-semibold text-white shadow-sm transition hover:bg-[#475569] sm:w-auto xl:w-[168px]"
-                >
-                  <ClipboardCheck className="h-4 w-4" />
-                  Who I'm Tickets
-                </a>
-              </>
+            {role === "qa" && activeView === "dashboard" && (
+              <a
+                href={wellbeingPathForView("tickets")}
+                onClick={() => {
+                  setTicketsSearch("");
+                  setTicketFilters(emptyFilters);
+                  setTicketsLoading(true);
+                }}
+                className="inline-flex h-11 w-full shrink-0 items-center justify-center gap-2 whitespace-nowrap rounded-2xl bg-[#3B1F72] px-4 text-sm font-semibold text-white shadow-sm transition hover:bg-[#2D1768] sm:w-auto xl:w-[198px]"
+              >
+                <Ticket className="h-4 w-4" />
+                Safeguarding Tickets
+              </a>
             )}
 
             {activeView === "dashboard" && (
@@ -7913,6 +7932,8 @@ export default function CoachWellbeingPage({ setMobileOpen, isDesktop }: CoachWe
         <OnboardingTicketsView
           coachEmail={role === "qa" ? (selectedCoachEmail === "__all__" ? "" : selectedCoachEmail) : undefined}
         />
+      ) : coachHasNoAssignedLearners ? (
+        <NoAssignedLearnersState />
       ) : activeView === "dashboard" ? (
         <>
           <div className="relative mb-6 rounded-2xl">

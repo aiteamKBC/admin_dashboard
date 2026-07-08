@@ -1,5 +1,6 @@
 import { Routes, Route, Navigate, useLocation } from "react-router-dom";
 import { lazy, Suspense, useEffect, useState, useContext } from "react";
+import type { Dispatch, SetStateAction } from "react";
 import { AuthContext } from "./context/AuthContext";
 
 import Sidebar from "./components/sidebar/sidebar";
@@ -8,6 +9,7 @@ import BookingsCalendarPage from "./components/calendar/BookingsCalendarPage";
 import AttendancePage from "./components/attendance/AttendancePage";
 import Login from "./login/Login";
 import RequireRole from "./components/auth/RequireRole";
+import TicketCardsPage from "./pages/TicketCardsPage";
 
 import useMediaQuery from "./helpers/useMediaQuery";
 
@@ -21,6 +23,44 @@ function DashboardPage({ onOpenSidebar }: { onOpenSidebar: () => void }) {
 
 function AttendanceRoute({ onOpenSidebar }: { onOpenSidebar: () => void }) {
   return <AttendancePage onOpenSidebar={onOpenSidebar} />;
+}
+
+function wellbeingViewFromLocation(location: ReturnType<typeof useLocation>) {
+  const params = new URLSearchParams(location.search);
+  const queryView = String(params.get("view") || params.get("wb_view") || "").toLowerCase();
+  if (queryView === "tickets" || queryView === "safeguarding-tickets") return "tickets";
+
+  const hashView = location.hash.replace(/^#/, "").toLowerCase();
+  if (hashView === "tickets" || hashView === "safeguarding-tickets") return "tickets";
+
+  const cleanPath = location.pathname.replace(/\/+$/, "").toLowerCase();
+  if (cleanPath.endsWith("/tickets") || cleanPath.endsWith("/safeguarding-tickets")) return "tickets";
+
+  return "";
+}
+
+function CoachWellbeingRoute({
+  setMobileOpen,
+  isDesktop,
+}: {
+  setMobileOpen: Dispatch<SetStateAction<boolean>>;
+  isDesktop: boolean;
+}) {
+  const location = useLocation();
+  const role = localStorage.getItem("role");
+
+  if (wellbeingViewFromLocation(location) === "tickets" && role !== "qa") {
+    return <Navigate to="/" replace />;
+  }
+
+  return (
+    <Suspense fallback={<div className="min-h-screen rounded-3xl bg-white p-6 text-sm text-slate-500">Loading wellbeing...</div>}>
+      <CoachWellbeingPage
+        setMobileOpen={setMobileOpen}
+        isDesktop={isDesktop}
+      />
+    </Suspense>
+  );
 }
 
 export default function App() {
@@ -80,8 +120,18 @@ export default function App() {
           <Routes>
             <Route path="/login" element={<Login />} />
 
-            {/* Default redirect to wellbeing */}
-            <Route path="/" element={<Navigate to="/coach-wellbeing" replace />} />
+            {/* Default ticket cards */}
+            <Route
+              path="/"
+              element={
+                <RequireRole allow={["qa", "coach"]}>
+                  <TicketCardsPage
+                    onOpenSidebar={() => setMobileOpen(true)}
+                    isDesktop={isDesktop}
+                  />
+                </RequireRole>
+              }
+            />
 
             {/* QA + Coach */}
             <Route
@@ -116,12 +166,10 @@ export default function App() {
               path="/coach-wellbeing/*"
               element={
                 <RequireRole allow={["qa", "coach"]}>
-                  <Suspense fallback={<div className="min-h-screen rounded-3xl bg-white p-6 text-sm text-slate-500">Loading wellbeing...</div>}>
-                    <CoachWellbeingPage
-                      setMobileOpen={setMobileOpen}
-                      isDesktop={isDesktop}
-                    />
-                  </Suspense>
+                  <CoachWellbeingRoute
+                    setMobileOpen={setMobileOpen}
+                    isDesktop={isDesktop}
+                  />
                 </RequireRole>
               }
             />
@@ -151,7 +199,7 @@ export default function App() {
             />
 
             {/* fallback */}
-            <Route path="*" element={<Navigate to="/coach-wellbeing" replace />} />
+            <Route path="*" element={<Navigate to="/" replace />} />
           </Routes>
         </div>
       </main>

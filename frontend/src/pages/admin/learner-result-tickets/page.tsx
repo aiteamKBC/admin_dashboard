@@ -5,6 +5,7 @@ import TicketCard from './components/TicketCard';
 import TableView from './components/TableView';
 import TicketDetailDrawer from './components/TicketDetailDrawer';
 import { useLearnerData, type Learner, type LearnerDataset } from './useLearnerData';
+import { accountFetch } from '@/services/accountFetch';
 
 const assessmentExportKeys = [
   ['wellbeingAssessment', 'Wellbeing Assessment'],
@@ -211,8 +212,9 @@ function downloadLearnerSummaryPdf(learner: Learner, data: LearnerDataset) {
 }
 
 export default function AdminLearnerResultTickets() {
-  const { data } = useLearnerData();
+  const { data, isLoading, error } = useLearnerData();
   const { learners: baseLearners } = data;
+  const role = String(localStorage.getItem('role') || '').toLowerCase();
   const [searchName, setSearchName] = useState('');
   const [searchEmail, setSearchEmail] = useState('');
   const [statusFilter, setStatusFilter] = useState('All');
@@ -345,7 +347,7 @@ export default function AdminLearnerResultTickets() {
   const persistReview = async (email: string, body: Record<string, string>) => {
     if (!email) return;
     try {
-      await fetch('/api/accounts/learner-result-tickets/review/', {
+      await accountFetch('/api/accounts/learner-result-tickets/review/', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ email, ...body }),
@@ -416,8 +418,8 @@ export default function AdminLearnerResultTickets() {
               <p className="text-sm text-white/70 mt-1.5">Monitor assessment completion, risk patterns, review workload, and career recommendations.</p>
             </div>
             <div className="flex shrink-0 flex-col sm:flex-row gap-3">
-              <a href="/coach-wellbeing" className="inline-flex h-10 items-center justify-center px-4 text-sm font-semibold bg-white text-[#241453] rounded-xl hover:bg-white/90 transition-colors cursor-pointer whitespace-nowrap shadow-sm">
-                <i className="ri-arrow-left-line mr-1.5"></i>Back to Dashboard
+              <a href="/" className="inline-flex h-10 items-center justify-center px-4 text-sm font-semibold bg-white text-[#241453] rounded-xl hover:bg-white/90 transition-colors cursor-pointer whitespace-nowrap shadow-sm">
+                <i className="ri-arrow-left-line mr-1.5"></i>Back to Cards
               </a>
             </div>
           </div>
@@ -530,16 +532,32 @@ export default function AdminLearnerResultTickets() {
           </div>
         </div>
 
-        {filteredTickets.length === 0 ? (
+        {isLoading ? (
+          <div className="bg-background-50 rounded-lg border border-background-200/70 p-12 text-center">
+            <div className="w-14 h-14 mx-auto rounded-full bg-background-100 flex items-center justify-center mb-3">
+              <i className="ri-loader-4-line text-2xl text-foreground-300"></i>
+            </div>
+            <h4 className="text-sm font-semibold text-foreground-800 mb-1">Loading learners...</h4>
+            <p className="text-xs text-foreground-500">Checking the learner records available to your role.</p>
+          </div>
+        ) : filteredTickets.length === 0 ? (
           <div className="bg-background-50 rounded-lg border border-background-200/70 p-12 text-center">
             <div className="w-14 h-14 mx-auto rounded-full bg-background-100 flex items-center justify-center mb-3">
               <i className="ri-user-search-line text-2xl text-foreground-300"></i>
             </div>
-            <h4 className="text-sm font-semibold text-foreground-800 mb-1">No Learners Found</h4>
-            <p className="text-xs text-foreground-500 mb-4">No learners match your current filters.</p>
-            <button onClick={clearAllFilters} className="px-4 py-2 text-xs font-medium bg-primary-500 text-background-50 rounded-md hover:bg-primary-600 transition-colors cursor-pointer whitespace-nowrap">
-              Clear All Filters
-            </button>
+            <h4 className="text-sm font-semibold text-foreground-800 mb-1">
+              {role === 'coach' && learners.length === 0 ? 'No students assigned to you yet' : 'No Learners Found'}
+            </h4>
+            <p className="text-xs text-foreground-500 mb-4">
+              {error || (role === 'coach' && learners.length === 0
+                ? 'This account is active, but there are no learner result records linked to your coach email.'
+                : 'No learners match your current filters.')}
+            </p>
+            {learners.length > 0 && (
+              <button onClick={clearAllFilters} className="px-4 py-2 text-xs font-medium bg-primary-500 text-background-50 rounded-md hover:bg-primary-600 transition-colors cursor-pointer whitespace-nowrap">
+                Clear All Filters
+              </button>
+            )}
           </div>
         ) : viewMode === 'cards' ? (
           <div className="grid grid-cols-1 lg:grid-cols-2 2xl:grid-cols-3 gap-4">

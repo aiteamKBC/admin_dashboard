@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { accountFetch } from '@/services/accountFetch';
 
 type AssessmentResult = {
   overallScore: number | null;
@@ -88,7 +89,7 @@ export function useLearnerData() {
 
     async function loadData() {
       try {
-        const response = await fetch('/api/accounts/learner-result-tickets/', {
+        const response = await accountFetch('/api/accounts/learner-result-tickets/', {
           headers: { Accept: 'application/json' },
           signal: controller.signal,
         });

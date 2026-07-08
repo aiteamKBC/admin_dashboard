@@ -145,12 +145,12 @@ function normaliseRisk(r: string): string {
 
 function displayRiskLabel(r: string): string {
   const risk = normaliseRisk(r);
-  return risk === "Very High" ? "Critical" : risk;
+  return risk === "Very High" ? "High" : risk;
 }
 
 function riskBadgeClass(level: string): string {
   const v = (level || "").toLowerCase();
-  if (v === "very high") return "bg-[#F5E8E8] text-[#8B2020] border border-[#D9AAAA]";
+  if (v === "very high") return "bg-[#FEF0F0] text-[#B85858] border border-[#EDD5D5]";
   if (v === "high") return "bg-[#FEF0F0] text-[#B85858] border border-[#EDD5D5]";
   if (v === "moderate" || v === "medium") return "bg-[#FEF9EE] text-[#9A7030] border border-[#EDD8A8]";
   if (v === "low") return "bg-[#F2FAF6] text-[#3D7A55] border border-[#BDDECE]";
@@ -159,7 +159,7 @@ function riskBadgeClass(level: string): string {
 
 function reportSectionButtonClass(level?: string | null): string {
   const v = normaliseRisk(String(level || "")).toLowerCase();
-  if (v === "very high") return "border-[#D9AAAA] bg-[#F5E8E8] text-[#8B2020] hover:bg-[#EFDADA]";
+  if (v === "very high") return "border-[#EDD5D5] bg-[#FEF0F0] text-[#B85858] hover:bg-[#F9E3E3]";
   if (v === "high") return "border-[#EDD5D5] bg-[#FEF0F0] text-[#B85858] hover:bg-[#F9E3E3]";
   if (v === "moderate" || v === "medium") return "border-[#EDD8A8] bg-[#FEF9EE] text-[#9A7030] hover:bg-[#F7ECCE]";
   if (v === "low") return "border-[#BDDECE] bg-[#F2FAF6] text-[#3D7A55] hover:bg-[#E2F3EA]";
@@ -619,14 +619,14 @@ async function downloadInclusivenessPDF(report: OnboardingReport) {
 
   const riskColor = (l: string): [number,number,number] => {
     const v = (l || "").toLowerCase();
-    if (v === "very high") return C.vhRed;
+    if (v === "very high") return C.red;
     if (v === "high") return C.red;
     if (v === "moderate" || v === "medium") return C.amber;
     return C.green;
   };
   const riskBg = (l: string): [number,number,number] => {
     const v = (l || "").toLowerCase();
-    if (v === "very high") return C.vhRedBg;
+    if (v === "very high") return C.redBg;
     if (v === "high") return C.redBg;
     if (v === "moderate" || v === "medium") return C.amberBg;
     return C.greenBg;
@@ -692,7 +692,7 @@ async function downloadInclusivenessPDF(report: OnboardingReport) {
   doc.setFillColor(...riskColor(riskLvl));
   doc.roundedRect(BADGE_X, curY + 7, BADGE_W, 12, 2.5, 2.5, "F");
   doc.setFontSize(7.5); doc.setFont("helvetica", "bold"); doc.setTextColor(...C.white);
-  doc.text(`${riskLvl.toUpperCase()} RISK`, BADGE_X + BADGE_W / 2, curY + 14.5, { align: "center" });
+  doc.text(`${displayRiskLabel(riskLvl).toUpperCase()} RISK`, BADGE_X + BADGE_W / 2, curY + 14.5, { align: "center" });
   curY += 40;
 
   // ── OVERALL SCORE ─────────────────────────────────────────────────────────
@@ -919,7 +919,7 @@ async function downloadInclusivenessPDF(report: OnboardingReport) {
         if (data.section === "body" && data.column.index === 0) {
           const v = String(data.cell.raw || "").toLowerCase();
           data.cell.styles.fontStyle = "bold";
-          if (v === "very high") data.cell.styles.textColor = C.vhRed;
+          if (v === "very high") data.cell.styles.textColor = C.red;
           else if (v === "high" || v === "urgent") data.cell.styles.textColor = C.red;
           else if (v === "medium" || v === "moderate") data.cell.styles.textColor = C.amber;
           else data.cell.styles.textColor = C.green;
@@ -1200,7 +1200,7 @@ function TabBtn({ active, onClick, children }: { active: boolean; onClick: () =>
 
 function ScoreRing({ score, maxScore, pct, riskLevel }: { score: number; maxScore: number; pct: number; riskLevel: string }) {
   const v = riskLevel.toLowerCase();
-  const stroke = v === "very high" ? "#A84040" : v === "high" ? "#D97070" : v === "moderate" || v === "medium" ? "#D4A060" : "#5AAA7A";
+  const stroke = v === "very high" || v === "high" ? "#D97070" : v === "moderate" || v === "medium" ? "#D4A060" : "#5AAA7A";
   const r = 52;
   const circ = 2 * Math.PI * r;
   const dash = (pct / 100) * circ;
@@ -1292,7 +1292,7 @@ function SectionReportModal({ section, onClose }: { section: SectionView | null;
     Medium: "bg-amber-100 text-amber-700 border-amber-200",
     Moderate: "bg-amber-100 text-amber-700 border-amber-200",
     High: "bg-red-100 text-red-700 border-red-200",
-    "Very High": "bg-red-200 text-red-800 border-red-300",
+    "Very High": "bg-red-100 text-red-700 border-red-200",
   };
 
   const priorityCls: Record<string, string> = {
@@ -1546,8 +1546,8 @@ function OnboardingReportDetailPanel({
   const riskColorCls = (level: string) => {
     const v = (level || "").toLowerCase();
     if (v === "very high") return {
-      bg: "bg-[#F5EDED]", border: "border-[#D9AAAA]", text: "text-[#8B2020]",
-      barColor: "#A84040", badge: "bg-[#F5E8E8] text-[#8B2020] border-[#D9AAAA]",
+      bg: "bg-[#FEF5F5]", border: "border-[#EDD5D5]", text: "text-[#C06060]",
+      barColor: "#D97070", badge: "bg-[#FEF0F0] text-[#B85858] border-[#EDD5D5]",
     };
     if (v === "high") return {
       bg: "bg-[#FEF5F5]", border: "border-[#EDD5D5]", text: "text-[#C06060]",
@@ -1613,7 +1613,7 @@ function OnboardingReportDetailPanel({
                   {reportHeader.learnerName || report.learner_name || "Learner Inclusiveness Report"}
                 </h1>
                 <span className={`inline-flex rounded-full border px-3 py-1 text-xs font-bold ${rc.badge}`}>
-                  {riskLvl} Risk
+                  {displayRiskLabel(riskLvl)} Risk
                 </span>
               </div>
               <p className="mt-1 text-sm text-[#C4B5F4]">{reportHeader.learnerEmail || report.learner_email}</p>
@@ -1674,7 +1674,7 @@ function OnboardingReportDetailPanel({
                 <div className="flex flex-col items-center justify-center rounded-3xl bg-white p-6 shadow-sm">
                   <ScoreRing score={score} maxScore={maxScore} pct={pct} riskLevel={riskLvl} />
                   <p className="mt-3 text-xs font-semibold uppercase tracking-wide text-[#7B6D9B]">Overall Score</p>
-                  <p className="mt-1 text-sm font-bold text-[#241453]">{riskLvl} Risk Profile</p>
+                  <p className="mt-1 text-sm font-bold text-[#241453]">{displayRiskLabel(riskLvl)} Risk Profile</p>
                 </div>
 
                 {/* Info grid */}
@@ -1732,7 +1732,7 @@ function OnboardingReportDetailPanel({
                             </div>
                             <div className="min-w-0 flex-1">
                               <p className="text-xs font-semibold text-[#241453] leading-tight">{section.label}</p>
-                              <p className={`text-[11px] font-bold mt-0.5 ${secRc.text}`}>{section.riskLevel}</p>
+                              <p className={`text-[11px] font-bold mt-0.5 ${secRc.text}`}>{displayRiskLabel(section.riskLevel || "")}</p>
                             </div>
                             {matched && (
                               <span className="shrink-0 rounded-lg border border-[#DED5F3] bg-white/70 px-2 py-0.5 text-[9px] font-semibold text-[#644D93]">
@@ -1825,7 +1825,7 @@ function OnboardingReportDetailPanel({
                     >
                       <div className="flex items-center gap-3 min-w-0">
                         <span className={`shrink-0 rounded-xl border px-3 py-1 text-xs font-bold ${fRc.badge}`}>
-                          {finding.riskLevel}
+                          {displayRiskLabel(finding.riskLevel || "")}
                         </span>
                         <span className="text-sm font-semibold text-[#241453]">{finding.area}</span>
                       </div>
@@ -2231,7 +2231,7 @@ function ArchivedOnboardingReportsPanel({
       .then((data: any) => {
         if (mounted) setItems(Array.isArray(data?.reports) ? data.reports : []);
       })
-      .catch(() => { if (mounted) setError("Failed to load archived onboarding tickets."); })
+      .catch(() => { if (mounted) setError("Failed to load archived inclusion dashboard reports."); })
       .finally(() => { if (mounted) setLoading(false); });
     return () => { mounted = false; };
   }, [coachEmail]);
@@ -2243,7 +2243,7 @@ function ArchivedOnboardingReportsPanel({
       setItems((prev) => prev.filter((item) => item.id !== id));
       onRestored();
     } catch {
-      setError("Failed to restore onboarding ticket.");
+      setError("Failed to restore inclusion dashboard report.");
     } finally {
       setRestoringId(null);
     }
@@ -2257,7 +2257,7 @@ function ArchivedOnboardingReportsPanel({
           <div>
             <div className="flex items-center gap-2 text-base font-semibold text-[#241453]">
               <Archive className="h-4 w-4 text-[#7B6D9B]" />
-              Archived Onboarding Tickets
+              Archived Inclusion Dashboard Reports
             </div>
             <div className="mt-0.5 text-xs text-[#7B6D9B]">{items.length} ticket{items.length !== 1 ? "s" : ""} archived</div>
           </div>
@@ -2267,11 +2267,11 @@ function ArchivedOnboardingReportsPanel({
         </div>
 
         <div className="custom-scroll flex-1 overflow-y-auto p-6">
-          {loading && <div className="py-12 text-center text-sm text-[#7B6D9B]">Loading archived onboarding tickets...</div>}
+          {loading && <div className="py-12 text-center text-sm text-[#7B6D9B]">Loading archived inclusion dashboard reports...</div>}
           {!loading && error && <div className="rounded-xl border border-red-200 bg-red-50 p-4 text-sm text-red-600">{error}</div>}
           {!loading && !error && items.length === 0 && (
             <div className="rounded-xl border border-[#ECE7F7] bg-[#F8F6FC] p-8 text-center text-sm text-[#7B6D9B]">
-              No archived onboarding tickets.
+              No archived inclusion dashboard reports.
             </div>
           )}
           {!loading && !error && items.length > 0 && (
@@ -2323,7 +2323,7 @@ function OnboardingPageLoader() {
       </div>
       <div className="flex flex-col gap-3 px-5 py-4 sm:flex-row sm:items-center sm:justify-between">
         <div>
-          <p className="text-sm font-semibold text-[#241453]">Loading onboarding tickets</p>
+          <p className="text-sm font-semibold text-[#241453]">Loading inclusion dashboard</p>
           <p className="mt-0.5 text-xs text-[#7B6D9B]">Fetching reports, filters, and table rows.</p>
         </div>
         <div className="inline-flex items-center gap-2 rounded-full border border-[#DCCFF6] bg-white px-3 py-1.5 text-xs font-semibold text-[#5A3EA6] shadow-sm">
@@ -2345,7 +2345,7 @@ function OnboardingTicketsSkeleton() {
         <OnboardingPageLoader />
 
         <div className="mb-6">
-          <h2 className="text-[20px] font-semibold text-[#241453]">Onboarding Tickets</h2>
+          <h2 className="text-[20px] font-semibold text-[#241453]">Inclusion Dashboard</h2>
           <OnboardingSkeletonBlock className="mt-2 h-3.5 w-64 bg-[#F3EFFC]" />
         </div>
 
@@ -2379,8 +2379,8 @@ function OnboardingTicketsSkeleton() {
           </div>
         </div>
 
-        <div className="mt-6 grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-5">
-          {[0, 1, 2, 3, 4].map((item) => (
+        <div className="mt-6 grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
+          {[0, 1, 2, 3].map((item) => (
             <div key={item} className="rounded-3xl border border-[#ECE7F7] bg-[#F8F6FC] p-5">
               <div className="mb-3 flex items-center justify-between">
                 <OnboardingSkeletonBlock className="h-3 w-24" />
@@ -2416,6 +2416,7 @@ function OnboardingTicketsSkeleton() {
 // ── Main OnboardingTicketsView ─────────────────────────────────────────────
 
 export default function OnboardingTicketsView({ coachEmail }: { coachEmail?: string }) {
+  const role = String(localStorage.getItem("role") || "").toLowerCase();
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [reports, setReports] = useState<OnboardingReport[]>([]);
@@ -2457,7 +2458,7 @@ export default function OnboardingTicketsView({ coachEmail }: { coachEmail?: str
         applyReportRows(rows);
       } catch (err: any) {
         if (!mounted) return;
-        setError(err?.message || "Failed to load onboarding reports");
+        setError(err?.message || "Failed to load inclusion dashboard reports");
       } finally {
         if (mounted) setLoading(false);
       }
@@ -2475,7 +2476,7 @@ export default function OnboardingTicketsView({ coachEmail }: { coachEmail?: str
       const res = await getOnboardingReports((coachEmail || "").trim() || undefined);
       applyReportRows(res?.reports || []);
     } catch (err: any) {
-      setError(err?.message || "Failed to load onboarding reports");
+      setError(err?.message || "Failed to load inclusion dashboard reports");
     } finally {
       setLoading(false);
     }
@@ -2493,7 +2494,7 @@ export default function OnboardingTicketsView({ coachEmail }: { coachEmail?: str
       });
       setArchiveConfirmId(null);
     } catch (err: any) {
-      setError(err?.message || "Failed to archive onboarding report");
+      setError(err?.message || "Failed to archive inclusion dashboard report");
     } finally {
       setArchivingId(null);
     }
@@ -2507,7 +2508,7 @@ export default function OnboardingTicketsView({ coachEmail }: { coachEmail?: str
       setReports((prev) => prev.map((item) => item.id === reportId ? { ...item, ...report } : item));
       return report;
     } catch (err: any) {
-      setError(err?.message || "Failed to load onboarding report details");
+      setError(err?.message || "Failed to load inclusion dashboard report details");
       return null;
     } finally {
       setDetailLoadingId(null);
@@ -2547,6 +2548,11 @@ export default function OnboardingTicketsView({ coachEmail }: { coachEmail?: str
       return true;
     });
   }, [reports, search, coachEmail]);
+
+  const emptyReportsMessage =
+    role === "coach" && reports.length === 0
+      ? "No students assigned to you yet"
+      : "No reports found";
 
   const programmeOptions = useMemo(() => {
     const values = new Set<string>();
@@ -2665,13 +2671,15 @@ export default function OnboardingTicketsView({ coachEmail }: { coachEmail?: str
     if (value === "green") setFilters((f) => ({ ...f, risk: ["Low"] }));
   }
 
-  const stats = useMemo(() => ({
-    total: filtered.length,
-    veryHigh: filtered.filter((r) => normaliseRisk(r.overall_risk_level) === "Very High").length,
-    high: filtered.filter((r) => normaliseRisk(r.overall_risk_level) === "High").length,
-    moderate: filtered.filter((r) => normaliseRisk(r.overall_risk_level) === "Moderate").length,
-    low: filtered.filter((r) => normaliseRisk(r.overall_risk_level) === "Low").length,
-  }), [filtered]);
+  const statCardCounts = useMemo(() => ({
+    total: evidenceFilteredForRisk.length,
+    red: evidenceFilteredForRisk.filter((r) => {
+      const nr = normaliseRisk(r.overall_risk_level);
+      return nr === "Very High" || nr === "High";
+    }).length,
+    moderate: evidenceFilteredForRisk.filter((r) => normaliseRisk(r.overall_risk_level) === "Moderate").length,
+    low: evidenceFilteredForRisk.filter((r) => normaliseRisk(r.overall_risk_level) === "Low").length,
+  }), [evidenceFilteredForRisk]);
 
   const activeFilterCount =
     filters.risk.length +
@@ -2695,8 +2703,8 @@ export default function OnboardingTicketsView({ coachEmail }: { coachEmail?: str
     const ws = XLSX.utils.json_to_sheet(rows);
     ws["!cols"] = [{ wch: 22 }, { wch: 30 }, { wch: 35 }, { wch: 25 }, { wch: 22 }, { wch: 12 }, { wch: 10 }, { wch: 10 }, { wch: 16 }, { wch: 14 }];
     const wb = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(wb, ws, "Onboarding Reports");
-    XLSX.writeFile(wb, `onboarding-reports-${new Date().toISOString().split("T")[0]}.xlsx`);
+    XLSX.utils.book_append_sheet(wb, ws, "Inclusion Dashboard");
+    XLSX.writeFile(wb, `inclusion-dashboard-${new Date().toISOString().split("T")[0]}.xlsx`);
   }
 
   async function exportToPDF() {
@@ -2719,7 +2727,7 @@ export default function OnboardingTicketsView({ coachEmail }: { coachEmail?: str
 
     const riskColor = (level: string): [number,number,number] => {
       const v = (level || "").toLowerCase();
-      if (v === "very high") return [139, 32, 32];
+      if (v === "very high") return [192, 80, 80];
       if (v === "high") return [192, 80, 80];
       if (v === "moderate" || v === "medium") return [178, 119, 21];
       if (v === "low") return [60, 130, 90];
@@ -2750,7 +2758,7 @@ export default function OnboardingTicketsView({ coachEmail }: { coachEmail?: str
     doc.setFontSize(13);
     doc.setFont("helvetica", "bold");
     doc.setTextColor(...C.white);
-    doc.text("Onboarding Reports", mx + 21, 13);
+    doc.text("Inclusion Dashboard Reports", mx + 21, 13);
 
     // Subtitle
     doc.setFontSize(8);
@@ -2826,11 +2834,11 @@ export default function OnboardingTicketsView({ coachEmail }: { coachEmail?: str
       doc.setFontSize(7);
       doc.setFont("helvetica", "normal");
       doc.setTextColor(...C.white);
-      doc.text("Kent Business College — Onboarding Reports — Confidential", mx, H - 3.5);
+      doc.text("Kent Business College - Inclusion Dashboard Reports - Confidential", mx, H - 3.5);
       doc.text(`Page ${i} of ${pageCount}`, W - mx, H - 3.5, { align: "right" });
     }
 
-    doc.save(`onboarding-reports-${new Date().toISOString().split("T")[0]}.pdf`);
+    doc.save(`inclusion-dashboard-${new Date().toISOString().split("T")[0]}.pdf`);
   }
 
   if (loading && reports.length === 0) {
@@ -2843,7 +2851,7 @@ export default function OnboardingTicketsView({ coachEmail }: { coachEmail?: str
         <div className="pointer-events-none absolute inset-0 z-20 flex items-start justify-end rounded-3xl bg-white/45 p-4 backdrop-blur-[1px]">
           <div className="inline-flex items-center gap-2 rounded-full border border-[#E7E2F3] bg-white px-3 py-1.5 text-xs font-semibold text-[#644D93] shadow-sm">
             <span className="h-2 w-2 animate-pulse rounded-full bg-[#8B6BC8]" />
-            Refreshing onboarding reports...
+            Refreshing inclusion dashboard reports...
           </div>
         </div>
       ) : null}
@@ -2851,7 +2859,7 @@ export default function OnboardingTicketsView({ coachEmail }: { coachEmail?: str
         {/* Header */}
         <div className="mb-6 flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
           <div>
-            <h2 className="text-[20px] font-semibold text-[#241453]">Onboarding Tickets</h2>
+            <h2 className="text-[20px] font-semibold text-[#241453]">Inclusion Dashboard</h2>
             <p className="mt-1 text-sm text-[#7B6D9B]">Learner inclusiveness screening reports</p>
           </div>
         </div>
@@ -2912,7 +2920,7 @@ export default function OnboardingTicketsView({ coachEmail }: { coachEmail?: str
                   type="button"
                   onClick={() => setExportOpen((v) => !v)}
                   disabled={loading || filtered.length === 0}
-                  title={filtered.length === 0 ? "No onboarding reports available to export" : "Export current onboarding report data"}
+                  title={filtered.length === 0 ? "No inclusion dashboard reports available to export" : "Export current inclusion dashboard report data"}
                   className="inline-flex h-10 items-center gap-2 rounded-2xl border border-[#E7E2F3] px-4 text-sm text-[#241453] hover:bg-[#F8F5FF] disabled:cursor-not-allowed disabled:opacity-50"
                 >
                   <FileDown className="h-4 w-4" />
@@ -3048,21 +3056,29 @@ export default function OnboardingTicketsView({ coachEmail }: { coachEmail?: str
         </div>
 
         {/* Stat Cards */}
-        <div className="mt-6 grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-5">
+        <div className="mt-6 grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
           {[
-            { title: "Total Reports",   value: loading && reports.length === 0 ? "…" : stats.total,    icon: <FileText className="h-4 w-4" />,       color: "text-[#0F9B8E]",    bg: "bg-[#E6F7F6]" },
-            { title: "Critical Cases",  value: loading && reports.length === 0 ? "…" : stats.veryHigh, icon: <AlertTriangle className="h-4 w-4" />,  color: "text-[#8B2020]",    bg: "bg-[#F5E8E8]" },
-            { title: "High Risk",       value: loading && reports.length === 0 ? "…" : stats.high,     icon: <AlertTriangle className="h-4 w-4" />,  color: "text-[#C06060]",    bg: "bg-[#FEF0F0]" },
-            { title: "Moderate Risk",   value: loading && reports.length === 0 ? "…" : stats.moderate, icon: <Users className="h-4 w-4" />,          color: "text-[#B08040]",    bg: "bg-[#FEF9EE]" },
-            { title: "Low Risk",        value: loading && reports.length === 0 ? "…" : stats.low,      icon: <CheckCircle className="h-4 w-4" />,    color: "text-[#4A9068]",    bg: "bg-[#F2FAF6]" },
+            { title: "Total Reports",        value: loading && reports.length === 0 ? "..." : statCardCounts.total,    icon: <FileText className="h-4 w-4" />,      color: "text-[#0F9B8E]", bg: "bg-[#E6F7F6]", filter: "all" as OnboardingQuickRisk },
+            { title: "High Risk", value: loading && reports.length === 0 ? "..." : statCardCounts.red,      icon: <AlertTriangle className="h-4 w-4" />, color: "text-[#C06060]", bg: "bg-[#FEF0F0]", filter: "red" as OnboardingQuickRisk },
+            { title: "Moderate Risk",        value: loading && reports.length === 0 ? "..." : statCardCounts.moderate, icon: <Users className="h-4 w-4" />,         color: "text-[#B08040]", bg: "bg-[#FEF9EE]", filter: "amber" as OnboardingQuickRisk },
+            { title: "Low Risk",             value: loading && reports.length === 0 ? "..." : statCardCounts.low,      icon: <CheckCircle className="h-4 w-4" />,   color: "text-[#4A9068]", bg: "bg-[#F2FAF6]", filter: "green" as OnboardingQuickRisk },
           ].map((s) => (
-            <div key={s.title} className="rounded-3xl border border-[#ECE7F7] bg-[#F8F6FC] p-5">
+            <button
+              key={s.title}
+              type="button"
+              onClick={() => setQuickRisk(s.filter)}
+              className={`rounded-3xl border p-5 text-left transition hover:-translate-y-0.5 hover:shadow-md focus:outline-none focus:ring-2 focus:ring-[#866CB6] ${
+                quickRiskValue === s.filter
+                  ? "border-[#BFAFEA] bg-white shadow-sm ring-1 ring-[#BFAFEA]"
+                  : "border-[#ECE7F7] bg-[#F8F6FC]"
+              }`}
+            >
               <div className="mb-3 flex items-center justify-between">
                 <span className="text-xs font-semibold uppercase tracking-wide text-[#7B6D9B]">{s.title}</span>
                 <div className={`flex h-8 w-8 items-center justify-center rounded-xl ${s.bg} ${s.color}`}>{s.icon}</div>
               </div>
               <div className={`text-3xl font-bold ${s.color}`}>{s.value}</div>
-            </div>
+            </button>
           ))}
         </div>
 
@@ -3099,7 +3115,7 @@ export default function OnboardingTicketsView({ coachEmail }: { coachEmail?: str
                   </tr>
                 ) : sorted.length === 0 ? (
                   <tr>
-                    <td colSpan={14} className="px-5 py-10 text-center text-slate-500">No reports found</td>
+                    <td colSpan={14} className="px-5 py-10 text-center text-slate-500">{emptyReportsMessage}</td>
                   </tr>
                 ) : (
                   sorted.map((r) => {
@@ -3144,7 +3160,7 @@ export default function OnboardingTicketsView({ coachEmail }: { coachEmail?: str
                               Medium: "bg-amber-100 text-amber-700",
                               Moderate: "bg-amber-100 text-amber-700",
                               High: "bg-red-100 text-red-700",
-                              "Very High": "bg-red-200 text-red-800",
+                              "Very High": "bg-red-100 text-red-700",
                             };
                             return (
                               <div className="flex flex-col gap-1.5 min-w-[120px]">

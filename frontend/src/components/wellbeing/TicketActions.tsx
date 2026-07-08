@@ -1364,7 +1364,7 @@ export function OnboardingActionsDropdown({
     createdAt: null,
     status: currentStatus as TicketStatus,
     daysOpen: 0,
-    subject: `Onboarding Report #${reportId}`,
+    subject: `Inclusion Dashboard Report #${reportId}`,
     details: "",
     urgency: "medium",
     preferredContact: "email",
@@ -1398,7 +1398,7 @@ export function OnboardingActionsDropdown({
               <div className="flex h-6 w-6 items-center justify-center rounded-lg bg-[#644D93]/10">
                 <BookOpen className="h-3.5 w-3.5 text-[#644D93]" />
               </div>
-              <p className="text-xs font-semibold text-[#3D2A73]">Onboarding Actions</p>
+              <p className="text-xs font-semibold text-[#3D2A73]">Inclusion Dashboard Actions</p>
             </div>
 
             <div className="custom-scroll overflow-y-auto py-1.5" style={{ maxHeight: pos.maxH }}>

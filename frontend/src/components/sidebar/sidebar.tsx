@@ -72,10 +72,10 @@ export default function Sidebar({
         <div>
           <div className="flex items-center gap-3 p-5 text-xl font-bold text-white">
             <span className="inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-white/10">
-              <i className="fa-solid fa-file-shield"/>
+              <i className="fa-solid fa-table-columns"/>
             </span>
 
-            {(!collapsed || !isDesktop) && <span className="min-w-0 flex-1 truncate">Safeguarding</span>}
+            {(!collapsed || !isDesktop) && <span className="min-w-0 flex-1 truncate">KBC Dashboard</span>}
 
             {!isDesktop && (
               <button
@@ -113,14 +113,6 @@ export default function Sidebar({
               label="My Calendar"
               onClick={() => !isDesktop && setMobileOpen(false)}
             /> */}
-
-            <SidebarLink
-              to="/coach-wellbeing"
-              collapsed={collapsed && isDesktop}
-              icon="fa-shield-heart"
-              label="Wellbeing & Safeguarding"
-              onClick={() => !isDesktop && setMobileOpen(false)}
-            />
 
             {/* <SidebarExternalLink
               href="https://kentbusinesscollege.org/psychological-dashboard/"

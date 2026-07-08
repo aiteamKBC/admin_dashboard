@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import type { LearnerDataset } from '../useLearnerData';
+import { accountFetch } from '@/services/accountFetch';
 
 // ── Types ────────────────────────────────────────────────────────────────────
 type HistoryAssessment = {
@@ -52,7 +53,7 @@ function HistoryModal({ learnerName, email, onClose }: { learnerName: string; em
 
   useEffect(() => {
     setLoading(true);
-    fetch(`/api/accounts/learner-result-tickets/history/?email=${encodeURIComponent(email)}`)
+    accountFetch(`/api/accounts/learner-result-tickets/history/?email=${encodeURIComponent(email)}`)
       .then(r => r.ok ? r.json() : Promise.reject(r.status))
       .then(d => { setSubmissions(d.submissions ?? []); setLoading(false); })
       .catch(() => { setErr('Failed to load history.'); setLoading(false); });
