@@ -1194,7 +1194,7 @@ const ONBOARDING_ACTION_GROUPS: ActionGroup[] = [
       { id: "mark_reviewed", label: "Mark as Reviewed", newStatus: "reviewed" },
       { id: "mark_flagged", label: "Flag for Attention", newStatus: "flagged" },
       { id: "close_case", label: "Close Case", requiresModal: true, newStatus: "closed", danger: true },
-      { id: "reopen_case", label: "Reopen / Set Active", newStatus: "active", success: true },
+      { id: "reopen_case", label: "Set Active", newStatus: "active", success: true },
     ],
   },
 ];
@@ -1345,7 +1345,7 @@ export function OnboardingActionsDropdown({
   const filteredGroups = ONBOARDING_ACTION_GROUPS.map((group) => ({
     ...group,
     items: group.items.filter((item) => {
-      if (item.id === "reopen_case") return currentStatus === "closed";
+      if (item.id === "reopen_case") return ["closed", "flagged", "reviewed"].includes(currentStatus);
       if (item.id === "close_case") return currentStatus !== "closed";
       return true;
     }),
