@@ -15,6 +15,8 @@ import uuid
 import time
 import base64
 import re
+import logging
+import requests
 
 # wellbeing
 from datetime import datetime
@@ -37,6 +39,8 @@ from django.conf import settings
 from django.core.files.storage import FileSystemStorage
 
 from django.utils.text import get_valid_filename
+
+logger = logging.getLogger(__name__)
 
 class EmailOrUsernameTokenObtainPairView(TokenObtainPairView):
     serializer_class = EmailOrUsernameTokenObtainPairSerializer
@@ -3276,6 +3280,81 @@ def _is_inclusion_admin(user, role: str) -> bool:
     return role in {"qa", "admin"} or getattr(user, "is_staff", False) or getattr(user, "is_superuser", False)
 
 
+def _onboarding_tier_label(tier):
+    return {
+        1: "Awareness",
+        2: "Adaptation",
+        3: "Structured Support",
+        4: "Complex / Safeguarding",
+    }.get(_normalise_onboarding_tier(tier), "")
+
+
+def _ticket_flag_webhook_url(area="inclusion"):
+    area_key = str(area or "").strip().upper().replace("-", "_").replace(" ", "_")
+    env_keys = [
+        f"N8N_{area_key}_FLAG_WEBHOOK_URL",
+        "N8N_TICKET_FLAG_WEBHOOK_URL",
+        "N8N_FLAG_TICKET_WEBHOOK_URL",
+    ]
+    for env_key in env_keys:
+        value = os.getenv(env_key, "").strip()
+        if value:
+            return value
+    return ""
+
+
+def _trigger_inclusion_flag_webhook(report, request, original_status, new_status):
+    webhook_url = _ticket_flag_webhook_url("inclusion")
+    if not webhook_url:
+        return {"sent": False, "reason": "not_configured"}
+
+    summary = _serialize_onboarding_report(report)
+    frontend_url = os.getenv("FRONTEND_URL", "").strip().rstrip("/")
+    dashboard_url = f"{frontend_url}/coach-wellbeing?view=inclusion-dashboard" if frontend_url else ""
+    actor_email = (getattr(request.user, "email", "") or "").strip()
+    actor_username = (getattr(request.user, "username", "") or "").strip()
+
+    payload = {
+        "event": "inclusion_ticket_flagged",
+        "ticket_type": "inclusion",
+        "ticket_id": str(getattr(report, "id", "")),
+        "report_id": str(getattr(report, "id", "")),
+        "learner_name": summary.get("learner_name", ""),
+        "learner_email": summary.get("learner_email", "") or summary.get("academic_email", ""),
+        "academic_email": summary.get("academic_email", ""),
+        "programme": summary.get("programme", ""),
+        "organisation": summary.get("organization_name", ""),
+        "coach_name": summary.get("coach_name", ""),
+        "coach_email": summary.get("coach_email", ""),
+        "manager_name": summary.get("manager_name", ""),
+        "manager_email": summary.get("manager_email", ""),
+        "risk": summary.get("overall_risk_level", ""),
+        "system_tier": summary.get("system_tier"),
+        "system_tier_label": _onboarding_tier_label(summary.get("system_tier")),
+        "progress_tier": summary.get("progress_tier"),
+        "progress_tier_label": _onboarding_tier_label(summary.get("progress_tier")),
+        "previous_status": original_status or "active",
+        "status": new_status,
+        "flagged_by": _request_actor_label(request),
+        "flagged_by_email": actor_email or actor_username,
+        "flagged_at": timezone.now().isoformat(),
+        "dashboard_url": dashboard_url,
+    }
+
+    try:
+        response = requests.post(
+            webhook_url,
+            json=payload,
+            headers={"Content-Type": "application/json"},
+            timeout=8,
+        )
+        response.raise_for_status()
+        return {"sent": True, "status_code": response.status_code}
+    except requests.RequestException as exc:
+        logger.warning("Inclusion flag webhook failed for report %s: %s", getattr(report, "id", ""), exc)
+        return {"sent": False, "reason": "request_failed"}
+
+
 def _onboarding_risk_from_percentage(value):
     pct = _number_or_none(value)
     if pct is None:
@@ -3903,10 +3982,13 @@ def update_onboarding_report(request, report_id: str):
 
     profile = getattr(request.user, "profile", None)
     role = (getattr(profile, "role", "") or "").strip().lower()
+    original_status = (getattr(_report, "status", "") or "active").strip().lower()
 
     update_kwargs = {}
+    requested_status = None
     if "status" in request.data:
-        update_kwargs["status"] = request.data["status"]
+        requested_status = (str(request.data.get("status") or "")).strip().lower()
+        update_kwargs["status"] = requested_status
     if "progress_tier" in request.data:
         if not _is_inclusion_admin(request.user, role):
             return Response({"detail": "Only admin users can update progress tier"}, status=status.HTTP_403_FORBIDDEN)
@@ -3922,8 +4004,14 @@ def update_onboarding_report(request, report_id: str):
     if update_kwargs:
         LearnerInclusivenessReport.objects.using("wellbeing").filter(id=report_id).update(**update_kwargs)
         _clear_onboarding_reports_cache()
+        webhook_result = None
+        if requested_status == "flagged" and original_status != "flagged":
+            webhook_result = _trigger_inclusion_flag_webhook(_report, request, original_status, requested_status)
 
-    return Response({"id": report_id, **update_kwargs})
+    response_data = {"id": report_id, **update_kwargs}
+    if update_kwargs and webhook_result is not None:
+        response_data["flag_webhook"] = webhook_result
+    return Response(response_data)
 
 
 def _check_onboarding_report_access(request, report_id: str, only_fields=None):
