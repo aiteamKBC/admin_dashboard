@@ -3698,11 +3698,13 @@ def onboarding_reports_list(request):
                 return Response({"detail": "Coach email not found"}, status=status.HTTP_400_BAD_REQUEST)
         archived_param = (request.query_params.get("archived") or "").strip().lower()
         show_archived = archived_param in {"1", "true", "yes"}
+        bypass_cache = "_" in request.query_params
         cache_key = ("onboarding_list_v3", role, coach_email_filter, show_archived)
-        cached = _ONBOARDING_REPORTS_LIST_CACHE.get(cache_key)
         now = time.monotonic()
-        if cached and now < cached.get("expires_at", 0):
-            return Response(cached["data"])
+        if not bypass_cache:
+            cached = _ONBOARDING_REPORTS_LIST_CACHE.get(cache_key)
+            if cached and now < cached.get("expires_at", 0):
+                return Response(cached["data"])
 
         qs = LearnerInclusivenessReport.objects.using("wellbeing").only(
             "id",
@@ -3788,10 +3790,11 @@ def onboarding_reports_list(request):
             rows.append(_serialize_onboarding_report_summary(r))
 
         data = {"reports": rows, "total": len(rows)}
-        _ONBOARDING_REPORTS_LIST_CACHE[cache_key] = {
-            "expires_at": time.monotonic() + 60,
-            "data": data,
-        }
+        if not bypass_cache:
+            _ONBOARDING_REPORTS_LIST_CACHE[cache_key] = {
+                "expires_at": time.monotonic() + 60,
+                "data": data,
+            }
         return Response(data)
 
     except Exception as exc:

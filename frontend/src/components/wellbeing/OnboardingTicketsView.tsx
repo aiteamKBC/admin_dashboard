@@ -2602,7 +2602,9 @@ export default function OnboardingTicketsView({ coachEmail }: { coachEmail?: str
     )));
     try {
       const res = await updateOnboardingReport(reportId, { progress_tier: nextTier });
-      const savedTier = normaliseTierValue(res?.progress_tier);
+      const savedTier = Object.prototype.hasOwnProperty.call(res || {}, "progress_tier")
+        ? normaliseTierValue(res?.progress_tier)
+        : nextTier;
       setReports((prev) => prev.map((report) => (
         report.id === reportId ? { ...report, progress_tier: savedTier } : report
       )));

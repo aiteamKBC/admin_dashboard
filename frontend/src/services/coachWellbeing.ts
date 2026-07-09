@@ -153,6 +153,7 @@ export async function getOnboardingReports(coachEmail?: string, archived = false
   const params = new URLSearchParams();
   if (coachEmail) params.set("coach_email", coachEmail);
   if (archived) params.set("archived", "1");
+  params.set("_", String(Date.now()));
   const query = params.toString() ? `?${params.toString()}` : "";
   return await fetchWithAuth(`/onboarding-reports/${query}`);
 }
