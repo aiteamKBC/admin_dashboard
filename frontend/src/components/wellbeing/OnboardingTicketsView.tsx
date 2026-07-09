@@ -125,7 +125,7 @@ function SortHeaderButton({
     <button
       type="button"
       onClick={onClick}
-      className="inline-flex items-center gap-1 rounded-lg px-1.5 py-1 text-left transition hover:bg-[#F0EBF9] hover:text-[#241453]"
+      className="inline-flex items-center gap-1 whitespace-nowrap rounded-lg px-1.5 py-1 text-left transition hover:bg-[#F0EBF9] hover:text-[#241453]"
     >
       <span>{label}</span>
       <span className={`text-[10px] ${active ? "text-[#241453]" : "text-[#B8AACC]"}`}>
@@ -217,11 +217,11 @@ function TierBadge({
   return (
     <span
       title={info.label}
-      className={`inline-flex min-w-[96px] items-center gap-1.5 rounded-xl border px-2 py-1 text-xs font-semibold ${tierBadgeClass(tier)}`}
+      className={`inline-flex min-w-[126px] items-center gap-1.5 rounded-xl border px-2 py-1 text-xs font-semibold ${tierBadgeClass(tier)}`}
     >
       {tierIcon(tier)}
       <span>
-        <span className="block max-w-[98px] truncate leading-4">{primaryText}</span>
+        <span className="block max-w-[112px] truncate leading-4">{primaryText}</span>
         {labelMode === "full" ? (
           <span className="block max-w-[82px] truncate text-[10px] font-medium opacity-80">{info.helper}</span>
         ) : null}
@@ -2514,8 +2514,8 @@ export default function OnboardingTicketsView({ coachEmail }: { coachEmail?: str
   const [reportStatuses, setReportStatuses] = useState<Map<string, string>>(new Map());
   type OnboardingSortKey = "learner" | "programme" | "organisation" | "coach" | "risk" | "system_tier" | "progress_tier" | "score" | "reports" | "date" | "assigned" | "notes" | "evidence" | "status";
   const [sortConfig, setSortConfig] = useState<{ key: OnboardingSortKey; direction: SortDirection }>({
-    key: "date",
-    direction: "desc",
+    key: "risk",
+    direction: "asc",
   });
   const [notesModal, setNotesModal] = useState<{ reportId: string; learnerName: string } | null>(null);
   const [evidenceModal, setEvidenceModal] = useState<{ reportId: string; learnerName: string } | null>(null);
@@ -2727,7 +2727,7 @@ export default function OnboardingTicketsView({ coachEmail }: { coachEmail?: str
       if (key === "programme") return sortText(report.programme);
       if (key === "organisation") return sortText(report.organization_name);
       if (key === "coach") return sortText(report.coach_name || report.coach_email);
-      if (key === "risk") return sortText(normaliseRisk(report.overall_risk_level));
+      if (key === "risk") return riskRank(report.overall_risk_level) || 99;
       if (key === "system_tier") return sortNumber(normaliseTierValue(report.system_tier) ?? tierFromRisk(report.overall_risk_level) ?? 0);
       if (key === "progress_tier") return sortNumber(normaliseTierValue(report.progress_tier) ?? 0);
       if (key === "score") return sortNumber(report.overall_score);
@@ -3224,24 +3224,24 @@ export default function OnboardingTicketsView({ coachEmail }: { coachEmail?: str
         {/* Table */}
         <div className="mt-6 overflow-hidden rounded-3xl border border-[#E9E3F5]">
           <div className="custom-scroll overflow-auto" style={{ maxHeight: "calc(100vh - 380px)" }}>
-            <table className="w-full min-w-[1280px] table-fixed text-[13px] 2xl:min-w-0 [&_td]:px-3 [&_td]:py-3 [&_th]:px-3 [&_th]:py-3">
+            <table className="w-full min-w-[2400px] table-fixed text-[13px] [&_td]:px-3 [&_td]:py-3 [&_th]:px-3 [&_th]:py-3">
               <colgroup>
-                <col className="w-[10%]" />
-                <col className="w-[8%]" />
-                <col className="w-[7%]" />
-                <col className="w-[9%]" />
-                <col className="w-[5.5%]" />
-                <col className="w-[7%]" />
-                <col className="w-[8%]" />
-                <col className="w-[5%]" />
-                <col className="w-[7%]" />
-                <col className="w-[5%]" />
-                <col className="w-[6%]" />
-                <col className="w-[4%]" />
-                <col className="w-[4%]" />
-                <col className="w-[5%]" />
-                <col className="w-[4%]" />
-                <col className="w-[4%]" />
+                <col className="w-[210px]" />
+                <col className="w-[220px]" />
+                <col className="w-[260px]" />
+                <col className="w-[180px]" />
+                <col className="w-[100px]" />
+                <col className="w-[170px]" />
+                <col className="w-[180px]" />
+                <col className="w-[110px]" />
+                <col className="w-[150px]" />
+                <col className="w-[110px]" />
+                <col className="w-[130px]" />
+                <col className="w-[80px]" />
+                <col className="w-[110px]" />
+                <col className="w-[110px]" />
+                <col className="w-[100px]" />
+                <col className="w-[170px]" />
               </colgroup>
               <thead className="sticky top-0 z-10 bg-[#FCFBFE]">
                 <tr className="border-b border-[#EEE8F8] text-left text-[#7B6D9B]">
@@ -3260,7 +3260,7 @@ export default function OnboardingTicketsView({ coachEmail }: { coachEmail?: str
                   <th className="px-3 py-3 font-medium">{sortHeader("evidence", "Evidence")}</th>
                   <th className="px-3 py-3 font-medium">{sortHeader("status", "Status")}</th>
                   <th className="px-3 py-3 font-medium">Archive</th>
-                  <th className="px-3 py-3 font-medium">View</th>
+                  <th className="sticky right-0 z-20 border-l border-[#EEE8F8] bg-[#FCFBFE] px-3 py-3 font-medium shadow-[-10px_0_16px_-16px_rgba(36,20,83,0.45)]">View</th>
                 </tr>
               </thead>
               <tbody>
@@ -3286,11 +3286,15 @@ export default function OnboardingTicketsView({ coachEmail }: { coachEmail?: str
                     return (
                       <tr key={r.id} className={`border-b border-[#F1EDF8] last:border-0 transition ${isClosed ? "bg-slate-50 opacity-70 hover:opacity-100 hover:bg-[#F8F5FF]" : "hover:bg-[#FDFCFF]"}`}>
                         <td className="px-5 py-4">
-                          <div className="font-medium text-[#241453]">{r.learner_name || "—"}</div>
-                          <div className="text-xs text-slate-500">{r.learner_email || ""}</div>
+                          <div className="truncate font-medium text-[#241453]" title={r.learner_name || ""}>{r.learner_name || "-"}</div>
+                          <div className="truncate text-xs text-slate-500" title={r.learner_email || ""}>{r.learner_email || ""}</div>
                         </td>
-                        <td className="px-5 py-4 text-[#241453]">{r.programme || "—"}</td>
-                        <td className="px-5 py-4 text-[#241453]">{r.organization_name || "—"}</td>
+                        <td className="px-5 py-4 text-[#241453]">
+                          <div className="line-clamp-2" title={r.programme || ""}>{r.programme || "-"}</div>
+                        </td>
+                        <td className="px-5 py-4 text-[#241453]">
+                          <div className="truncate" title={r.organization_name || ""}>{r.organization_name || "-"}</div>
+                        </td>
                         <td className="overflow-hidden px-3 py-3">
                           <div className="truncate text-[#241453]" title={r.coach_name || ""}>{r.coach_name || "—"}</div>
                           {r.coach_email && <div className="truncate text-xs text-slate-500" title={r.coach_email}>{r.coach_email}</div>}
@@ -3300,7 +3304,7 @@ export default function OnboardingTicketsView({ coachEmail }: { coachEmail?: str
                             {displayRiskLabel(nr)}
                           </span>
                         </td>
-                        <td className="px-5 py-4">
+                        <td className="sticky right-0 z-[6] border-l border-[#EEE8F8] bg-white px-4 py-4 shadow-[-10px_0_16px_-16px_rgba(36,20,83,0.45)]">
                           <TierBadge tier={systemTier} labelMode="meaning" />
                         </td>
                         <td className="px-3 py-3">
@@ -3316,7 +3320,7 @@ export default function OnboardingTicketsView({ coachEmail }: { coachEmail?: str
                                 onChange={(event) => handleProgressTierChange(r.id, normaliseTierValue(event.target.value))}
                                 disabled={tierSaving}
                                 aria-label={`Progress tier for ${r.learner_name || "learner"}`}
-                                className={`h-9 w-full rounded-xl border px-2 text-xs font-semibold outline-none transition focus:ring-2 focus:ring-[#866CB6] disabled:cursor-wait disabled:opacity-60 ${progressTierSelectClass(progressTier)}`}
+                                className={`h-9 w-full min-w-[132px] rounded-xl border px-2 text-xs font-semibold outline-none transition focus:ring-2 focus:ring-[#866CB6] disabled:cursor-wait disabled:opacity-60 ${progressTierSelectClass(progressTier)}`}
                               >
                                 <option value="">Set tier</option>
                                 {INCLUSION_TIER_OPTIONS.map((tier) => (
@@ -3505,7 +3509,7 @@ export default function OnboardingTicketsView({ coachEmail }: { coachEmail?: str
                         </td>
 
                         {/* View Report — last column */}
-                        <td className="px-5 py-4">
+                        <td className="sticky right-0 z-[6] border-l border-[#EEE8F8] bg-white px-4 py-4 shadow-[-10px_0_16px_-16px_rgba(36,20,83,0.45)]">
                           {(() => {
                             const done = r.completed_reports ?? 0;
                             const total = r.expected_reports ?? 6;
@@ -3527,7 +3531,7 @@ export default function OnboardingTicketsView({ coachEmail }: { coachEmail?: str
 
                             const completedSections = sections.filter((s) => s.done);
                             if (completedSections.length === 0) {
-                              return <span className="text-xs text-slate-400">No reports yet</span>;
+                              return <span className="whitespace-nowrap text-xs text-slate-400">No reports yet</span>;
                             }
 
                             return (

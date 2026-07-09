@@ -3272,6 +3272,10 @@ def _normalise_onboarding_tier(value):
     return tier if tier in {1, 2, 3, 4} else None
 
 
+def _is_inclusion_admin(user, role: str) -> bool:
+    return role in {"qa", "admin"} or getattr(user, "is_staff", False) or getattr(user, "is_superuser", False)
+
+
 def _onboarding_risk_from_percentage(value):
     pct = _number_or_none(value)
     if pct is None:
@@ -3682,7 +3686,8 @@ def onboarding_reports_list(request):
     profile = getattr(user, "profile", None)
     role = (getattr(profile, "role", "") or "").strip().lower()
 
-    if role not in {"qa", "coach"}:
+    is_admin = _is_inclusion_admin(user, role)
+    if not is_admin and role != "coach":
         return Response({"detail": "Forbidden"}, status=status.HTTP_403_FORBIDDEN)
 
     try:
@@ -3900,7 +3905,7 @@ def update_onboarding_report(request, report_id: str):
     if "status" in request.data:
         update_kwargs["status"] = request.data["status"]
     if "progress_tier" in request.data:
-        if role != "qa" and not getattr(request.user, "is_staff", False) and not getattr(request.user, "is_superuser", False):
+        if not _is_inclusion_admin(request.user, role):
             return Response({"detail": "Only admin users can update progress tier"}, status=status.HTTP_403_FORBIDDEN)
         raw_tier = request.data.get("progress_tier")
         if raw_tier is None or raw_tier == "":
@@ -3921,7 +3926,7 @@ def update_onboarding_report(request, report_id: str):
 def _check_onboarding_report_access(request, report_id: str, only_fields=None):
     profile = getattr(request.user, "profile", None)
     role = (getattr(profile, "role", "") or "").strip().lower()
-    if role not in {"qa", "coach"}:
+    if not _is_inclusion_admin(request.user, role) and role != "coach":
         return None, Response({"detail": "Forbidden"}, status=status.HTTP_403_FORBIDDEN)
     try:
         qs = LearnerInclusivenessReport.objects.using("wellbeing")

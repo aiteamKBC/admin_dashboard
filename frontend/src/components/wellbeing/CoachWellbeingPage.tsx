@@ -1858,7 +1858,7 @@ function LearnerTable({
   return (
     <div className="overflow-hidden rounded-2xl border border-[#EEE8F8]">
       <div className="custom-scroll overflow-auto" style={{ maxHeight: "520px" }}>
-        <table className="w-full min-w-[1280px] text-sm">
+        <table className="w-full min-w-[1480px] text-sm">
           <thead className="sticky top-0 z-10">
             <tr className="border-b border-[#EEE8F8] bg-[#FAFAFF] text-left text-xs font-semibold uppercase tracking-wide text-[#8E82AA]">
               <th className="px-4 py-3 first:pl-5">{learnerHeader("learner", "Learner")}</th>
@@ -6197,7 +6197,7 @@ function TicketsManagementView({
 
         <div className="mt-6 overflow-hidden rounded-3xl border border-[#E9E3F5]">
           <div className="custom-scroll overflow-auto" style={{ maxHeight: "calc(100vh - 320px)" }}>
-            <table className="w-full min-w-[1420px] text-sm">
+            <table className="w-full min-w-[1780px] text-sm">
               <thead className="sticky top-0 z-10 bg-[#FCFBFE]">
                 <tr className="border-b border-[#EEE8F8] text-left text-[#7B6D9B]">
                   <th className="px-5 py-4 font-medium">{ticketHeader("ticket", "Ticket")}</th>
@@ -6215,7 +6215,9 @@ function TicketsManagementView({
                   <th className="px-5 py-4 font-medium">Actions</th>
                   <th className="px-5 py-4 font-medium">Edit</th>
                   {isQA && <th className="px-5 py-4 font-medium">Delete</th>}
-                  {canView && <th className="px-5 py-4 font-medium">View</th>}
+                  {canView && (
+                    <th className="sticky right-0 z-20 min-w-[120px] border-l border-[#EEE8F8] bg-[#FCFBFE] px-5 py-4 font-medium shadow-[-10px_0_16px_-16px_rgba(36,20,83,0.45)]">View</th>
+                  )}
                 </tr>
               </thead>
 
@@ -6342,7 +6344,7 @@ function TicketsManagementView({
                       )}
 
                       {canView && (
-                        <td className="px-5 py-4">
+                        <td className="sticky right-0 z-[6] min-w-[120px] border-l border-[#EEE8F8] bg-white px-5 py-4 shadow-[-10px_0_16px_-16px_rgba(36,20,83,0.45)]">
                           <button
                             type="button"
                             onClick={() => onView(item)}
@@ -6575,7 +6577,7 @@ function DashboardTicketsTable({
   return (
     <div className="mt-4 overflow-hidden rounded-2xl border border-[#E9E3F5]">
       <div className="custom-scroll overflow-auto" style={{ maxHeight: "430px" }}>
-        <table className="w-full min-w-[1040px] text-sm">
+        <table className="w-full min-w-[1180px] text-sm">
           <thead className="sticky top-0 z-10 bg-[#FCFBFE]">
             <tr className="border-b border-[#EEE8F8] text-left text-xs font-semibold uppercase tracking-wide text-[#8E82AA]">
               <th className="px-4 py-3 first:pl-5">{ticketHeader("ticket", "Ticket")}</th>
@@ -6586,7 +6588,7 @@ function DashboardTicketsTable({
               <th className="px-4 py-3">{ticketHeader("status", "Status")}</th>
               <th className="px-4 py-3">{ticketHeader("owner", "Owner")}</th>
               <th className="px-4 py-3">{ticketHeader("days", "Days")}</th>
-              <th className="px-4 py-3 last:pr-5">View</th>
+              <th className="sticky right-0 z-20 min-w-[112px] border-l border-[#EEE8F8] bg-[#FCFBFE] px-4 py-3 last:pr-5 shadow-[-10px_0_16px_-16px_rgba(36,20,83,0.45)]">View</th>
             </tr>
           </thead>
           <tbody className="divide-y divide-[#F1EDF8]">
@@ -6626,7 +6628,7 @@ function DashboardTicketsTable({
                   </td>
                   <td className="px-4 py-3 text-[#241453]">{ticket.assignedOwner || "-"}</td>
                   <td className="px-4 py-3 tabular-nums text-[#241453]">{ticket.daysToClose ?? ticket.daysOpen ?? 0}</td>
-                  <td className="px-4 py-3 last:pr-5">
+                  <td className="sticky right-0 z-[6] min-w-[112px] border-l border-[#EEE8F8] bg-white px-4 py-3 last:pr-5 shadow-[-10px_0_16px_-16px_rgba(36,20,83,0.45)]">
                     <button
                       type="button"
                       onClick={() => onView(ticket)}

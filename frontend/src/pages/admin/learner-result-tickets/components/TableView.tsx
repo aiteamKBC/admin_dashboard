@@ -194,7 +194,7 @@ export default function TableView({ tickets, data, onViewDetails, onStatusChange
   return (
     <div className="max-w-full overflow-hidden rounded-2xl border border-background-200/70 bg-background-50 shadow-sm">
       <div className="whoiam-table-scroll overflow-x-auto pb-1">
-        <table className="w-full min-w-[1120px] text-sm xl:min-w-full">
+        <table className="w-full min-w-[1360px] text-sm">
           <thead>
             <tr className="border-b border-background-200 bg-background-100">
               <th className="w-[88px] px-3 py-3 text-left text-xs font-semibold text-foreground-600 whitespace-nowrap">Learner ID</th>
@@ -207,7 +207,7 @@ export default function TableView({ tickets, data, onViewDetails, onStatusChange
               <th className="w-[130px] px-3 py-3 text-left text-xs font-semibold text-foreground-600 whitespace-nowrap">Review</th>
               <th className="hidden w-[120px] px-3 py-3 text-left text-xs font-semibold text-foreground-600 whitespace-nowrap 2xl:table-cell">Last Updated</th>
               <th className="hidden w-[130px] px-3 py-3 text-left text-xs font-semibold text-foreground-600 whitespace-nowrap 2xl:table-cell">Reviewed By</th>
-              <th className="w-[116px] px-3 py-3 text-left text-xs font-semibold text-foreground-600 whitespace-nowrap">Actions</th>
+              <th className="sticky right-0 z-20 w-[148px] border-l border-background-200 bg-background-100 px-3 py-3 text-left text-xs font-semibold text-foreground-600 shadow-[-10px_0_16px_-16px_rgba(36,20,83,0.45)] whitespace-nowrap">Actions</th>
             </tr>
           </thead>
           <tbody>
@@ -225,7 +225,7 @@ export default function TableView({ tickets, data, onViewDetails, onStatusChange
                 <td className="px-3 py-3 text-xs text-foreground-600">
                   <span title={ticket.email} className="block max-w-[180px] truncate">{ticket.email}</span>
                 </td>
-                <td className="px-3 py-3">
+                <td className="sticky right-0 z-[6] border-l border-background-200 bg-background-50 px-3 py-3 shadow-[-10px_0_16px_-16px_rgba(36,20,83,0.45)]">
                   <div className="flex items-center gap-2">
                     <div className="w-16 h-1.5 bg-background-200 rounded-full overflow-hidden">
                       <div
@@ -263,7 +263,7 @@ export default function TableView({ tickets, data, onViewDetails, onStatusChange
                 <td className="hidden px-3 py-3 2xl:table-cell">
                   <ReviewedByCell value={ticket.reviewedBy} onChange={(name) => onReviewedByChange(ticket.id, name)} />
                 </td>
-                <td className="px-3 py-3">
+                <td className="sticky right-0 z-[6] border-l border-background-200 bg-background-50 px-3 py-3 shadow-[-10px_0_16px_-16px_rgba(36,20,83,0.45)]">
                   <div className="flex items-center gap-1.5">
                     <button onClick={() => onViewDetails(ticket.id)} className="w-8 h-8 rounded-md bg-primary-500 text-background-50 hover:bg-primary-600 transition-colors cursor-pointer flex items-center justify-center" title="View details">
                       <i className="ri-eye-line"></i>
