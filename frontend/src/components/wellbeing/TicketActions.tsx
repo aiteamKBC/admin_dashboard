@@ -5,6 +5,7 @@ import {
   Phone, HelpCircle, Calendar, Paperclip, AlertTriangle,
   Shield, AlertOctagon, ExternalLink, ClipboardCheck, XCircle,
   RotateCcw, Upload, Image as ImageIcon, X, BookOpen,
+  Loader2,
 } from "lucide-react";
 import {
   createTicketNote,
@@ -1332,10 +1333,14 @@ export function OnboardingActionsDropdown({
     if (item.requiresModal) {
       setActiveModal(item.id as ActionModalType);
     } else if (item.newStatus) {
+      const previousStatus = currentStatus || "active";
       setUpdating(true);
+      onStatusChange?.(reportId, item.newStatus);
       try {
         await updateOnboardingReport(reportId, { status: item.newStatus });
-        onStatusChange?.(reportId, item.newStatus);
+      } catch (error) {
+        onStatusChange?.(reportId, previousStatus);
+        console.error("Failed to update inclusion report status", error);
       } finally {
         setUpdating(false);
       }
@@ -1383,7 +1388,7 @@ export function OnboardingActionsDropdown({
           disabled={updating}
           className="inline-flex h-8 w-8 items-center justify-center rounded-xl border border-[#E7E2F3] text-[#241453] hover:bg-[#F8F5FF] disabled:opacity-50"
         >
-          <MoreHorizontal className="h-4 w-4" />
+          {updating ? <Loader2 className="h-4 w-4 animate-spin" /> : <MoreHorizontal className="h-4 w-4" />}
         </button>
       </div>
 

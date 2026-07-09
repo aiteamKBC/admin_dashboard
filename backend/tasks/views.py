@@ -16,6 +16,7 @@ import time
 import base64
 import re
 import logging
+import threading
 import requests
 
 # wellbeing
@@ -3303,10 +3304,23 @@ def _ticket_flag_webhook_url(area="inclusion"):
     return ""
 
 
+def _post_inclusion_flag_webhook(webhook_url, payload):
+    try:
+        response = requests.post(
+            webhook_url,
+            json=payload,
+            headers={"Content-Type": "application/json"},
+            timeout=8,
+        )
+        response.raise_for_status()
+    except requests.RequestException as exc:
+        logger.warning("Inclusion flag webhook failed for report %s: %s", payload.get("report_id", ""), exc)
+
+
 def _trigger_inclusion_flag_webhook(report, request, original_status, new_status):
     webhook_url = _ticket_flag_webhook_url("inclusion")
     if not webhook_url:
-        return {"sent": False, "reason": "not_configured"}
+        return {"queued": False, "reason": "not_configured"}
 
     summary = _serialize_onboarding_report(report)
     frontend_url = os.getenv("FRONTEND_URL", "").strip().rstrip("/")
@@ -3341,18 +3355,12 @@ def _trigger_inclusion_flag_webhook(report, request, original_status, new_status
         "dashboard_url": dashboard_url,
     }
 
-    try:
-        response = requests.post(
-            webhook_url,
-            json=payload,
-            headers={"Content-Type": "application/json"},
-            timeout=8,
-        )
-        response.raise_for_status()
-        return {"sent": True, "status_code": response.status_code}
-    except requests.RequestException as exc:
-        logger.warning("Inclusion flag webhook failed for report %s: %s", getattr(report, "id", ""), exc)
-        return {"sent": False, "reason": "request_failed"}
+    threading.Thread(
+        target=_post_inclusion_flag_webhook,
+        args=(webhook_url, payload),
+        daemon=True,
+    ).start()
+    return {"queued": True}
 
 
 def _onboarding_risk_from_percentage(value):
