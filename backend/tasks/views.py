@@ -717,6 +717,143 @@ def sync_support_ticket_coach_snapshots(ticket_qs=None, actor="System"):
     return updated
 
 
+def _inclusion_report_email_values(report):
+    emails = [
+        (getattr(report, "learner_email", "") or "").strip(),
+        (getattr(report, "academic_email", "") or "").strip(),
+    ]
+    previous = (getattr(report, "previous_emails", "") or "").strip()
+    if previous:
+        emails.extend(re.split(r"[,;\s]+", previous))
+    return _email_lookup_values(emails)
+
+
+def _append_inclusion_activity_notes(report, messages, actor):
+    messages = [message for message in messages if message]
+    if not messages:
+        return False
+
+    notes = _ensure_list(report.notes).copy()
+    created_at = timezone.now().isoformat()
+    for message in messages:
+        notes.append({
+            "id": uuid.uuid4().hex,
+            "type": "activity",
+            "note": message,
+            "created_by": actor,
+            "created_at": created_at,
+        })
+    report.notes = notes
+    return True
+
+
+def sync_inclusion_report_coach_snapshots(report_qs=None, actor="System"):
+    qs = report_qs if report_qs is not None else LearnerInclusivenessReport.objects.using("wellbeing").all()
+    reports = list(qs.only(
+        "id",
+        "learner_id",
+        "learner_email",
+        "academic_email",
+        "previous_emails",
+        "coach_name",
+        "coach_email",
+        "notes",
+    ))
+    if not reports:
+        return 0
+
+    learner_ids = [
+        _normalise_ticket_learner_id(getattr(report, "learner_id", None))
+        for report in reports
+    ]
+    aptem_snapshots = _aptem_coach_snapshots_by_learner_ids(learner_ids)
+
+    missing_ids = [
+        learner_id for learner_id in learner_ids
+        if learner_id is not None and learner_id not in aptem_snapshots
+    ]
+    all_emails = []
+    for report in reports:
+        all_emails.extend(_inclusion_report_email_values(report))
+
+    monitoring_filter = Q()
+    if missing_ids:
+        monitoring_filter |= Q(id__in=missing_ids)
+    email_values = _email_lookup_values(all_emails)
+    if email_values:
+        monitoring_filter |= Q(learner_email__in=email_values)
+
+    monitoring_records = (
+        list(
+            WellbeingSafeguardingMonitoringSystem.objects.using("wellbeing")
+            .only("id", "learner_email", "coach_name", "coach_email")
+            .filter(monitoring_filter)
+        )
+        if monitoring_filter
+        else []
+    )
+    monitoring_by_id = {getattr(row, "id", None): row for row in monitoring_records}
+    monitoring_by_email = {}
+    for row in monitoring_records:
+        email = (getattr(row, "learner_email", "") or "").strip().lower()
+        if email and email not in monitoring_by_email:
+            monitoring_by_email[email] = row
+
+    updated = 0
+    for report in reports:
+        learner_id = _normalise_ticket_learner_id(getattr(report, "learner_id", None))
+        snapshot = aptem_snapshots.get(learner_id) if learner_id is not None else None
+
+        if not snapshot:
+            learner = monitoring_by_id.get(learner_id)
+            if not learner:
+                for email in _inclusion_report_email_values(report):
+                    learner = monitoring_by_email.get(email.strip().lower())
+                    if learner:
+                        break
+            if learner:
+                snapshot = _learner_coach_snapshot(learner)
+
+        if not snapshot or not snapshot.get("coach_email"):
+            continue
+
+        old_name = (getattr(report, "coach_name", "") or "").strip()
+        old_email = (getattr(report, "coach_email", "") or "").strip().lower()
+        new_name = (snapshot.get("coach_name") or "").strip()
+        new_email = (snapshot.get("coach_email") or "").strip().lower()
+
+        update_fields = []
+        if new_name != old_name:
+            report.coach_name = new_name
+            update_fields.append("coach_name")
+        if new_email != old_email:
+            report.coach_email = new_email
+            update_fields.append("coach_email")
+
+        if not update_fields:
+            continue
+
+        had_previous_coach = bool(old_name or old_email)
+        coach_identity_changed = (
+            (old_email and new_email and old_email != new_email)
+            or (not old_email and not new_email and old_name and new_name and old_name != new_name)
+        )
+        if had_previous_coach and coach_identity_changed:
+            if _append_inclusion_activity_notes(
+                report,
+                [_coach_change_note(old_name, old_email, new_name, new_email)],
+                actor,
+            ):
+                update_fields.append("notes")
+
+        report.save(using="wellbeing", update_fields=update_fields)
+        updated += 1
+
+    if updated:
+        _clear_onboarding_reports_cache()
+    return updated
+
+
 def _legacy_ticket_learner_filter(coach_email):
     learner_qs = WellbeingSafeguardingMonitoringSystem.objects.using("wellbeing").filter(
         coach_email__iexact=coach_email
@@ -3793,6 +3930,8 @@ def _onboarding_assigned_owner_from_notes(notes):
     for note in reversed(notes):
         if not isinstance(note, dict):
             continue
+        if _is_activity_note(note):
+            continue
 
         created_by = (note.get("created_by") or "").strip()
         if not created_by:
@@ -4001,14 +4140,21 @@ def onboarding_reports_list(request):
         archived_param = (request.query_params.get("archived") or "").strip().lower()
         show_archived = archived_param in {"1", "true", "yes"}
         bypass_cache = "_" in request.query_params
-        cache_key = ("onboarding_list_v3", role, coach_email_filter, show_archived)
+        base_qs = LearnerInclusivenessReport.objects.using("wellbeing")
+        if show_archived:
+            base_qs = base_qs.filter(is_archived=True)
+        else:
+            base_qs = base_qs.filter(is_archived__in=[False, None])
+        sync_inclusion_report_coach_snapshots(base_qs)
+
+        cache_key = ("onboarding_list_v4", role, coach_email_filter, show_archived)
         now = time.monotonic()
         if not bypass_cache:
             cached = _ONBOARDING_REPORTS_LIST_CACHE.get(cache_key)
             if cached and now < cached.get("expires_at", 0):
                 return Response(cached["data"])
 
-        qs = LearnerInclusivenessReport.objects.using("wellbeing").only(
+        qs = base_qs.only(
             "id",
             "learner_id",
             "learner_name",
@@ -4030,10 +4176,6 @@ def onboarding_reports_list(request):
         )
         if coach_email_filter:
             qs = qs.filter(coach_email__iexact=coach_email_filter)
-        if show_archived:
-            qs = qs.filter(is_archived=True)
-        else:
-            qs = qs.filter(is_archived__in=[False, None])
         qs = qs.annotate(**{
             f"{col}_done": Case(
                 When(**{f"{col}__isnull": False}, then=Value(1)),
@@ -4249,6 +4391,10 @@ def _check_onboarding_report_access(request, report_id: str, only_fields=None):
         report = qs.get(id=report_id)
     except LearnerInclusivenessReport.DoesNotExist:
         return None, Response({"detail": "Not found"}, status=status.HTTP_404_NOT_FOUND)
+    sync_inclusion_report_coach_snapshots(
+        LearnerInclusivenessReport.objects.using("wellbeing").filter(id=report_id)
+    )
+    report.refresh_from_db(using="wellbeing")
     if role == "coach":
         coach_email = (getattr(request.user, "email", "") or "").strip().lower()
         report_coach_email = (getattr(report, "coach_email", "") or "").strip().lower()
