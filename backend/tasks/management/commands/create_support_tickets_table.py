@@ -31,8 +31,6 @@ CREATE INDEX IF NOT EXISTS idx_support_tickets_status
     ON support_tickets (status);
 CREATE INDEX IF NOT EXISTS idx_support_tickets_created_at
     ON support_tickets (created_at DESC);
-CREATE INDEX IF NOT EXISTS idx_support_tickets_coach_email
-    ON support_tickets (lower(trim(coach_email)));
 """
 
 # Columns added after the initial table creation — safe to run on existing tables
