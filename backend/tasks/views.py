@@ -559,6 +559,164 @@ def _learner_coach_snapshot(learner):
     }
 
 
+def _normalise_ticket_learner_id(value):
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _coach_snapshot_label(name, email):
+    name = (name or "").strip()
+    email = (email or "").strip().lower()
+    if name and email:
+        return f"{name} ({email})"
+    return name or email or "Unassigned"
+
+
+def _coach_change_note(old_name, old_email, new_name, new_email):
+    old_label = _coach_snapshot_label(old_name, old_email)
+    new_label = _coach_snapshot_label(new_name, new_email)
+    return f"Coach changed from {old_label} to {new_label} based on current learner data."
+
+
+def _aptem_coach_snapshots_by_learner_ids(learner_ids):
+    ids = sorted({
+        learner_id
+        for learner_id in (_normalise_ticket_learner_id(value) for value in learner_ids)
+        if learner_id is not None
+    })
+    if not ids:
+        return {}
+
+    placeholders = ", ".join(["%s"] * len(ids))
+    try:
+        with connections["default"].cursor() as cursor:
+            cursor.execute(
+                f'''
+                    select distinct on ("ID")
+                        "ID",
+                        coalesce(nullif(trim("OwnerName"), ''), '') as coach_name,
+                        lower(trim(coalesce("OwnerEmail", ''))) as coach_email
+                    from public.kbc_users_data
+                    where "ID" in ({placeholders})
+                    order by "ID", case when "Program-Status" = %s then 0 else 1 end
+                ''',
+                [*ids, ACTIVE_PROGRAM_STATUS],
+            )
+            rows = cursor.fetchall()
+    except Exception:
+        return {}
+
+    snapshots = {}
+    for learner_id, coach_name, coach_email in rows:
+        normalised_id = _normalise_ticket_learner_id(learner_id)
+        if normalised_id is None:
+            continue
+        snapshots[normalised_id] = {
+            "coach_name": (coach_name or "").strip(),
+            "coach_email": (coach_email or "").strip().lower(),
+        }
+    return snapshots
+
+
+def sync_support_ticket_coach_snapshots(ticket_qs=None, actor="System"):
+    qs = ticket_qs if ticket_qs is not None else SupportTicket.objects.using("wellbeing").all()
+    tickets = list(qs.only("id", "wellbeing_record_id", "email", "coach_name", "coach_email", "notes"))
+    if not tickets:
+        return 0
+
+    learner_ids = [
+        _normalise_ticket_learner_id(getattr(ticket, "wellbeing_record_id", None))
+        for ticket in tickets
+    ]
+    aptem_snapshots = _aptem_coach_snapshots_by_learner_ids(learner_ids)
+
+    missing_ids = [
+        learner_id for learner_id in learner_ids
+        if learner_id is not None and learner_id not in aptem_snapshots
+    ]
+    ticket_emails = [
+        (getattr(ticket, "email", "") or "").strip()
+        for ticket in tickets
+        if (getattr(ticket, "email", "") or "").strip()
+    ]
+
+    monitoring_filter = Q()
+    if missing_ids:
+        monitoring_filter |= Q(id__in=missing_ids)
+    email_values = _email_lookup_values(ticket_emails)
+    if email_values:
+        monitoring_filter |= Q(learner_email__in=email_values)
+
+    monitoring_records = (
+        list(
+            WellbeingSafeguardingMonitoringSystem.objects.using("wellbeing")
+            .only("id", "learner_email", "coach_name", "coach_email")
+            .filter(monitoring_filter)
+        )
+        if monitoring_filter
+        else []
+    )
+    monitoring_by_id = {getattr(row, "id", None): row for row in monitoring_records}
+    monitoring_by_email = {}
+    for row in monitoring_records:
+        email = (getattr(row, "learner_email", "") or "").strip().lower()
+        if email and email not in monitoring_by_email:
+            monitoring_by_email[email] = row
+
+    updated = 0
+    for ticket in tickets:
+        learner_id = _normalise_ticket_learner_id(getattr(ticket, "wellbeing_record_id", None))
+        snapshot = aptem_snapshots.get(learner_id) if learner_id is not None else None
+
+        if not snapshot:
+            learner = monitoring_by_id.get(learner_id)
+            if not learner:
+                learner = monitoring_by_email.get((getattr(ticket, "email", "") or "").strip().lower())
+            if learner:
+                snapshot = _learner_coach_snapshot(learner)
+
+        if not snapshot or not snapshot.get("coach_email"):
+            continue
+
+        old_name = (getattr(ticket, "coach_name", "") or "").strip()
+        old_email = (getattr(ticket, "coach_email", "") or "").strip().lower()
+        new_name = (snapshot.get("coach_name") or "").strip()
+        new_email = (snapshot.get("coach_email") or "").strip().lower()
+
+        update_fields = []
+        if new_name != old_name:
+            ticket.coach_name = new_name
+            update_fields.append("coach_name")
+        if new_email != old_email:
+            ticket.coach_email = new_email
+            update_fields.append("coach_email")
+
+        if not update_fields:
+            continue
+
+        had_previous_coach = bool(old_name or old_email)
+        coach_identity_changed = (
+            (old_email and new_email and old_email != new_email)
+            or (not old_email and not new_email and old_name and new_name and old_name != new_name)
+        )
+        if had_previous_coach and coach_identity_changed:
+            if _append_ticket_activity_notes(
+                ticket,
+                [_coach_change_note(old_name, old_email, new_name, new_email)],
+                actor,
+            ):
+                update_fields.append("notes")
+
+        ticket.save(using="wellbeing", update_fields=update_fields)
+        updated += 1
+
+    if updated:
+        _clear_wellbeing_runtime_caches()
+    return updated
+
+
 def _legacy_ticket_learner_filter(coach_email):
     learner_qs = WellbeingSafeguardingMonitoringSystem.objects.using("wellbeing").filter(
         coach_email__iexact=coach_email
@@ -1587,23 +1745,17 @@ def create_support_ticket(request):
         created_at__gte=cutoff,
     ).first()
     if existing:
-        update_existing_fields = []
-        if coach_snapshot["coach_name"] and (getattr(existing, "coach_name", "") or "").strip() != coach_snapshot["coach_name"]:
-            existing.coach_name = coach_snapshot["coach_name"]
-            update_existing_fields.append("coach_name")
-        if coach_snapshot["coach_email"] and (getattr(existing, "coach_email", "") or "").strip().lower() != coach_snapshot["coach_email"]:
-            existing.coach_email = coach_snapshot["coach_email"]
-            update_existing_fields.append("coach_email")
-        if update_existing_fields:
-            existing.save(using="wellbeing", update_fields=update_existing_fields)
-            _clear_wellbeing_runtime_caches()
+        sync_support_ticket_coach_snapshots(
+            SupportTicket.objects.using("wellbeing").filter(id=existing.id)
+        )
+        existing.refresh_from_db(using="wellbeing")
         return Response(
             {
                 "id": existing.id,
                 "wellbeing_record_id": learner.id,
                 "status": existing.status,
-                "coachName": coach_snapshot["coach_name"],
-                "coachEmail": coach_snapshot["coach_email"],
+                "coachName": (getattr(existing, "coach_name", "") or coach_snapshot["coach_name"] or "").strip(),
+                "coachEmail": (getattr(existing, "coach_email", "") or coach_snapshot["coach_email"] or "").strip().lower(),
                 "message": "Support ticket created successfully",
             },
             status=status.HTTP_201_CREATED,
@@ -1920,6 +2072,10 @@ def coach_wellbeing_dashboard(request):
 
     else:
         return Response({"detail": "Forbidden"}, status=status.HTTP_403_FORBIDDEN)
+
+    sync_support_ticket_coach_snapshots(
+        SupportTicket.objects.using("wellbeing").filter(is_archived__in=[False, None])
+    )
 
     active_caseload = get_aptem_active_learner_count(requested_coach_email)
     active_learner_ids = get_aptem_active_learner_ids(requested_coach_email)
@@ -2578,6 +2734,11 @@ def update_support_ticket(request, ticket_id):
     if not ticket:
         return Response({"detail": "Ticket not found"}, status=status.HTTP_404_NOT_FOUND)
 
+    sync_support_ticket_coach_snapshots(
+        SupportTicket.objects.using("wellbeing").filter(id=ticket.id)
+    )
+    ticket.refresh_from_db(using="wellbeing")
+
     original_details = _strip_manual_urgency_override(getattr(ticket, "details", "") or "")
     is_auto_ticket = original_details.startswith("Auto-generated ticket from wellbeing survey.")
 
@@ -2729,6 +2890,9 @@ def support_tickets_list(request):
     if role not in ["qa", "coach"]:
         return Response({"detail": "Forbidden"}, status=status.HTTP_403_FORBIDDEN)
 
+    base_qs = SupportTicket.objects.using("wellbeing").filter(is_archived__in=[False, None])
+    sync_support_ticket_coach_snapshots(base_qs)
+
     coach_email_filter = (request.query_params.get("coach_email") or "").strip().lower()
     cache_key = (
         role,
@@ -2739,9 +2903,7 @@ def support_tickets_list(request):
     if cached and now < cached.get("expires_at", 0):
         return Response(cached["data"])
 
-    qs = SupportTicket.objects.using("wellbeing").filter(
-        is_archived__in=[False, None]
-    ).order_by("-created_at", "-id")
+    qs = base_qs.order_by("-created_at", "-id")
 
     if role == "coach":
         coach_email = (getattr(user, "email", "") or "").strip().lower()
@@ -3071,6 +3233,11 @@ def _check_ticket_access(request, ticket_id):
     if not ticket:
         return None, Response({"detail": "Ticket not found"}, status=status.HTTP_404_NOT_FOUND)
 
+    sync_support_ticket_coach_snapshots(
+        SupportTicket.objects.using("wellbeing").filter(id=ticket.id)
+    )
+    ticket.refresh_from_db(using="wellbeing")
+
     if role == "coach":
         coach_email = (getattr(user, "email", "") or "").strip().lower()
         if not coach_email:
@@ -3118,7 +3285,9 @@ def archived_tickets_list(request):
     if role not in ["qa", "coach"]:
         return Response({"detail": "Forbidden"}, status=status.HTTP_403_FORBIDDEN)
 
-    qs = SupportTicket.objects.using("wellbeing").filter(is_archived=True).order_by("-created_at", "-id")
+    base_qs = SupportTicket.objects.using("wellbeing").filter(is_archived=True)
+    sync_support_ticket_coach_snapshots(base_qs)
+    qs = base_qs.order_by("-created_at", "-id")
 
     if role == "coach":
         coach_email = (getattr(user, "email", "") or "").strip().lower()
