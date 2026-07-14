@@ -20,7 +20,9 @@ CREATE TABLE IF NOT EXISTS support_tickets (
     updated_at          TIMESTAMP WITH TIME ZONE,
     created_by          TEXT,
     days_to_close       INTEGER,
-    submitted_by        TEXT
+    submitted_by        TEXT,
+    coach_name          TEXT,
+    coach_email         TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_support_tickets_wellbeing_record_id
@@ -29,6 +31,8 @@ CREATE INDEX IF NOT EXISTS idx_support_tickets_status
     ON support_tickets (status);
 CREATE INDEX IF NOT EXISTS idx_support_tickets_created_at
     ON support_tickets (created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_support_tickets_coach_email
+    ON support_tickets (lower(trim(coach_email)));
 """
 
 # Columns added after the initial table creation — safe to run on existing tables
@@ -41,6 +45,9 @@ ALTER_COLUMNS = [
     "ALTER TABLE support_tickets ADD COLUMN IF NOT EXISTS created_by TEXT;",
     "ALTER TABLE support_tickets ADD COLUMN IF NOT EXISTS is_archived BOOLEAN DEFAULT FALSE;",
     "ALTER TABLE support_tickets ADD COLUMN IF NOT EXISTS assigned_owner TEXT;",
+    "ALTER TABLE support_tickets ADD COLUMN IF NOT EXISTS coach_name TEXT;",
+    "ALTER TABLE support_tickets ADD COLUMN IF NOT EXISTS coach_email TEXT;",
+    "CREATE INDEX IF NOT EXISTS idx_support_tickets_coach_email ON support_tickets (lower(trim(coach_email)));",
 ]
 
 

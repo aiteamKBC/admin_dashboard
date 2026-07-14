@@ -85,6 +85,8 @@ export type SupportTicketRow = {
   wellbeingRecordId?: number | null;
   learnerName: string;
   learnerEmail: string;
+  coachName?: string;
+  coachEmail?: string;
   programme?: string;
   type: string;
   risk: "red" | "amber" | "green";

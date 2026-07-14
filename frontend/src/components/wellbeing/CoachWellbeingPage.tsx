@@ -152,6 +152,8 @@ function ticketMatchesTextSearch(ticket: SupportTicketRow, query: string) {
     String(ticket.ticketCode || "").toLowerCase().includes(query) ||
     String(ticket.learnerName || "").toLowerCase().includes(query) ||
     String(ticket.learnerEmail || "").toLowerCase().includes(query) ||
+    String(ticket.coachName || "").toLowerCase().includes(query) ||
+    String(ticket.coachEmail || "").toLowerCase().includes(query) ||
     String(ticket.programme || "").toLowerCase().includes(query) ||
     String(ticket.type || "").toLowerCase().includes(query) ||
     String(ticket.status || "").toLowerCase().includes(query) ||
@@ -3399,6 +3401,8 @@ function exportTicketsToExcel(tickets: SupportTicketRow[], coachLabel?: string) 
     "Ticket": t.ticketCode,
     "Learner": t.learnerName,
     "Email": t.learnerEmail,
+    "Coach": t.coachName || "",
+    "Coach Email": t.coachEmail || "",
     "Type": t.type,
     "Risk": t.risk,
     "Urgency": t.urgency,
@@ -3417,9 +3421,10 @@ function exportTicketsToExcel(tickets: SupportTicketRow[], coachLabel?: string) 
 
   // Column widths
   ws["!cols"] = [
-    { wch: 10 }, { wch: 22 }, { wch: 32 }, { wch: 14 }, { wch: 10 },
-    { wch: 10 }, { wch: 14 }, { wch: 12 }, { wch: 12 }, { wch: 20 },
-    { wch: 18 }, { wch: 10 }, { wch: 30 }, { wch: 50 },
+    { wch: 10 }, { wch: 22 }, { wch: 32 }, { wch: 22 }, { wch: 32 },
+    { wch: 14 }, { wch: 10 }, { wch: 10 }, { wch: 14 }, { wch: 12 },
+    { wch: 12 }, { wch: 20 }, { wch: 18 }, { wch: 10 }, { wch: 30 },
+    { wch: 50 },
   ];
 
   const wb = XLSX.utils.book_new();
@@ -4357,9 +4362,12 @@ async function exportTicketsToPDF(tickets: SupportTicketRow[], summary?: Support
       const cap = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
       // Break email at @ so it wraps cleanly instead of mid-word
       const emailDisplay = pdfText(t.learnerEmail).replace("@", "@\n");
+      const coachDisplay = t.coachName || t.coachEmail
+        ? `\nCoach: ${pdfText(t.coachName || t.coachEmail)}`
+        : "";
       return [
         pdfText(t.ticketCode),
-        `${pdfText(t.learnerName)}\n${emailDisplay}`,
+        `${pdfText(t.learnerName)}\n${emailDisplay}${coachDisplay}`,
         pdfText(cap(t.type || "-")),
         pdfText(cap(t.risk || "-")),
         pdfText(cap(t.status || "-")),
@@ -4814,6 +4822,11 @@ function TicketDetailPanel({
               </div>
               <div className="font-medium text-[#241453]">{ticket.learnerName || "-"}</div>
               <div className="mt-0.5 text-sm text-slate-500">{ticket.learnerEmail || "-"}</div>
+              {(ticket.coachName || ticket.coachEmail) && (
+                <div className="mt-1 text-sm text-[#7B6D9B]">
+                  Coach: {ticket.coachName || ticket.coachEmail}
+                </div>
+              )}
             </div>
 
             {/* Ticket info grid */}
@@ -6242,6 +6255,11 @@ function TicketsManagementView({
                       <td className="px-5 py-4">
                         <div className="font-medium text-[#241453]">{item.learnerName || "-"}</div>
                         <div className="text-xs text-slate-500">{item.learnerEmail || ""}</div>
+                        {(item.coachName || item.coachEmail) && (
+                          <div className="mt-0.5 text-xs text-[#7B6D9B]">
+                            Coach: {item.coachName || item.coachEmail}
+                          </div>
+                        )}
                       </td>
 
                       <td className="px-5 py-4 text-[#241453]">{item.type || "-"}</td>
@@ -6613,6 +6631,11 @@ function DashboardTicketsTable({
                   <td className="px-4 py-3">
                     <div className="font-medium text-[#241453]">{ticket.learnerName || "-"}</div>
                     <div className="mt-0.5 text-xs text-slate-400">{ticket.learnerEmail || ""}</div>
+                    {(ticket.coachName || ticket.coachEmail) && (
+                      <div className="mt-0.5 text-xs text-[#7B6D9B]">
+                        Coach: {ticket.coachName || ticket.coachEmail}
+                      </div>
+                    )}
                   </td>
                   <td className="px-4 py-3 capitalize text-[#241453]">{ticket.type || "-"}</td>
                   <td className="px-4 py-3">

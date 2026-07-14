@@ -523,6 +523,74 @@ def get_aptem_active_learner_ids(coach_email=""):
         return None
 
 
+def _learner_coach_snapshot(learner):
+    fallback = {
+        "coach_name": (getattr(learner, "coach_name", "") or "").strip(),
+        "coach_email": (getattr(learner, "coach_email", "") or "").strip().lower(),
+    }
+    learner_id = getattr(learner, "id", None)
+    if learner_id in (None, ""):
+        return fallback
+
+    try:
+        with connections["default"].cursor() as cursor:
+            cursor.execute(
+                '''
+                    select
+                        coalesce(nullif(trim("OwnerName"), ''), '') as coach_name,
+                        lower(trim(coalesce("OwnerEmail", ''))) as coach_email
+                    from public.kbc_users_data
+                    where "ID" = %s
+                    order by case when "Program-Status" = %s then 0 else 1 end
+                    limit 1
+                ''',
+                [learner_id, ACTIVE_PROGRAM_STATUS],
+            )
+            row = cursor.fetchone()
+    except Exception:
+        row = None
+
+    if not row:
+        return fallback
+
+    return {
+        "coach_name": (row[0] or fallback["coach_name"] or "").strip(),
+        "coach_email": (row[1] or fallback["coach_email"] or "").strip().lower(),
+    }
+
+
+def _legacy_ticket_learner_filter(coach_email):
+    learner_qs = WellbeingSafeguardingMonitoringSystem.objects.using("wellbeing").filter(
+        coach_email__iexact=coach_email
+    )
+    learner_ids = list(learner_qs.values_list("id", flat=True))
+    learner_emails = [
+        (email or "").strip()
+        for email in learner_qs.values_list("learner_email", flat=True)
+        if (email or "").strip()
+    ]
+
+    ticket_filter = Q()
+    if learner_ids:
+        ticket_filter |= Q(wellbeing_record_id__in=learner_ids)
+    learner_email_values = _email_lookup_values(learner_emails)
+    if learner_email_values:
+        ticket_filter |= Q(email__in=learner_email_values)
+    return ticket_filter
+
+
+def _support_ticket_coach_filter(coach_email):
+    coach_email = (coach_email or "").strip().lower()
+    if not coach_email:
+        return Q(pk__in=[])
+
+    stored_filter = Q(coach_email__iexact=coach_email)
+    legacy_filter = _legacy_ticket_learner_filter(coach_email)
+    if legacy_filter:
+        return stored_filter | ((Q(coach_email__isnull=True) | Q(coach_email="")) & legacy_filter)
+    return stored_filter
+
+
 def safe_date(value):
     if not value:
         return None
@@ -1433,9 +1501,11 @@ def create_support_ticket(request):
     if not learner:
         return Response({"detail": "Learner not found"}, status=status.HTTP_404_NOT_FOUND)
 
+    coach_snapshot = _learner_coach_snapshot(learner)
+
     if role == "coach":
         request_coach_email = (getattr(user, "email", "") or "").strip().lower()
-        learner_coach_email = (getattr(learner, "coach_email", "") or "").strip().lower()
+        learner_coach_email = coach_snapshot["coach_email"]
 
         if not request_coach_email or request_coach_email != learner_coach_email:
             return Response({"detail": "Forbidden"}, status=status.HTTP_403_FORBIDDEN)
@@ -1517,11 +1587,23 @@ def create_support_ticket(request):
         created_at__gte=cutoff,
     ).first()
     if existing:
+        update_existing_fields = []
+        if coach_snapshot["coach_name"] and (getattr(existing, "coach_name", "") or "").strip() != coach_snapshot["coach_name"]:
+            existing.coach_name = coach_snapshot["coach_name"]
+            update_existing_fields.append("coach_name")
+        if coach_snapshot["coach_email"] and (getattr(existing, "coach_email", "") or "").strip().lower() != coach_snapshot["coach_email"]:
+            existing.coach_email = coach_snapshot["coach_email"]
+            update_existing_fields.append("coach_email")
+        if update_existing_fields:
+            existing.save(using="wellbeing", update_fields=update_existing_fields)
+            _clear_wellbeing_runtime_caches()
         return Response(
             {
                 "id": existing.id,
                 "wellbeing_record_id": learner.id,
                 "status": existing.status,
+                "coachName": coach_snapshot["coach_name"],
+                "coachEmail": coach_snapshot["coach_email"],
                 "message": "Support ticket created successfully",
             },
             status=status.HTTP_201_CREATED,
@@ -1541,6 +1623,8 @@ def create_support_ticket(request):
         updated_at=now,
         created_by=created_by_encoded,
         days_to_close=days_to_close,
+        coach_name=coach_snapshot["coach_name"],
+        coach_email=coach_snapshot["coach_email"],
     )
     _clear_wellbeing_runtime_caches()
 
@@ -1549,6 +1633,8 @@ def create_support_ticket(request):
             "id": ticket.id,
             "wellbeing_record_id": learner.id,
             "status": ticket.status,
+            "coachName": coach_snapshot["coach_name"],
+            "coachEmail": coach_snapshot["coach_email"],
             "message": "Support ticket created successfully",
         },
         status=status.HTTP_201_CREATED,
@@ -1573,7 +1659,7 @@ def _check_learner_access(request, learner_id):
 
     if role == "coach":
         coach_email = (getattr(user, "email", "") or "").strip().lower()
-        learner_coach_email = (getattr(learner, "coach_email", "") or "").strip().lower()
+        learner_coach_email = _learner_coach_snapshot(learner)["coach_email"]
         if not coach_email or coach_email != learner_coach_email:
             return None, Response({"detail": "Forbidden"}, status=status.HTTP_403_FORBIDDEN)
 
@@ -1903,6 +1989,8 @@ def coach_wellbeing_dashboard(request):
     if monitoring_email_values:
         ticket_filter |= Q(email__in=monitoring_email_values)
     ticket_qs = ticket_qs.filter(ticket_filter) if ticket_filter else ticket_qs.none()
+    if requested_coach_email:
+        ticket_qs = ticket_qs.filter(_support_ticket_coach_filter(requested_coach_email))
 
     open_ticket_rows = list(ticket_qs.values("wellbeing_record_id", "email", "status"))
 
@@ -2507,12 +2595,12 @@ def update_support_ticket(request, ticket_id):
 
     if role == "coach":
         coach_email = (getattr(user, "email", "") or "").strip().lower()
-        learner_ids = list(
-            WellbeingSafeguardingMonitoringSystem.objects.using("wellbeing")
-            .filter(coach_email__iexact=coach_email)
-            .values_list("id", flat=True)
-        )
-        if ticket.wellbeing_record_id not in learner_ids:
+        if not coach_email:
+            return Response({"detail": "Forbidden"}, status=status.HTTP_403_FORBIDDEN)
+        if not SupportTicket.objects.using("wellbeing").filter(
+            _support_ticket_coach_filter(coach_email),
+            id=ticket.id,
+        ).exists():
             return Response({"detail": "Forbidden"}, status=status.HTTP_403_FORBIDDEN)
 
     valid_statuses = [
@@ -2656,44 +2744,15 @@ def support_tickets_list(request):
     ).order_by("-created_at", "-id")
 
     if role == "coach":
-        # Coaches only see tickets for their own learners
         coach_email = (getattr(user, "email", "") or "").strip().lower()
         if coach_email:
-            learner_qs = WellbeingSafeguardingMonitoringSystem.objects.using("wellbeing").filter(
-                coach_email__iexact=coach_email
-            )
-            learner_ids = list(learner_qs.values_list("id", flat=True))
-            learner_emails = [
-                (email or "").strip()
-                for email in learner_qs.values_list("learner_email", flat=True)
-                if (email or "").strip()
-            ]
-            ticket_filter = Q()
-            if learner_ids:
-                ticket_filter |= Q(wellbeing_record_id__in=learner_ids)
-            learner_email_values = _email_lookup_values(learner_emails)
-            if learner_email_values:
-                ticket_filter |= Q(email__in=learner_email_values)
-            qs = qs.filter(ticket_filter) if ticket_filter else qs.none()
+            qs = qs.filter(_support_ticket_coach_filter(coach_email))
+        else:
+            qs = qs.none()
     else:
         # QA sees all tickets (admin-level). Optional filter by coach_email from query params.
         if coach_email_filter:
-            learner_qs = WellbeingSafeguardingMonitoringSystem.objects.using("wellbeing").filter(
-                coach_email__iexact=coach_email_filter
-            )
-            learner_ids = list(learner_qs.values_list("id", flat=True))
-            learner_emails = [
-                (email or "").strip()
-                for email in learner_qs.values_list("learner_email", flat=True)
-                if (email or "").strip()
-            ]
-            ticket_filter = Q()
-            if learner_ids:
-                ticket_filter |= Q(wellbeing_record_id__in=learner_ids)
-            learner_email_values = _email_lookup_values(learner_emails)
-            if learner_email_values:
-                ticket_filter |= Q(email__in=learner_email_values)
-            qs = qs.filter(ticket_filter) if ticket_filter else qs.none()
+            qs = qs.filter(_support_ticket_coach_filter(coach_email_filter))
 
     rows = list(qs)
     rows_by_id = {row.id: row for row in rows}
@@ -2722,6 +2781,7 @@ def support_tickets_list(request):
                 "learner_email",
                 "programme",
                 "coach_name",
+                "coach_email",
                 "total_score",
                 "safeguarding_vulnerability_score",
                 "trigger_count",
@@ -2853,6 +2913,14 @@ def support_tickets_list(request):
 
         details = details_override or stored_details
         programme = (getattr(learner_record, "programme", "") or "").strip() if learner_record else ""
+        coach_name = (
+            (getattr(row, "coach_name", "") or "").strip()
+            or ((getattr(learner_record, "coach_name", "") or "").strip() if learner_record else "")
+        )
+        coach_email = (
+            (getattr(row, "coach_email", "") or "").strip().lower()
+            or ((getattr(learner_record, "coach_email", "") or "").strip().lower() if learner_record else "")
+        )
 
         tickets.append({
             "id": row.id,
@@ -2861,6 +2929,8 @@ def support_tickets_list(request):
             "learnerName": (getattr(row, "full_name", "") or "").strip(),
             "learnerEmail": (getattr(row, "email", "") or "").strip(),
             "programme": programme,
+            "coachName": coach_name,
+            "coachEmail": coach_email,
             "type": ticket_type or "Support",
             "risk": risk,
             "createdAt": safe_dt_iso(getattr(row, "created_at", None)),
@@ -3003,12 +3073,12 @@ def _check_ticket_access(request, ticket_id):
 
     if role == "coach":
         coach_email = (getattr(user, "email", "") or "").strip().lower()
-        learner_ids = list(
-            WellbeingSafeguardingMonitoringSystem.objects.using("wellbeing")
-            .filter(coach_email__iexact=coach_email)
-            .values_list("id", flat=True)
-        )
-        if ticket.wellbeing_record_id not in learner_ids:
+        if not coach_email:
+            return None, Response({"detail": "Forbidden"}, status=status.HTTP_403_FORBIDDEN)
+        if not SupportTicket.objects.using("wellbeing").filter(
+            _support_ticket_coach_filter(coach_email),
+            id=ticket.id,
+        ).exists():
             return None, Response({"detail": "Forbidden"}, status=status.HTTP_403_FORBIDDEN)
 
     return ticket, None
@@ -3052,37 +3122,11 @@ def archived_tickets_list(request):
 
     if role == "coach":
         coach_email = (getattr(user, "email", "") or "").strip().lower()
-        learner_qs = WellbeingSafeguardingMonitoringSystem.objects.using("wellbeing").filter(
-            coach_email__iexact=coach_email
-        )
-        learner_ids = list(learner_qs.values_list("id", flat=True))
-        learner_emails = [
-            (e or "").strip() for e in learner_qs.values_list("learner_email", flat=True) if (e or "").strip()
-        ]
-        from django.db.models import Q as _Q
-        f = _Q()
-        if learner_ids:
-            f |= _Q(wellbeing_record_id__in=learner_ids)
-        if learner_emails:
-            f |= _Q(email__in=learner_emails)
-        qs = qs.filter(f) if f else qs.none()
+        qs = qs.filter(_support_ticket_coach_filter(coach_email)) if coach_email else qs.none()
     else:
         coach_email_filter = (request.query_params.get("coach_email") or "").strip().lower()
         if coach_email_filter:
-            learner_qs = WellbeingSafeguardingMonitoringSystem.objects.using("wellbeing").filter(
-                coach_email__iexact=coach_email_filter
-            )
-            learner_ids = list(learner_qs.values_list("id", flat=True))
-            learner_emails = [
-                (e or "").strip() for e in learner_qs.values_list("learner_email", flat=True) if (e or "").strip()
-            ]
-            from django.db.models import Q as _Q
-            f = _Q()
-            if learner_ids:
-                f |= _Q(wellbeing_record_id__in=learner_ids)
-            if learner_emails:
-                f |= _Q(email__in=learner_emails)
-            qs = qs.filter(f) if f else qs.none()
+            qs = qs.filter(_support_ticket_coach_filter(coach_email_filter))
 
     tickets = []
     for row in qs:
@@ -3097,6 +3141,8 @@ def archived_tickets_list(request):
             "ticketCode": f"TKT-{row.id:03d}",
             "learnerName": (getattr(row, "full_name", "") or "").strip(),
             "learnerEmail": (getattr(row, "email", "") or "").strip(),
+            "coachName": (getattr(row, "coach_name", "") or "").strip(),
+            "coachEmail": (getattr(row, "coach_email", "") or "").strip().lower(),
             "type": (getattr(row, "ticket_type", "") or "").strip() or "Support",
             "urgency": (getattr(row, "urgency", "") or "").strip() or "medium",
             "status": (getattr(row, "status", "") or "").strip() or "open",

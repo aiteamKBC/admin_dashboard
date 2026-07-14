@@ -101,6 +101,8 @@ class SupportTicket(models.Model):
     submitted_by = models.TextField(null=True, blank=True)
     is_archived = models.BooleanField(null=True, blank=True, default=False)
     assigned_owner = models.TextField(null=True, blank=True)
+    coach_name = models.TextField(null=True, blank=True)
+    coach_email = models.TextField(null=True, blank=True)
 
     class Meta:
         managed = False
