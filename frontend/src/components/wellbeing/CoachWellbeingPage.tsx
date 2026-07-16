@@ -385,10 +385,17 @@ function riskBadgeClass(risk: RiskLevel) {
   return "bg-red-500 text-white";
 }
 
-type RiskQuickValue = "all" | RiskLevel;
+function riskRank(risk?: RiskLevel | null) {
+  if (risk === "red") return 3;
+  if (risk === "amber") return 2;
+  if (risk === "green") return 1;
+  return 0;
+}
+
+type RiskQuickValue = "all" | RiskLevel | "changed";
 
 const RISK_QUICK_FILTERS: Array<{
-  value: RiskQuickValue;
+  value: Exclude<RiskQuickValue, "changed">;
   label: string;
   activeClass: string;
 }> = [
@@ -403,15 +410,28 @@ function RiskQuickFilter({
   onChange,
   allLabel = "All",
   counts,
+  includeChanged = false,
 }: {
   value?: RiskQuickValue;
   onChange: (value: RiskQuickValue) => void;
   allLabel?: string;
   counts?: Partial<Record<RiskQuickValue, number>>;
+  includeChanged?: boolean;
 }) {
+  const filters = includeChanged
+    ? [
+        ...RISK_QUICK_FILTERS,
+        {
+          value: "changed" as const,
+          label: "Risk changed",
+          activeClass: "border-[#0F9B8E] bg-[#0F9B8E] text-white",
+        },
+      ]
+    : RISK_QUICK_FILTERS;
+
   return (
     <div className="flex flex-wrap gap-2">
-      {RISK_QUICK_FILTERS.map((item) => {
+      {filters.map((item) => {
         const isActive = value === item.value;
         const label = item.value === "all" ? allLabel : item.label;
         const count = counts?.[item.value];
@@ -603,6 +623,45 @@ function TrendBadge({ trend, delta }: { trend?: string | null; delta?: number | 
     >
       <TrendingDown className="h-3 w-3" />
       {delta != null ? delta.toFixed(1) : "Reduced"}
+    </span>
+  );
+}
+
+function riskLabel(risk?: RiskLevel | null) {
+  if (risk === "red") return "Red";
+  if (risk === "amber") return "Amber";
+  if (risk === "green") return "Green";
+  return "-";
+}
+
+function RiskChangeBadge({ change }: {
+  change?: TicketableLearnerRow["riskChange"];
+}) {
+  const toRisk = change?.to || null;
+  if (!change?.changed || !toRisk) {
+    return (
+      <span
+        className="inline-flex items-center rounded-md bg-slate-50 px-2 py-1 text-xs font-medium text-slate-400"
+        title="No support ticket note says the risk level changed"
+      >
+        No change
+      </span>
+    );
+  }
+
+  const tone = toRisk === "green"
+    ? "bg-emerald-50 text-emerald-700 ring-emerald-200"
+    : toRisk === "amber"
+      ? "bg-amber-50 text-amber-700 ring-amber-200"
+      : "bg-red-50 text-red-700 ring-red-200";
+
+  return (
+    <span
+      className={`inline-flex items-center gap-1 rounded-md px-2 py-1 text-xs font-semibold ring-1 ${tone}`}
+      title={`Support ticket note says risk level changed to ${riskLabel(toRisk)}`}
+    >
+      <TrendingUp className="h-3 w-3" />
+      Changed to {riskLabel(toRisk)}
     </span>
   );
 }
@@ -1860,7 +1919,7 @@ function LearnerTable({
   return (
     <div className="overflow-hidden rounded-2xl border border-[#EEE8F8]">
       <div className="custom-scroll overflow-auto" style={{ maxHeight: "520px" }}>
-        <table className="w-full min-w-[1480px] text-sm">
+        <table className="w-full min-w-[1580px] text-sm">
           <thead className="sticky top-0 z-10">
             <tr className="border-b border-[#EEE8F8] bg-[#FAFAFF] text-left text-xs font-semibold uppercase tracking-wide text-[#8E82AA]">
               <th className="px-4 py-3 first:pl-5">{learnerHeader("learner", "Learner")}</th>
@@ -1871,6 +1930,7 @@ function LearnerTable({
               <th className="px-4 py-3">{learnerHeader("engagement", "Engagement")}</th>
               <th className="px-4 py-3">{learnerHeader("provider", "Provider")}</th>
               <th className="px-4 py-3">{learnerHeader("risk", "Risk")}</th>
+              <th className="px-4 py-3 whitespace-nowrap">Risk Change</th>
               <th className="px-4 py-3">Trend</th>
               <th className="px-4 py-3 whitespace-nowrap">{learnerHeader("triggered", "Triggered")}</th>
               <th className="px-4 py-3">{learnerHeader("action", "Action")}</th>
@@ -1883,7 +1943,7 @@ function LearnerTable({
           <tbody className="divide-y divide-[#F3EFF9]">
             {sortedRows.length === 0 ? (
               <tr>
-                <td colSpan={14} className="px-5 py-10 text-center text-sm text-slate-400">
+                <td colSpan={15} className="px-5 py-10 text-center text-sm text-slate-400">
                   No learners found
                 </td>
               </tr>
@@ -1938,6 +1998,10 @@ function LearnerTable({
                       <span className={`inline-flex rounded-full px-3 py-1 text-xs font-semibold capitalize ${riskBadgeClass(row.riskLevel)}`}>
                         {row.riskLevel}
                       </span>
+                    </td>
+
+                    <td className="px-4 py-3 whitespace-nowrap">
+                      <RiskChangeBadge change={row.riskChange} />
                     </td>
 
                     <td className="px-4 py-3">
@@ -6793,6 +6857,7 @@ function DashboardTicketOverview({
             onChange={onRiskChange}
             allLabel={showingLearners ? "All learners" : "All tickets"}
             counts={riskCounts}
+            includeChanged={showingLearners}
           />
         </div>
 
@@ -7626,11 +7691,15 @@ export default function CoachWellbeingPage({ setMobileOpen, isDesktop }: CoachWe
       red: dashboardLearnerSearchRows.filter((learner) => String(learner.riskLevel || "").toLowerCase() === "red").length,
       amber: dashboardLearnerSearchRows.filter((learner) => String(learner.riskLevel || "").toLowerCase() === "amber").length,
       green: dashboardLearnerSearchRows.filter(isCompletedGreenRiskLearner).length,
+      changed: dashboardLearnerSearchRows.filter((learner) => learner.riskChange?.changed).length,
     };
   }, [dashboardLearnerSearchRows]);
 
   const dashboardLearnerRows = useMemo(() => {
     if (dashboardTicketRiskFilter === "all") return dashboardLearnerSearchRows;
+    if (dashboardTicketRiskFilter === "changed") {
+      return dashboardLearnerSearchRows.filter((learner) => learner.riskChange?.changed);
+    }
     if (dashboardTicketRiskFilter === "green") {
       return dashboardLearnerSearchRows.filter(isCompletedGreenRiskLearner);
     }

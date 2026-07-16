@@ -1109,6 +1109,8 @@ def _email_lookup_values(emails):
 def map_db_risk_level(db_value):
     """Maps DB risk_level (High/Medium/Low) to frontend RiskLevel (red/amber/green)."""
     v = (db_value or "").strip().lower()
+    if v in {"red", "amber", "green"}:
+        return v
     if v == "high":
         return "red"
     if v == "medium":
@@ -1183,6 +1185,10 @@ MANUAL_URGENCY_OVERRIDE_RE = re.compile(
     r"<!--\s*kbc_manual_urgency\s*:\s*(low|medium|high|urgent)\s*-->",
     re.IGNORECASE,
 )
+RISK_CHANGE_NOTE_RE = re.compile(
+    r"\brisk\s+(?:level\s+)?changed\s+(?:from\s+(?:red|amber|green|high|medium|moderate|low)\s+)?to\s+(red|amber|green|high|medium|moderate|low)\b",
+    re.IGNORECASE,
+)
 
 
 def _extract_manual_urgency_override(details):
@@ -1209,6 +1215,52 @@ def _risk_label_from_urgency(urgency):
     if urgency in {"medium", "moderate"}:
         return "Medium"
     return "Low"
+
+
+def _support_ticket_risk_change_from_notes(notes):
+    entries = parse_json_field(notes, [])
+    if isinstance(entries, dict):
+        entries = [entries]
+    if not isinstance(entries, list):
+        return None
+
+    matches = []
+    for index, item in enumerate(entries):
+        if isinstance(item, str):
+            note_text = item
+            created_at = ""
+        elif isinstance(item, dict):
+            note_text = item.get("note") or item.get("text") or item.get("message") or ""
+            created_at = item.get("created_at") or item.get("createdAt") or ""
+        else:
+            continue
+
+        match = RISK_CHANGE_NOTE_RE.search(str(note_text))
+        if not match:
+            continue
+
+        changed_to = map_db_risk_level(match.group(1))
+        if changed_to:
+            matches.append((str(created_at or ""), index, changed_to))
+
+    if not matches:
+        return None
+
+    matches.sort(key=lambda item: (item[0], item[1]))
+    return {
+        "changed": True,
+        "from": None,
+        "to": matches[-1][2],
+        "createdAt": matches[-1][0],
+    }
+
+
+def _newer_risk_change(candidate, existing):
+    if not candidate:
+        return existing
+    if not existing:
+        return candidate
+    return candidate if str(candidate.get("createdAt") or "") >= str(existing.get("createdAt") or "") else existing
 
 
 def compute_trend(history_json, current_overall_score=None):
@@ -1257,6 +1309,69 @@ def compute_trend(history_json, current_overall_score=None):
         trend = "stable"
 
     return {"trend": trend, "delta": delta}
+
+
+def compute_risk_change(history_json, current_risk):
+    entries = history_json if isinstance(history_json, list) else []
+
+    parsed = []
+    for entry in entries:
+        if isinstance(entry, str):
+            try:
+                entry = json.loads(entry)
+            except Exception:
+                continue
+        if isinstance(entry, dict):
+            parsed.append(entry)
+
+    parsed.sort(key=lambda e: e.get("submitted_at") or e.get("date") or e.get("timestamp") or "")
+
+    risks = []
+    for entry in parsed:
+        scores = entry.get("scores") or {}
+        risk = (
+            map_db_risk_level(entry.get("risk_level"))
+            or map_db_risk_level(scores.get("risk_level"))
+            or map_db_risk_level(scores.get("overall_risk_level"))
+        )
+
+        if risk is None:
+            total_score = (
+                scores.get("overall")
+                or scores.get("total")
+                or entry.get("total_score")
+                or entry.get("totalScore")
+            )
+            safeguarding_score = (
+                scores.get("safeguarding")
+                or entry.get("safeguarding_vulnerability_score")
+                or entry.get("safeguardingScore")
+            )
+            trigger_count = (
+                entry.get("trigger_count")
+                or entry.get("triggerCount")
+                or scores.get("trigger_count")
+                or 0
+            )
+            if total_score is not None or safeguarding_score is not None or trigger_count:
+                risk = derive_frontend_risk_level(total_score, safeguarding_score, trigger_count)
+
+        if risk in {"red", "amber", "green"}:
+            risks.append(risk)
+
+    if current_risk in {"red", "amber", "green"} and (not risks or risks[-1] != current_risk):
+        risks.append(current_risk)
+
+    if len(risks) < 2:
+        return {"changed": False, "from": None, "to": current_risk}
+
+    previous_risk = risks[-2]
+    latest_risk = risks[-1]
+    return {
+        "changed": previous_risk != latest_risk,
+        "from": previous_risk,
+        "to": latest_risk,
+    }
 
 
 def latest_history_date(history_json):
@@ -2218,7 +2333,7 @@ def coach_wellbeing_dashboard(request):
     active_learner_ids = get_aptem_active_learner_ids(requested_coach_email)
 
     if compact:
-        cache_key = ("dashboard_compact_learners_v7", role, requested_coach_email)
+        cache_key = ("dashboard_compact_learners_v9", role, requested_coach_email)
         cached = _DASHBOARD_COMPACT_CACHE.get(cache_key)
         now = time.monotonic()
         if cached and now < cached.get("expires_at", 0):
@@ -2285,21 +2400,24 @@ def coach_wellbeing_dashboard(request):
     if requested_coach_email:
         ticket_qs = ticket_qs.filter(_support_ticket_coach_filter(requested_coach_email))
 
-    open_ticket_rows = list(ticket_qs.values("wellbeing_record_id", "email", "status"))
+    open_ticket_rows = list(ticket_qs.values("wellbeing_record_id", "email", "status", "notes"))
 
     open_ticket_counts = Counter()
     closed_ticket_counts = Counter()
+    ticket_risk_changes = {}
 
     for ticket in open_ticket_rows:
         record_id = str(ticket.get("wellbeing_record_id") or "").strip()
         email_key = (ticket.get("email") or "").strip().lower()
         target_counts = open_ticket_counts if is_active_ticket_status(ticket.get("status")) else closed_ticket_counts
+        risk_change = _support_ticket_risk_change_from_notes(ticket.get("notes"))
         if record_id:
             target_counts[record_id] += 1
-            continue
+            ticket_risk_changes[record_id] = _newer_risk_change(risk_change, ticket_risk_changes.get(record_id))
 
         if email_key:
             target_counts[email_key] += 1
+            ticket_risk_changes[email_key] = _newer_risk_change(risk_change, ticket_risk_changes.get(email_key))
 
     if compact:
         learners = []
@@ -2326,10 +2444,12 @@ def coach_wellbeing_dashboard(request):
 
             row_open_tickets = open_ticket_counts.get(student_unique_key, 0)
             row_closed_tickets = closed_ticket_counts.get(student_unique_key, 0)
+            risk_change = ticket_risk_changes.get(student_unique_key)
             if row_student_email:
                 email_key = row_student_email.strip().lower()
                 row_open_tickets += open_ticket_counts.get(email_key, 0)
                 row_closed_tickets += closed_ticket_counts.get(email_key, 0)
+                risk_change = _newer_risk_change(ticket_risk_changes.get(email_key), risk_change)
 
             open_tickets_total += row_open_tickets
 
@@ -2339,7 +2459,8 @@ def coach_wellbeing_dashboard(request):
             safeguarding_score = student_meta.get("safeguarding_vulnerability_score")
             total_score = student_meta.get("total_score")
             trigger_count = student_meta.get("trigger_count") or 0
-            last_monitoring_survey_date = latest_history_date(student_meta.get("history_json"))
+            history_raw = student_meta.get("history_json")
+            last_monitoring_survey_date = latest_history_date(history_raw)
 
             if wellbeing_score is not None:
                 try:
@@ -2390,6 +2511,7 @@ def coach_wellbeing_dashboard(request):
                 "totalScore": total_score,
                 "safeguardingScore": safeguarding_score,
                 "riskLevel": db_risk or "green",
+                "riskChange": risk_change or {"changed": False, "from": None, "to": None},
                 "trend": None,
                 "trendDelta": None,
                 "recommendedAction": (
@@ -2429,7 +2551,7 @@ def coach_wellbeing_dashboard(request):
             "followUps": [],
             "suggestedActions": [],
         }
-        _DASHBOARD_COMPACT_CACHE[("dashboard_compact_learners_v7", role, requested_coach_email)] = {
+        _DASHBOARD_COMPACT_CACHE[("dashboard_compact_learners_v9", role, requested_coach_email)] = {
             "expires_at": time.monotonic() + 60,
             "data": data,
         }
@@ -2507,9 +2629,12 @@ def coach_wellbeing_dashboard(request):
         row_programme = (getattr(student_meta, "programme", "") or "").strip()
 
         row_open_tickets = open_ticket_counts.get(student_unique_key, 0)
+        risk_change = ticket_risk_changes.get(student_unique_key)
 
         if not row_open_tickets and row_student_email:
-            row_open_tickets = open_ticket_counts.get(row_student_email.strip().lower(), 0)
+            email_key = row_student_email.strip().lower()
+            row_open_tickets = open_ticket_counts.get(email_key, 0)
+            risk_change = _newer_risk_change(ticket_risk_changes.get(email_key), risk_change)
 
         open_tickets_total += row_open_tickets
 
@@ -2589,6 +2714,7 @@ def coach_wellbeing_dashboard(request):
                 "totalScore": total_score,
                 "safeguardingScore": safeguarding_score,
                 "riskLevel": db_risk or "green",
+                "riskChange": risk_change or {"changed": False, "from": None, "to": None},
                 "trend": trend_data["trend"],
                 "trendDelta": trend_data["delta"],
                 "recommendedAction": (
@@ -2688,6 +2814,7 @@ def coach_wellbeing_dashboard(request):
             "trend": trend_data["trend"],
             "trendDelta": trend_data["delta"],
             "riskLevel": risk_level,
+            "riskChange": risk_change or {"changed": False, "from": None, "to": None},
             "recommendedAction": summary.get("cardTitle") or "Follow up required",
             "hasOpenTicket": row_open_tickets > 0,
             "openTicketCount": row_open_tickets,

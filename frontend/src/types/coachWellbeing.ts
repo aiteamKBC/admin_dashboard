@@ -13,6 +13,12 @@ export type CoachLearnerRow = {
   safeguardingScore?: number | null;
   trend?: "up" | "down" | "stable" | null;
   trendDelta?: number | null;
+  riskChange?: {
+    changed?: boolean;
+    from?: RiskLevel | null;
+    to?: RiskLevel | null;
+    createdAt?: string | null;
+  } | null;
   riskLevel: RiskLevel;
   recommendedAction: string;
   hasOpenTicket?: boolean;
