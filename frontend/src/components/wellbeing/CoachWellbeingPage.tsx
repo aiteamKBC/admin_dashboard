@@ -1930,8 +1930,7 @@ function LearnerTable({
               <th className="px-4 py-3">{learnerHeader("engagement", "Engagement")}</th>
               <th className="px-4 py-3">{learnerHeader("provider", "Provider")}</th>
               <th className="px-4 py-3">{learnerHeader("risk", "Risk")}</th>
-              <th className="px-4 py-3 whitespace-nowrap">Risk Change</th>
-              <th className="px-4 py-3">Trend</th>
+              <th className="px-4 py-3 whitespace-nowrap">Current RAG</th>
               <th className="px-4 py-3 whitespace-nowrap">{learnerHeader("triggered", "Triggered")}</th>
               <th className="px-4 py-3">{learnerHeader("action", "Action")}</th>
               <th className="px-4 py-3 whitespace-nowrap">{learnerHeader("reports", "Reports")}</th>
@@ -1943,7 +1942,7 @@ function LearnerTable({
           <tbody className="divide-y divide-[#F3EFF9]">
             {sortedRows.length === 0 ? (
               <tr>
-                <td colSpan={15} className="px-5 py-10 text-center text-sm text-slate-400">
+                <td colSpan={14} className="px-5 py-10 text-center text-sm text-slate-400">
                   No learners found
                 </td>
               </tr>
@@ -2002,10 +2001,6 @@ function LearnerTable({
 
                     <td className="px-4 py-3 whitespace-nowrap">
                       <RiskChangeBadge change={row.riskChange} />
-                    </td>
-
-                    <td className="px-4 py-3">
-                      <TrendBadge trend={row.trend} delta={row.trendDelta} />
                     </td>
 
                     <td className="px-4 py-3">
