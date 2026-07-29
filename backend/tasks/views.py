@@ -3760,6 +3760,18 @@ def _is_inclusion_admin(user, role: str) -> bool:
     return role in {"qa", "admin"} or getattr(user, "is_staff", False) or getattr(user, "is_superuser", False)
 
 
+def _normalise_inclusion_org(value):
+    return re.sub(r"[^a-z0-9]+", "", (value or "").strip().lower())
+
+
+def _is_excluded_inclusion_org(value):
+    return _normalise_inclusion_org(value) == "kentbusinesscollege"
+
+
+def _exclude_inclusion_internal_org(qs):
+    return qs.exclude(organization_name__iregex=r"^\s*kent\s*business\s*college\s*$")
+
+
 def _onboarding_tier_label(tier):
     return {
         1: "Awareness",
@@ -4267,14 +4279,14 @@ def onboarding_reports_list(request):
         archived_param = (request.query_params.get("archived") or "").strip().lower()
         show_archived = archived_param in {"1", "true", "yes"}
         bypass_cache = "_" in request.query_params
-        base_qs = LearnerInclusivenessReport.objects.using("wellbeing")
+        base_qs = _exclude_inclusion_internal_org(LearnerInclusivenessReport.objects.using("wellbeing"))
         if show_archived:
             base_qs = base_qs.filter(is_archived=True)
         else:
             base_qs = base_qs.filter(is_archived__in=[False, None])
         sync_inclusion_report_coach_snapshots(base_qs)
 
-        cache_key = ("onboarding_list_v4", role, coach_email_filter, show_archived)
+        cache_key = ("onboarding_list_v5", role, coach_email_filter, show_archived)
         now = time.monotonic()
         if not bypass_cache:
             cached = _ONBOARDING_REPORTS_LIST_CACHE.get(cache_key)
@@ -4517,6 +4529,8 @@ def _check_onboarding_report_access(request, report_id: str, only_fields=None):
             qs = qs.only(*only_fields)
         report = qs.get(id=report_id)
     except LearnerInclusivenessReport.DoesNotExist:
+        return None, Response({"detail": "Not found"}, status=status.HTTP_404_NOT_FOUND)
+    if _is_excluded_inclusion_org(getattr(report, "organization_name", "")):
         return None, Response({"detail": "Not found"}, status=status.HTTP_404_NOT_FOUND)
     sync_inclusion_report_coach_snapshots(
         LearnerInclusivenessReport.objects.using("wellbeing").filter(id=report_id)
