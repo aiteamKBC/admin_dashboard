@@ -4494,8 +4494,8 @@ def update_onboarding_report(request, report_id: str):
         requested_status = (str(request.data.get("status") or "")).strip().lower()
         update_kwargs["status"] = requested_status
     if "progress_tier" in request.data:
-        if not _is_inclusion_admin(request.user, role):
-            return Response({"detail": "Only admin users can update progress tier"}, status=status.HTTP_403_FORBIDDEN)
+        if role != "coach" and not _is_inclusion_admin(request.user, role):
+            return Response({"detail": "Only admin or coach users can update progress tier"}, status=status.HTTP_403_FORBIDDEN)
         raw_tier = request.data.get("progress_tier")
         if raw_tier is None or raw_tier == "":
             update_kwargs["progress_tier"] = None
