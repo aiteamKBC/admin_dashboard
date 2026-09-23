@@ -101,6 +101,16 @@ DATABASES = {
     ),
 }
 
+# Caseload membership only; historical reports and tickets keep their databases.
+if os.getenv("DATABASE_URL_LEARNERS"):
+    DATABASES["learners"] = dj_database_url.parse(
+        os.environ["DATABASE_URL_LEARNERS"], conn_max_age=60, conn_health_checks=True,
+    )
+    DATABASES["learners"]["OPTIONS"].update({
+        "options": "-c default_transaction_read_only=on",
+        "connect_timeout": 10,
+    })
+
 # =========================
 # Cache (used for Microsoft OAuth state)
 # File-based so it survives dev-server auto-reloads; no extra setup required.

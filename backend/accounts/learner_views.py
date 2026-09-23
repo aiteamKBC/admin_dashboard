@@ -11,6 +11,7 @@ import json
 from datetime import datetime, timezone
 
 from django.db import connections
+from tasks.current_caseload import read_roster
 from django.http import JsonResponse
 from django.views.decorators.cache import never_cache
 from django.views.decorators.csrf import csrf_exempt
@@ -81,21 +82,9 @@ def _coach_learner_scope(user) -> tuple[set[str], set[str]]:
     if not coach_email:
         return set(), set()
 
-    with connections["wellbeing"].cursor() as cursor:
-        cursor.execute(
-            """
-            SELECT DISTINCT
-                   lower(trim(coalesce(learner_email, ''))) AS learner_email,
-                   lower(trim(coalesce(learner_name, ''))) AS learner_name
-            FROM wellbeing_safeguarding_monitoring_system
-            WHERE lower(trim(coalesce(coach_email, ''))) = %s
-            """,
-            [coach_email],
-        )
-        rows = cursor.fetchall()
-
-    emails = {row[0] for row in rows if row[0]}
-    names = {row[1] for row in rows if row[1]}
+    rows = read_roster(coach_email)
+    emails = {_normalise_text(row["email"]) for row in rows if _normalise_text(row["email"])}
+    names = {_normalise_text(row["full_name"]) for row in rows if _normalise_text(row["full_name"])}
     return emails, names
 
 
@@ -271,7 +260,10 @@ def build_learner_dataset(
         name = (row["learner_name"] or "").strip()
 
         if allowed_emails is not None or allowed_names is not None:
-            if email not in (allowed_emails or set()) and name.lower() not in (allowed_names or set()):
+            if email:
+                if email not in (allowed_emails or set()):
+                    continue
+            elif name.lower() not in (allowed_names or set()):
                 continue
 
         identity = email or name or f"learner-{row['learner_id']}"

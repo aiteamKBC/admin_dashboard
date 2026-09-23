@@ -1,3 +1,4 @@
+import { isHiddenCoachOption } from "../../helpers/coachFilters";
 ﻿import React, { useEffect, useMemo, useState } from "react";
 import { createPortal } from "react-dom";
 import { useLocation, useNavigate } from "react-router-dom";
@@ -6951,6 +6952,7 @@ export default function CoachWellbeingPage({ setMobileOpen, isDesktop }: CoachWe
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [coachOptions, setCoachOptions] = useState<CoachOption[]>([]);
+  const [workflowLoadError, setWorkflowLoadError] = useState("");
   const [selectedCoachEmail, setSelectedCoachEmail] = useState<string>(
     () => (role === "qa" ? "__all__" : "")
   );
@@ -6997,9 +6999,9 @@ export default function CoachWellbeingPage({ setMobileOpen, isDesktop }: CoachWe
 
     let mounted = true;
 
-    async function loadCoachOptions() {
+    async function loadCoachOptions(background = false) {
       try {
-        setOptionsLoading(true);
+        if (!background) setOptionsLoading(true);
 
         const res = await getCoachOptions();
         if (!mounted) return;
@@ -7010,7 +7012,7 @@ export default function CoachWellbeingPage({ setMobileOpen, isDesktop }: CoachWe
         })).filter((item: CoachOption) => {
           const label = item.label.trim().toLowerCase();
           const local = (item.value.split("@")[0] || "").replace(/[._-]+/g, " ").trim().toLowerCase();
-          return !HIDDEN_COACH_OPTION_LABELS.has(label) && !HIDDEN_COACH_OPTION_LABELS.has(local);
+          return !HIDDEN_COACH_OPTION_LABELS.has(label) && !HIDDEN_COACH_OPTION_LABELS.has(local) && !isHiddenCoachOption(label) && !isHiddenCoachOption(local);
         });
 
         const deduped = Array.from(
@@ -7025,13 +7027,12 @@ export default function CoachWellbeingPage({ setMobileOpen, isDesktop }: CoachWe
         setCoachOptions(withAll);
 
         setSelectedCoachEmail((prev) => {
-          if (prev) return prev;
+          if (prev && withAll.some((option) => option.value === prev)) return prev;
           return "__all__";
         });
       } catch (err) {
         console.error("Failed to load coach options", err);
         if (mounted) {
-          setCoachOptions([]);
           setSelectedCoachEmail((prev) => prev || "__all__");
         }
       } finally {
@@ -7042,9 +7043,16 @@ export default function CoachWellbeingPage({ setMobileOpen, isDesktop }: CoachWe
     }
 
     loadCoachOptions();
+    const refreshOptions = () => {
+      if (document.visibilityState !== "hidden") void loadCoachOptions(true);
+    };
+    const timer = window.setInterval(refreshOptions, 60_000);
+    window.addEventListener("focus", refreshOptions);
 
     return () => {
       mounted = false;
+      window.clearInterval(timer);
+      window.removeEventListener("focus", refreshOptions);
     };
   }, [role]);
 
@@ -7496,14 +7504,20 @@ export default function CoachWellbeingPage({ setMobileOpen, isDesktop }: CoachWe
 
         const dashEmailParam = selectedCoachEmail === "__all__" ? undefined : selectedCoachEmail;
         const dashboardEmail = role === "qa" ? dashEmailParam : undefined;
-        const [res, workflow] = await Promise.all([
-          getCoachWellbeing(dashboardEmail, true),
-          getCoachWellbeingWorkflow(dashboardEmail),
-        ]);
+        setWorkflowLoadError("");
+        const res = await getCoachWellbeing(dashboardEmail, true);
 
         if (!mounted) return;
 
-        setData(mergeWorkflowData(res, workflow));
+        setData(mergeWorkflowData(res, emptyDashboard));
+        setLoading(false);
+        // Render students first. A slow follow-up request must not hide them.
+        try {
+          const workflow = await getCoachWellbeingWorkflow(dashboardEmail);
+          if (mounted) setData(mergeWorkflowData(res, workflow));
+        } catch {
+          if (mounted) setWorkflowLoadError("Follow-ups could not be loaded. Student data is available; refresh to retry.");
+        }
 
       } catch (err: any) {
         if (!mounted) return;
@@ -7933,6 +7947,9 @@ export default function CoachWellbeingPage({ setMobileOpen, isDesktop }: CoachWe
       className="min-h-screen bg-[#F8F6FC] p-3 sm:p-6"
       style={{ fontFamily: "Roboto, sans-serif" }}
     >
+      {activeView === "dashboard" && workflowLoadError && (
+        <p role="status" className="mb-3 rounded-xl bg-amber-50 p-3 text-sm text-amber-800">{workflowLoadError}</p>
+      )}
       <div className="mb-6 rounded-[28px] bg-white p-4 shadow-sm sm:p-6">
         <div className="flex flex-col gap-5 2xl:flex-row 2xl:items-center 2xl:justify-between">
           <div className="flex min-w-0 items-center gap-3">

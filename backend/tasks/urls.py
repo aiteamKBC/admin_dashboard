@@ -1,4 +1,5 @@
-from django.urls import path
+from django.urls import path, re_path
+from accounts.caseload_views import coach_caseloads
 from rest_framework_simplejwt.views import TokenRefreshView
 from .views import (
     CoachTasksView,
@@ -32,13 +33,14 @@ from .views import (
 from accounts.booking_views import CreateBookingView, BookingDiagnosticView, BookingServicesView, BookingAvailabilityView, BookingFixServiceView, BookingTestCreateView, BookingPublishView, BookingStaffView
 
 urlpatterns = [
+    path("coach-caseloads/", coach_caseloads, name="coach-caseloads"),
     path("coaches/<str:coach_id>/tasks/", CoachTasksView.as_view()),
     path("coaches/<str:coach_id>/tasks/<str:task_id>/", CoachTaskDetailView.as_view()),
     path("evidence/upload/", EvidenceUploadView.as_view()),
     path("api/token/", EmailOrUsernameTokenObtainPairView.as_view(), name="token_obtain_pair"),
     path("api/token/refresh/", TokenRefreshView.as_view(), name="token_refresh"),
     path("coach-wellbeing-dashboard/", coach_wellbeing_dashboard, name="coach-wellbeing-dashboard"),
-    path("learner-wellbeing-report/<int:learner_id>/", learner_wellbeing_report, name="learner-wellbeing-report"),
+    re_path(r"^learner-wellbeing-report/(?P<learner_id>-?\d+)/$", learner_wellbeing_report, name="learner-wellbeing-report"),
     path("coach-wellbeing-workflow/", coach_wellbeing_workflow, name="coach-wellbeing-workflow"),
     path("coach-options/", coach_options, name="coach-options"),
     path("support-tickets/", create_support_ticket, name="support-tickets"),

@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { isHiddenCoachOption } from "../../helpers/coachFilters";
 
 /* ================= TYPES ================= */
 
@@ -105,7 +106,7 @@ export default function FilterDropdown({
     ...coaches
       .filter((c) => {
         const name = String(c.case_owner ?? "").trim();
-        return name !== "" && !blockedNames.has(name.toLowerCase());
+        return name !== "" && !blockedNames.has(name.toLowerCase()) && !isHiddenCoachOption(name);
       })
       .map((c) => ({
         value: String(c.id),

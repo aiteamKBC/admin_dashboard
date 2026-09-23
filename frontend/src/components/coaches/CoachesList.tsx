@@ -1,4 +1,5 @@
 import { CoachAnalytics } from "../../api";
+import { isHiddenCoachOption } from "../../helpers/coachFilters";
 import { useEffect, useRef } from "react";
 
 type CoachesListProps = {
@@ -28,7 +29,7 @@ export default function CoachesList({
       {coaches
         .filter((c) => {
           const name = String((c as any)?.case_owner ?? "").trim();
-          return name.length > 0 && !/^phone\s*\d+$/i.test(name);
+          return name.length > 0 && !/^phone\s*\d+$/i.test(name) && !isHiddenCoachOption(name);
         })
         .map((coach) => {
           const isActive =

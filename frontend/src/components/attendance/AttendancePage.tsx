@@ -5,7 +5,7 @@ import CoachesList from "../coaches/CoachesList";
 import AttendanceTasksPanel from "./AttendanceTasksPanel";
 import MonthlySessionsWithLearners from "./MonthlySessionsWithLearners";
 
-import { fetchAllCoachesAnalytics, getCachedCoachesAnalytics, isCacheFresh, type CoachAnalytics } from "../../api";
+import { fetchAllCoachesAnalytics, getCachedCoachesAnalytics, isCacheFresh, refreshCoachesCaseloads, type CoachAnalytics } from "../../api";
 
 /* ================= TYPES ================= */
 
@@ -385,7 +385,13 @@ export default function AttendancePage({ onOpenSidebar }: { onOpenSidebar?: () =
       // Show cache immediately
       const cached = getCachedCoachesAnalytics();
       if (cached) {
-        applyCoaches(cached);
+        try {
+          applyCoaches(await refreshCoachesCaseloads(cached));
+        } catch {
+          setError("Failed to load current coaches");
+          setLoading(false);
+          return;
+        }
         setLoading(false);
         if (isCacheFresh()) return; // fresh enough — skip network call
       } else {

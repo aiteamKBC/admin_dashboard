@@ -21,7 +21,7 @@ export async function getCoachWellbeingWorkflow(coachEmail?: string) {
 }
 
 export async function getCoachOptions() {
-  return await fetchWithAuth("/coach-options/");
+  return await fetchWithAuth(`/coach-options/?_=${Date.now()}`, { cache: "no-store" });
 }
 
 export type CreateSupportTicketPayload = {

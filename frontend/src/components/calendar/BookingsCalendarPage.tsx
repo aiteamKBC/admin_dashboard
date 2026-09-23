@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useState } from "react";
 import { Users } from "lucide-react";
+import { isHiddenCoachOption } from "../../helpers/coachFilters";
 import type { Meeting } from "../../types/meetings";
-import { fetchAllCoachesAnalytics, getCachedCoachesAnalytics, isCacheFresh } from "../../api";
+import { fetchAllCoachesAnalytics, getCachedCoachesAnalytics, isCacheFresh, refreshCoachesCaseloads } from "../../api";
 import WeekTimeGrid from "./WeekTimeGrid";
 import MonthGrid from "./MonthGrid";
 
@@ -83,6 +84,7 @@ export default function BookingsCalendarPage({ onOpenSidebar }: { onOpenSidebar?
     const n = (name ?? "").trim().toLowerCase();
 
     if (!n) return true;
+    if (isHiddenCoachOption(n)) return true;
 
     // hide "Coach 1234"
     if (/^coach\s*\d+$/.test(n)) return true;
@@ -109,7 +111,7 @@ export default function BookingsCalendarPage({ onOpenSidebar }: { onOpenSidebar?
     const list: Coach[] = rows
       .map((r: any, idx: number) => {
         const rawId = Number(r?.case_owner_id ?? r?.id);
-        const id = Number.isFinite(rawId) && rawId > 0 ? rawId : idx + 1;
+        const id = Number.isFinite(rawId) && rawId !== 0 ? rawId : idx + 1;
         const name = s(r?.case_owner).trim() || `Coach ${id}`;
         return { id, case_owner: name };
       })
@@ -180,7 +182,17 @@ export default function BookingsCalendarPage({ onOpenSidebar }: { onOpenSidebar?
       // 1. Show cache immediately — no loading delay
       const cached = getCachedCoachesAnalytics();
       if (cached) {
-        const { filteredList, meetings } = processRows(cached);
+        let refreshed;
+        try {
+          refreshed = await refreshCoachesCaseloads(cached);
+        } catch {
+          if (mounted) {
+            setError("Failed to load current coaches");
+            setLoading(false);
+          }
+          return;
+        }
+        const { filteredList, meetings } = processRows(refreshed);
         if (mounted) {
           setCoaches(filteredList);
           setAllMeetings(meetings);

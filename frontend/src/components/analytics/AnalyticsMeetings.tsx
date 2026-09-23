@@ -16,7 +16,7 @@ import EvidenceBarChart from "./EvidenceBarChart";
 import { useReport } from "../../context/ReportContext";
 
 
-import { fetchAllCoachesAnalytics, getCachedCoachesAnalytics, isCacheFresh, CoachAnalytics } from "../../api";
+import { fetchAllCoachesAnalytics, getCachedCoachesAnalytics, isCacheFresh, refreshCoachesCaseloads, CoachAnalytics } from "../../api";
 
 /* ================= helpers ================= */
 
@@ -333,6 +333,7 @@ export default function AnalyticsMeetings({ onOpenSidebar }: { onOpenSidebar?: (
       const arr = Array.isArray(data) ? data : [];
       const role = localStorage.getItem("role");
       const username = localStorage.getItem("username");
+      const email = (localStorage.getItem("email") || "").trim().toLowerCase();
 
       const isHiddenCoach = (name: string) =>
         /^phone[12]$/i.test((name ?? "").trim());
@@ -349,7 +350,9 @@ export default function AnalyticsMeetings({ onOpenSidebar }: { onOpenSidebar?: (
       let filteredCoaches =
         role === "coach" && username
           ? normalized.filter(
-              (c: any) => c.case_owner === username || c.caseOwner === username
+              (c: any) => c.coach_email
+                ? c.coach_email === email
+                : c.case_owner === username || c.caseOwner === username
             )
           : normalized;
 
@@ -360,12 +363,18 @@ export default function AnalyticsMeetings({ onOpenSidebar }: { onOpenSidebar?: (
     const loadAnalytics = async () => {
       setError(null);
 
-      // 1. Show cached data immediately (no spinner delay)
+      // Cached metrics are reusable; membership must be read from Learner first.
       const cached = getCachedCoachesAnalytics();
       if (cached) {
-        applyData(cached);
-        setLoading(false);
-        if (isCacheFresh()) return; // fresh enough — skip network call
+        try {
+          applyData(await refreshCoachesCaseloads(cached));
+          setLoading(false);
+          if (isCacheFresh()) return;
+        } catch {
+          setError("Failed to load current student assignments");
+          setLoading(false);
+          return;
+        }
       } else {
         setLoading(true);
       }
@@ -392,6 +401,30 @@ export default function AnalyticsMeetings({ onOpenSidebar }: { onOpenSidebar?: (
 
     loadAnalytics();
   }, [retryKey]);
+
+  // Pick up additions/transfers while the page is open and when returning to it.
+  useEffect(() => {
+    if (!coaches.length) return;
+    let cancelled = false;
+    let pending = false;
+    const refresh = async () => {
+      if (pending || document.visibilityState === "hidden") return;
+      pending = true;
+      try {
+        const updated = await refreshCoachesCaseloads(coaches);
+        if (!cancelled) { setCoaches(updated); setError(null); }
+      } catch {
+        if (!cancelled) setError("Student assignments could not be refreshed. Please retry.");
+      } finally { pending = false; }
+    };
+    const timer = window.setInterval(refresh, 60_000);
+    window.addEventListener("focus", refresh);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+      window.removeEventListener("focus", refresh);
+    };
+  }, [coaches]);
 
   // ---- Selected Coach ----
   const selectCoach = useCallback((coach: CoachAnalytics) => {
@@ -808,6 +841,16 @@ export default function AnalyticsMeetings({ onOpenSidebar }: { onOpenSidebar?: (
       raw: x,
     };
   }
+
+  useEffect(() => {
+    setStudentsModal((current) => {
+      if (!current.open) return current;
+      const coach = coaches.find((item) => Number(item.id) === Number(current.coachId));
+      const students = (coach?.students ?? []).map(normalizeStudent)
+        .filter((student): student is StudentAnalytics => !!student);
+      return { ...current, students };
+    });
+  }, [coaches]);
 
   const handleViewStudents = (coach: CoachAnalytics) => {
     selectCoach(coach);
@@ -1385,10 +1428,10 @@ export default function AnalyticsMeetings({ onOpenSidebar }: { onOpenSidebar?: (
             </div>
 
             <div className="bg-white rounded-xl p-4 flex flex-col">
-              {Number.isFinite(todoCoachId as number) ? (
+              {!selectedCoachSafe.caseload_only && Number.isFinite(todoCoachId as number) && (todoCoachId as number) > 0 ? (
                 <TodoList coachId={todoCoachId as number} viewerRole={role} />
               ) : (
-                <div className="text-sm text-gray-400">Select a coach to view tasks.</div>
+                <div className="text-sm text-gray-400">No task list is linked to this coach.</div>
               )}
             </div>
           </section>

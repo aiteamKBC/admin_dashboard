@@ -22,7 +22,8 @@ import requests
 # wellbeing
 from datetime import datetime
 from rest_framework.decorators import api_view, permission_classes
-from django.db import connections
+from django.db import connections, DatabaseError
+from .current_caseload import current_monitoring_rows, current_assignment, SUMMARY_FIELDS, inclusion_assignment_index, inclusion_assignment
 from django.db.models import Case, IntegerField, Q, Value, When
 from django.db.models.expressions import RawSQL
 from django.db.models.functions import Lower, Trim
@@ -473,7 +474,11 @@ CLOSED_TICKET_STATUSES = {"closed", "outcome recorded"}
 # Learner program status counted in active caseloads
 ACTIVE_PROGRAM_STATUS = "Active"
 
-HIDDEN_COACH_OPTION_LABELS = {"admin", "admin rewan", "coach demo", "omar ham", "marwa mahmoud"}
+HIDDEN_COACH_OPTION_LABELS = {
+    "admin", "admin rewan", "coach demo", "omar ham", "marwa mahmoud",
+    "default owner", "demo admin", "enrolment team", "test coach",
+    "test curriculum", "qa learner launch coach",
+}
 
 
 def is_active_ticket_status(value):
@@ -524,39 +529,7 @@ def get_aptem_active_learner_ids(coach_email=""):
 
 
 def _learner_coach_snapshot(learner):
-    fallback = {
-        "coach_name": (getattr(learner, "coach_name", "") or "").strip(),
-        "coach_email": (getattr(learner, "coach_email", "") or "").strip().lower(),
-    }
-    learner_id = getattr(learner, "id", None)
-    if learner_id in (None, ""):
-        return fallback
-
-    try:
-        with connections["default"].cursor() as cursor:
-            cursor.execute(
-                '''
-                    select
-                        coalesce(nullif(trim("OwnerName"), ''), '') as coach_name,
-                        lower(trim(coalesce("OwnerEmail", ''))) as coach_email
-                    from public.kbc_users_data
-                    where "ID" = %s
-                    order by case when "Program-Status" = %s then 0 else 1 end
-                    limit 1
-                ''',
-                [learner_id, ACTIVE_PROGRAM_STATUS],
-            )
-            row = cursor.fetchone()
-    except Exception:
-        row = None
-
-    if not row:
-        return fallback
-
-    return {
-        "coach_name": (row[0] or fallback["coach_name"] or "").strip(),
-        "coach_email": (row[1] or fallback["coach_email"] or "").strip().lower(),
-    }
+    return current_assignment(learner)
 
 
 def _normalise_ticket_learner_id(value):
@@ -878,12 +851,13 @@ def _support_ticket_coach_filter(coach_email):
     coach_email = (coach_email or "").strip().lower()
     if not coach_email:
         return Q(pk__in=[])
-
-    stored_filter = Q(coach_email__iexact=coach_email)
-    legacy_filter = _legacy_ticket_learner_filter(coach_email)
-    if legacy_filter:
-        return stored_filter | ((Q(coach_email__isnull=True) | Q(coach_email="")) & legacy_filter)
-    return stored_filter
+    learners = current_monitoring_rows(coach_email, fields=("id", "learner_email"))
+    ids = [row.id for row in learners if row.id > 0]
+    emails = [(row.learner_email or "").strip().lower() for row in learners if row.learner_email]
+    email_ticket_ids = SupportTicket.objects.using("wellbeing").annotate(
+        current_email=Lower(Trim("email"))
+    ).filter(current_email__in=emails).values("pk")
+    return Q(wellbeing_record_id__in=ids) | Q(pk__in=email_ticket_ids)
 
 
 def safe_date(value):
@@ -961,33 +935,26 @@ def _title_from_local_part(value: str) -> str:
 @api_view(["GET"])
 @permission_classes([IsAuthenticated])
 def coach_options(request):
-    now = time.monotonic()
-    cached = _COACH_OPTIONS_CACHE.get("data")
-    if cached is not None and now < float(_COACH_OPTIONS_CACHE.get("expires_at") or 0):
-        return Response(cached)
-
     rows = []
     try:
-        with connections["default"].cursor() as cursor:
+        with connections["learners"].cursor() as cursor:
             cursor.execute(
                 '''
                     select
-                        coalesce(nullif(trim("OwnerName"), ''), '') as coach_name,
-                        lower(trim("OwnerEmail")) as coach_email
-                    from public.kbc_users_data
-                    where "Program-Status" = %s
-                      and "OwnerEmail" is not null
-                      and trim("OwnerEmail") <> ''
-                    group by coalesce(nullif(trim("OwnerName"), ''), ''), lower(trim("OwnerEmail"))
+                        coalesce(min(nullif(trim(coach_name), '')), '') as coach_name,
+                        lower(trim(coach_email)) as coach_email
+                    from "Learner"."learners"
+                    where coach_email is not null
+                      and trim(coach_email) <> ''
+                    group by lower(trim(coach_email))
                 ''',
-                [ACTIVE_PROGRAM_STATUS],
             )
             rows = [
                 {"coach_name": row[0] or "", "coach_email": row[1] or ""}
                 for row in cursor.fetchall()
             ]
     except Exception:
-        rows = []
+        return Response({"detail": "Coach options are temporarily unavailable."}, status=503)
 
     cleaned_rows = []
     seen_emails = set()
@@ -1024,7 +991,7 @@ def coach_options(request):
             (name or "").strip().lower(),
             local.replace(".", " ").replace("_", " ").replace("-", " ").strip(),
         }
-        if normalized_options & HIDDEN_COACH_OPTION_LABELS:
+        if {" ".join(value.split()) for value in normalized_options} & HIDDEN_COACH_OPTION_LABELS:
             continue
 
         data.append({
@@ -1033,10 +1000,9 @@ def coach_options(request):
         })
 
     data.sort(key=lambda item: (item.get("label") or item.get("value") or "").lower())
-    _COACH_OPTIONS_CACHE["data"] = data
-    _COACH_OPTIONS_CACHE["expires_at"] = time.monotonic() + 300
-
-    return Response(data)
+    response = Response(data)
+    response["Cache-Control"] = "no-store"
+    return response
 
 def safe_int(value, default=0):
     try:
@@ -1549,7 +1515,6 @@ _ACTIVE_QUESTION_MAP_CACHE = {"expires_at": 0.0, "value": None}
 _ONBOARDING_REPORTS_LIST_CACHE = {}
 _DASHBOARD_COMPACT_CACHE = {}
 _SUPPORT_TICKETS_LIST_CACHE = {}
-_COACH_OPTIONS_CACHE = {"expires_at": 0.0, "data": None}
 
 
 def _active_question_map():
@@ -1997,9 +1962,6 @@ def create_support_ticket(request):
         created_at__gte=cutoff,
     ).first()
     if existing:
-        sync_support_ticket_coach_snapshots(
-            SupportTicket.objects.using("wellbeing").filter(id=existing.id)
-        )
         existing.refresh_from_db(using="wellbeing")
         return Response(
             {
@@ -2058,6 +2020,10 @@ def _check_learner_access(request, learner_id):
         .filter(id=learner_id)
         .first()
     )
+    if not learner and int(learner_id) < 0:
+        scope = (getattr(user, "email", "") or "").strip().lower() if role == "coach" else ""
+        if role != "coach" or scope:
+            learner = next((row for row in current_monitoring_rows(scope) if row.id == int(learner_id)), None)
     if not learner:
         return None, Response({"detail": "Learner not found"}, status=status.HTTP_404_NOT_FOUND)
 
@@ -2120,31 +2086,13 @@ def coach_wellbeing_workflow(request):
     else:
         return Response({"detail": "Forbidden"}, status=status.HTTP_403_FORBIDDEN)
 
-    active_learner_ids = get_aptem_active_learner_ids(requested_coach_email)
-
-    monitoring_qs = (
-        WellbeingSafeguardingMonitoringSystem.objects.using("wellbeing")
-        .only(
-            "id",
-            "learner_name",
-            "learner_email",
-            "coach_name",
-            "coach_email",
-            "risk_level",
-            "total_score",
-            "safeguarding_vulnerability_score",
-            "trigger_count",
-            "history_json",
+    try:
+        monitoring_rows = current_monitoring_rows(
+            requested_coach_email, fields=SUMMARY_FIELDS, compact_history=True,
         )
-        .annotate(program_status_normalized=Lower(Trim("program_status")))
-        .filter(program_status_normalized=ACTIVE_PROGRAM_STATUS.lower())
-    )
-    if active_learner_ids is not None:
-        monitoring_qs = monitoring_qs.filter(id__in=active_learner_ids)
-    if requested_coach_email:
-        monitoring_qs = monitoring_qs.filter(coach_email__iexact=requested_coach_email)
+    except DatabaseError:
+        return Response({"detail": "Current caseload is temporarily unavailable."}, status=503)
 
-    monitoring_rows = list(monitoring_qs)
     monitoring_by_id = {str(row.id): row for row in monitoring_rows}
     monitoring_ids = [row.id for row in monitoring_rows]
 
@@ -2325,19 +2273,15 @@ def coach_wellbeing_dashboard(request):
     else:
         return Response({"detail": "Forbidden"}, status=status.HTTP_403_FORBIDDEN)
 
-    sync_support_ticket_coach_snapshots(
-        SupportTicket.objects.using("wellbeing").filter(is_archived__in=[False, None])
-    )
 
-    active_caseload = get_aptem_active_learner_count(requested_coach_email)
-    active_learner_ids = get_aptem_active_learner_ids(requested_coach_email)
-
-    if compact:
-        cache_key = ("dashboard_compact_learners_v9", role, requested_coach_email)
-        cached = _DASHBOARD_COMPACT_CACHE.get(cache_key)
-        now = time.monotonic()
-        if cached and now < cached.get("expires_at", 0):
-            return Response(_with_fresh_caseload(cached["data"], active_caseload))
+    try:
+        current_rows = current_monitoring_rows(
+            requested_coach_email, fields=SUMMARY_FIELDS if compact else None,
+            compact_history=compact,
+        )
+    except DatabaseError:
+        return Response({"detail": "Current caseload is temporarily unavailable."}, status=503)
+    active_caseload = len(current_rows)
 
     monitoring_fields = [
         "id",
@@ -2359,22 +2303,10 @@ def coach_wellbeing_dashboard(request):
     else:
         monitoring_fields.extend(["history_json", "submission_json", "triggered_questions"])
 
-    monitoring_qs = WellbeingSafeguardingMonitoringSystem.objects.using("wellbeing").only(*monitoring_fields)
-
-    # Count only learners whose DB program status is Active.
-    monitoring_qs = monitoring_qs.annotate(
-        program_status_normalized=Lower(Trim("program_status"))
-    ).filter(program_status_normalized=ACTIVE_PROGRAM_STATUS.lower())
-    if active_learner_ids is not None:
-        monitoring_qs = monitoring_qs.filter(id__in=active_learner_ids)
-
-    if requested_coach_email:
-        monitoring_qs = monitoring_qs.filter(coach_email__iexact=requested_coach_email)
-
-    if compact:
-        monitoring_rows = list(monitoring_qs.order_by("learner_name", "id").values(*monitoring_fields))
-    else:
-        monitoring_rows = list(monitoring_qs)
+    monitoring_rows = (
+        [{field: getattr(row, field, None) for field in monitoring_fields} for row in current_rows]
+        if compact else current_rows
+    )
     monitoring_rows.sort(key=lambda row: (
         ((row.get("learner_name") if isinstance(row, dict) else getattr(row, "learner_name", "")) or "").strip().lower(),
         (row.get("id") if isinstance(row, dict) else getattr(row, "id", 0)) or 0,
@@ -2389,16 +2321,17 @@ def coach_wellbeing_dashboard(request):
         if ((row.get("learner_email") if isinstance(row, dict) else getattr(row, "learner_email", "")) or "").strip()
     ]
 
-    ticket_qs = SupportTicket.objects.using("wellbeing").filter(is_archived__in=[False, None])
+    ticket_qs = SupportTicket.objects.using("wellbeing").filter(is_archived__in=[False, None]).annotate(
+        current_email=Lower(Trim("email"))
+    )
     ticket_filter = Q()
     if monitoring_ids:
         ticket_filter |= Q(wellbeing_record_id__in=monitoring_ids)
     monitoring_email_values = _email_lookup_values(monitoring_emails)
     if monitoring_email_values:
-        ticket_filter |= Q(email__in=monitoring_email_values)
+        ticket_filter |= Q(current_email__in=[email.strip().lower() for email in monitoring_email_values])
     ticket_qs = ticket_qs.filter(ticket_filter) if ticket_filter else ticket_qs.none()
-    if requested_coach_email:
-        ticket_qs = ticket_qs.filter(_support_ticket_coach_filter(requested_coach_email))
+
 
     open_ticket_rows = list(ticket_qs.values("wellbeing_record_id", "email", "status", "notes"))
 
@@ -2406,18 +2339,22 @@ def coach_wellbeing_dashboard(request):
     closed_ticket_counts = Counter()
     ticket_risk_changes = {}
 
+    # Count a ticket once even when it carries both a record ID and an email.
+    known_record_ids = {str(value) for value in monitoring_ids}
+    record_by_email = {
+        (row.learner_email or "").strip().lower(): str(row.id)
+        for row in current_rows if row.learner_email
+    }
+
     for ticket in open_ticket_rows:
         record_id = str(ticket.get("wellbeing_record_id") or "").strip()
         email_key = (ticket.get("email") or "").strip().lower()
         target_counts = open_ticket_counts if is_active_ticket_status(ticket.get("status")) else closed_ticket_counts
         risk_change = _support_ticket_risk_change_from_notes(ticket.get("notes"))
-        if record_id:
-            target_counts[record_id] += 1
-            ticket_risk_changes[record_id] = _newer_risk_change(risk_change, ticket_risk_changes.get(record_id))
-
-        if email_key:
-            target_counts[email_key] += 1
-            ticket_risk_changes[email_key] = _newer_risk_change(risk_change, ticket_risk_changes.get(email_key))
+        key = record_id if record_id in known_record_ids else record_by_email.get(email_key)
+        if key:
+            target_counts[key] += 1
+            ticket_risk_changes[key] = _newer_risk_change(risk_change, ticket_risk_changes.get(key))
 
     if compact:
         learners = []
@@ -2550,10 +2487,6 @@ def coach_wellbeing_dashboard(request):
             "trends": [],
             "followUps": [],
             "suggestedActions": [],
-        }
-        _DASHBOARD_COMPACT_CACHE[("dashboard_compact_learners_v9", role, requested_coach_email)] = {
-            "expires_at": time.monotonic() + 60,
-            "data": data,
         }
         return Response(data)
 
@@ -2977,11 +2910,6 @@ def coach_wellbeing_dashboard(request):
         "followUps": follow_ups[:20],
         "suggestedActions": suggested_actions[:20],
     }
-    if compact:
-        _DASHBOARD_COMPACT_CACHE[("dashboard_compact_learners_v2", role, requested_coach_email)] = {
-            "expires_at": time.monotonic() + 60,
-            "data": data,
-        }
     return Response(data)
 
 @api_view(["PATCH", "DELETE"])
@@ -2998,9 +2926,6 @@ def update_support_ticket(request, ticket_id):
     if not ticket:
         return Response({"detail": "Ticket not found"}, status=status.HTTP_404_NOT_FOUND)
 
-    sync_support_ticket_coach_snapshots(
-        SupportTicket.objects.using("wellbeing").filter(id=ticket.id)
-    )
     ticket.refresh_from_db(using="wellbeing")
 
     original_details = _strip_manual_urgency_override(getattr(ticket, "details", "") or "")
@@ -3155,7 +3080,6 @@ def support_tickets_list(request):
         return Response({"detail": "Forbidden"}, status=status.HTTP_403_FORBIDDEN)
 
     base_qs = SupportTicket.objects.using("wellbeing").filter(is_archived__in=[False, None])
-    sync_support_ticket_coach_snapshots(base_qs)
 
     coach_email_filter = (request.query_params.get("coach_email") or "").strip().lower()
     cache_key = (
@@ -3247,7 +3171,6 @@ def support_tickets_list(request):
     red_risk = 0
     escalated = 0
     closed = 0
-    urgency_sync_rows = []
 
     for row in rows:
         learner_record = monitoring_by_id.get(getattr(row, "wellbeing_record_id", None))
@@ -3278,9 +3201,6 @@ def support_tickets_list(request):
 
             context = derive_auto_ticket_context(learner_record, triggered_questions)
             urgency = manual_urgency_override or context["urgency"]
-            if urgency and urgency != stored_urgency:
-                row.urgency = urgency
-                urgency_sync_rows.append(row)
             # Always respect the stored ticket_type — re-computation is only for urgency/risk.
             # A new safeguarding finding should create a new ticket, not mutate an existing one.
             ticket_type = (getattr(row, "ticket_type", "") or "wellbeing").strip()
@@ -3376,10 +3296,6 @@ def support_tickets_list(request):
             "evidenceCount": len(_ensure_list(getattr(row, "evidence", None))),
             "assignedOwner": (getattr(row, "assigned_owner", "") or "").strip(),
         })
-
-    if urgency_sync_rows:
-        SupportTicket.objects.using("wellbeing").bulk_update(urgency_sync_rows, ["urgency"])
-        _clear_wellbeing_runtime_caches()
 
     now_dt = timezone.now()
     now = now_dt.date()
@@ -3497,9 +3413,6 @@ def _check_ticket_access(request, ticket_id):
     if not ticket:
         return None, Response({"detail": "Ticket not found"}, status=status.HTTP_404_NOT_FOUND)
 
-    sync_support_ticket_coach_snapshots(
-        SupportTicket.objects.using("wellbeing").filter(id=ticket.id)
-    )
     ticket.refresh_from_db(using="wellbeing")
 
     if role == "coach":
@@ -3550,7 +3463,6 @@ def archived_tickets_list(request):
         return Response({"detail": "Forbidden"}, status=status.HTTP_403_FORBIDDEN)
 
     base_qs = SupportTicket.objects.using("wellbeing").filter(is_archived=True)
-    sync_support_ticket_coach_snapshots(base_qs)
     qs = base_qs.order_by("-created_at", "-id")
 
     if role == "coach":
@@ -4278,20 +4190,16 @@ def onboarding_reports_list(request):
                 return Response({"detail": "Coach email not found"}, status=status.HTTP_400_BAD_REQUEST)
         archived_param = (request.query_params.get("archived") or "").strip().lower()
         show_archived = archived_param in {"1", "true", "yes"}
-        bypass_cache = "_" in request.query_params
         base_qs = _exclude_inclusion_internal_org(LearnerInclusivenessReport.objects.using("wellbeing"))
         if show_archived:
             base_qs = base_qs.filter(is_archived=True)
         else:
             base_qs = base_qs.filter(is_archived__in=[False, None])
-        sync_inclusion_report_coach_snapshots(base_qs)
-
-        cache_key = ("onboarding_list_v5", role, coach_email_filter, show_archived)
-        now = time.monotonic()
-        if not bypass_cache:
-            cached = _ONBOARDING_REPORTS_LIST_CACHE.get(cache_key)
-            if cached and now < cached.get("expires_at", 0):
-                return Response(cached["data"])
+        assignment_index = inclusion_assignment_index()
+        assignments = {
+            str(row["id"]): inclusion_assignment(row, assignment_index)
+            for row in base_qs.values("id", "learner_id", "learner_email", "academic_email", "previous_emails")
+        }
 
         qs = base_qs.only(
             "id",
@@ -4314,7 +4222,9 @@ def onboarding_reports_list(request):
             "updated_at",
         )
         if coach_email_filter:
-            qs = qs.filter(coach_email__iexact=coach_email_filter)
+            matching_ids = [report_id for report_id, owner in assignments.items()
+                            if owner and owner["coach_email"] == coach_email_filter]
+            qs = qs.filter(id__in=matching_ids)
         qs = qs.annotate(**{
             f"{col}_done": Case(
                 When(**{f"{col}__isnull": False}, then=Value(1)),
@@ -4370,14 +4280,12 @@ def onboarding_reports_list(request):
         rows = []
 
         for r in qs:
+            owner = assignments.get(str(r["id"]))
+            if owner:
+                r = {**r, **owner}
             rows.append(_serialize_onboarding_report_summary(r))
 
         data = {"reports": rows, "total": len(rows)}
-        if not bypass_cache:
-            _ONBOARDING_REPORTS_LIST_CACHE[cache_key] = {
-                "expires_at": time.monotonic() + 60,
-                "data": data,
-            }
         return Response(data)
 
     except Exception as exc:
@@ -4526,21 +4434,20 @@ def _check_onboarding_report_access(request, report_id: str, only_fields=None):
     try:
         qs = LearnerInclusivenessReport.objects.using("wellbeing")
         if only_fields:
-            qs = qs.only(*only_fields)
+            qs = qs.only(*(set(only_fields) | {"learner_id", "learner_email", "academic_email", "previous_emails"}))
         report = qs.get(id=report_id)
     except LearnerInclusivenessReport.DoesNotExist:
         return None, Response({"detail": "Not found"}, status=status.HTTP_404_NOT_FOUND)
     if _is_excluded_inclusion_org(getattr(report, "organization_name", "")):
         return None, Response({"detail": "Not found"}, status=status.HTTP_404_NOT_FOUND)
-    sync_inclusion_report_coach_snapshots(
-        LearnerInclusivenessReport.objects.using("wellbeing").filter(id=report_id)
-    )
-    report.refresh_from_db(using="wellbeing")
+    owner = inclusion_assignment(report, inclusion_assignment_index())
     if role == "coach":
         coach_email = (getattr(request.user, "email", "") or "").strip().lower()
-        report_coach_email = (getattr(report, "coach_email", "") or "").strip().lower()
-        if not coach_email or coach_email != report_coach_email:
+        if not coach_email or not owner or coach_email != owner["coach_email"]:
             return None, Response({"detail": "Forbidden"}, status=status.HTTP_403_FORBIDDEN)
+    if owner:
+        report.coach_name = owner["coach_name"]
+        report.coach_email = owner["coach_email"]
     return report, None
 
 
