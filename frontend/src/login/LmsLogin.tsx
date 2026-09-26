@@ -1,6 +1,5 @@
 import { useContext, useEffect, useRef, useState } from "react";
 import { AuthContext } from "../context/AuthContext";
-import Login from "./Login";
 import styles from "./InclusionTransition.module.css";
 
 const api = (import.meta.env.VITE_API_ORIGIN || "").trim();
@@ -12,6 +11,7 @@ type LoginResult = {
 
 async function request<T>(path: string, body?: object): Promise<T> {
   const response = await fetch(`${api}/auth/lms/${path}/`, {
+    cache: "no-store",
     method: body ? "POST" : "GET",
     headers: body ? { "Content-Type": "application/json" } : undefined,
     body: body ? JSON.stringify(body) : undefined,
@@ -23,9 +23,8 @@ async function request<T>(path: string, body?: object): Promise<T> {
 
 export default function LmsLogin({ callback = false }: { callback?: boolean }) {
   const setUser = useContext(AuthContext)?.setUser;
-  const [legacy, setLegacy] = useState(false);
   const [error, setError] = useState("");
-  const operation = useRef<Promise<LoginResult | null | undefined> | null>(null);
+  const operation = useRef<Promise<LoginResult | undefined> | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -42,8 +41,6 @@ export default function LmsLogin({ callback = false }: { callback?: boolean }) {
         if (new URLSearchParams(window.location.search).has("inclusion_state")) {
           throw new Error("Sign-in returned to the dashboard instead of the LMS. Please ask your administrator to check the LMS sign-in URL.");
         }
-        const config = await request<{ enabled: boolean }>("config");
-        if (!config.enabled) return null;
         const result = await request<{ verifier: string; url: string }>("start", {});
         const destination = new URL(result.url);
         if (!["http:", "https:"].includes(destination.protocol)
@@ -58,7 +55,6 @@ export default function LmsLogin({ callback = false }: { callback?: boolean }) {
     }
     operation.current.then(data => {
       if (cancelled) return;
-      if (data === null) { setLegacy(true); return; }
       if (!data) return;
       if (!data.access || !data.refresh || !["qa", "coach"].includes(data.role)) {
         throw new Error("Invalid LMS sign-in response.");
@@ -73,7 +69,6 @@ export default function LmsLogin({ callback = false }: { callback?: boolean }) {
     return () => { cancelled = true; };
   }, [callback, setUser]);
 
-  if (legacy) return <Login />;
   return <div className={styles.screen}>
     <div className={styles.content}>
       <div className={styles.emblem} aria-hidden="true">

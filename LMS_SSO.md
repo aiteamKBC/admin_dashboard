@@ -47,6 +47,18 @@ The callback and starting page must use the same origin (do not interchange
 
 ## Deployment
 
+The dashboard login route always starts LMS SSO, including when reached from `/`.
+It no longer falls back to the old password form based on a config response.
+Disabled or unavailable SSO displays an error instead. Auth requests bypass the
+browser HTTP cache.
+
+Serve the SPA HTML (`/`, `/login`, and fallback `index.html`) with
+`Cache-Control: no-cache, max-age=0, must-revalidate`. Hashed `/assets/` files can
+retain long-lived caching. Deploy HTML and its matching hashed assets together,
+and purge any cached HTML at the hosting/CDN layer after deployment. This needs
+to be configured on the actual web server; it cannot be fixed by React code in
+an old cached bundle.
+
 If `inclusion_state` keeps changing on the **admin** hostname, sign-in is looping.
 The state belongs on the LMS `/login` URL. Verify the deployed dashboard's
 `LMS_BASE_URL` is the LMS origin below, without `/login`, and verify the LMS
