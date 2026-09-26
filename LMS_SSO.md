@@ -47,6 +47,13 @@ The callback and starting page must use the same origin (do not interchange
 
 ## Deployment
 
+If `inclusion_state` keeps changing on the **admin** hostname, sign-in is looping.
+The state belongs on the LMS `/login` URL. Verify the deployed dashboard's
+`LMS_BASE_URL` is the LMS origin below, without `/login`, and verify the LMS
+callback is `/login/lms/callback` on admin (not `/login`). Restart the backend
+services after environment changes. New guards reject same-dashboard destinations
+and incoming state on the dashboard login page rather than repeatedly starting SSO.
+
 Production URLs are configured as the code defaults. Local `.env` overrides
 remain local so development does not bounce into an undeployed production build.
 On the deployed services, set these exact values (replace any old localhost values):

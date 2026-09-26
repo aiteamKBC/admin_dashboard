@@ -2,7 +2,7 @@
 import hashlib
 import secrets
 from datetime import timedelta
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urlsplit
 
 from django.conf import settings
 from django.contrib.auth.models import User
@@ -66,11 +66,24 @@ def config(request):
 def start(request):
     if not configured():
         return Response({"detail": "LMS sign-in is not configured."}, status=503)
+    try:
+        destination = urlsplit(settings.LMS_BASE_URL)
+        current = urlsplit(request.build_absolute_uri("/"))
+        valid = (destination.scheme in ("http", "https") and destination.hostname
+                 and not destination.username and not destination.password
+                 and not destination.query and not destination.fragment
+                 and destination.path in ("", "/")
+                 and destination.hostname != "admin.kentbusinesscollege.net"
+                 and destination.netloc.lower() != current.netloc.lower())
+    except ValueError:
+        valid = False
+    if not valid:
+        return Response({"detail": "Invalid LMS_BASE_URL. Set it to the LMS origin, not the dashboard login URL."}, status=503)
     verifier = secrets.token_urlsafe(32)
     state = hashlib.sha256(verifier.encode()).hexdigest()
     LMSLoginAttempt.objects.filter(expires_at__lte=timezone.now()).delete()
     LMSLoginAttempt.objects.create(state=state, expires_at=timezone.now() + timedelta(minutes=10))
-    response = Response({"verifier": verifier, "url": settings.LMS_BASE_URL + "/login?" + urlencode({"inclusion_state": state})})
+    response = Response({"verifier": verifier, "url": settings.LMS_BASE_URL.rstrip("/") + "/login?" + urlencode({"inclusion_state": state})})
     response["Cache-Control"] = "no-store"
     return response
 

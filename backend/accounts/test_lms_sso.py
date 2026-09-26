@@ -85,6 +85,22 @@ class LMSLoginTests(TestCase):
         for view, method in [(LoginView, "post"), (MicrosoftLoginView, "get"), (MicrosoftCallbackView, "get")]:
             self.assertEqual(view.as_view()(getattr(self.factory, method)("/")).status_code, 403)
 
+    def test_bad_destinations_do_not_create_attempts(self):
+        for url in ["https://admin.kentbusinesscollege.net", "http://testserver",
+                    "https://lms.example.test/login", "javascript:alert(1)",
+                    "https://user:password@lms.example.test", "https://lms.example.test?redirect=admin"]:
+            with self.subTest(url=url), override_settings(LMS_BASE_URL=url):
+                count = LMSLoginAttempt.objects.count()
+                result = lms_sso.start(self.factory.post("/"))
+                self.assertEqual(result.status_code, 503)
+                self.assertEqual(LMSLoginAttempt.objects.count(), count)
+
+    @override_settings(LMS_BASE_URL="https://lms.example.test/")
+    def test_lms_origin_with_trailing_slash(self):
+        result = lms_sso.start(self.factory.post("/"))
+        self.assertEqual(result.status_code, 200)
+        self.assertTrue(result.data["url"].startswith("https://lms.example.test/login?"))
+
     @override_settings(LMS_SSO_SECRET="")
     def test_missing_configuration_fails_closed(self):
         self.assertEqual(lms_sso.start(self.factory.post("/")).status_code, 503)

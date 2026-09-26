@@ -39,11 +39,20 @@ export default function LmsLogin({ callback = false }: { callback?: boolean }) {
           if (!assertion || !verifier) throw new Error("This sign-in has expired. Please try again.");
           return request<LoginResult>("complete", { assertion, verifier });
         }
+        if (new URLSearchParams(window.location.search).has("inclusion_state")) {
+          throw new Error("Sign-in returned to the dashboard instead of the LMS. Please ask your administrator to check the LMS sign-in URL.");
+        }
         const config = await request<{ enabled: boolean }>("config");
         if (!config.enabled) return null;
         const result = await request<{ verifier: string; url: string }>("start", {});
+        const destination = new URL(result.url);
+        if (!["http:", "https:"].includes(destination.protocol)
+          || destination.origin === window.location.origin
+          || destination.hostname === "admin.kentbusinesscollege.net") {
+          throw new Error("The LMS sign-in URL points to the dashboard. Please ask your administrator to correct the sign-in configuration.");
+        }
         sessionStorage.setItem(verifierKey, result.verifier);
-        window.location.replace(result.url);
+        window.location.replace(destination.href);
         return undefined;
       })();
     }
