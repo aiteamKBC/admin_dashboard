@@ -215,6 +215,9 @@ class LoginView(APIView):
     permission_classes = []  # allow without auth
 
     def post(self, request):
+        if settings.LMS_SSO_ENABLED:
+            return Response({"detail": "Please sign in through the LMS."}, status=403)
+
         username = request.data.get("username")
         password = request.data.get("password")
 
@@ -251,6 +254,9 @@ class MicrosoftLoginView(APIView):
     permission_classes = []
 
     def get(self, request):
+        if settings.LMS_SSO_ENABLED:
+            return Response({"detail": "Please sign in through the LMS."}, status=403)
+
         request_id = request.query_params.get("request_id", "").strip()
         if request_id and not _is_valid_request_id(request_id):
             return _popup_html_response(
@@ -312,6 +318,9 @@ class MicrosoftCallbackView(APIView):
     permission_classes = []
 
     def get(self, request):
+        if settings.LMS_SSO_ENABLED:
+            return Response({"detail": "Please sign in through the LMS."}, status=403)
+
         default_origin = _default_frontend_origin()
 
         oauth_error = request.query_params.get("error")

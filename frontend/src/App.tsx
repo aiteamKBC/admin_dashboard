@@ -7,7 +7,7 @@ import Sidebar from "./components/sidebar/sidebar";
 import AnalyticsMeetings from "./components/analytics/AnalyticsMeetings";
 import BookingsCalendarPage from "./components/calendar/BookingsCalendarPage";
 import AttendancePage from "./components/attendance/AttendancePage";
-import Login from "./login/Login";
+import LmsLogin from "./login/LmsLogin";
 import RequireRole from "./components/auth/RequireRole";
 import TicketCardsPage from "./pages/TicketCardsPage";
 
@@ -68,7 +68,7 @@ export default function App() {
   const [collapsed, setCollapsed] = useState(false);
   const [mobileOpen, setMobileOpen] = useState(false);
   const location = useLocation();
-  const isLoginPage = location.pathname === "/login";
+  const isLoginPage = ["/login", "/login/lms/callback", "/auth/lms/callback"].includes(location.pathname.replace(/\/+$/, ""));
 
 
   // logout handler
@@ -97,7 +97,7 @@ export default function App() {
 
   const token = localStorage.getItem("token");
 
-  if (!token && window.location.pathname !== "/login") {
+  if (!token && !isLoginPage) {
     return <Navigate to="/login" replace />;
   }
 
@@ -118,7 +118,9 @@ export default function App() {
       <main className={`transition-all duration-300 ${token ? contentPad : ""}`}>
         <div className="p-3 sm:p-4 lg:p-6 min-h-screen overflow-x-hidden">
           <Routes>
-            <Route path="/login" element={<Login />} />
+            <Route path="/login" element={<LmsLogin key="login" />} />
+            <Route path="/auth/lms/callback" element={<LmsLogin key="callback" callback />} />
+            <Route path="/login/lms/callback" element={<LmsLogin key="callback" callback />} />
 
             {/* Default ticket cards */}
             <Route

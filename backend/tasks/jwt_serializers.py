@@ -1,4 +1,6 @@
 from django.contrib.auth import authenticate, get_user_model
+from django.conf import settings
+from rest_framework.exceptions import PermissionDenied
 from rest_framework import serializers
 from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
 
@@ -8,6 +10,8 @@ class EmailOrUsernameTokenObtainPairSerializer(TokenObtainPairSerializer):
     username_field = User.USERNAME_FIELD
 
     def validate(self, attrs):
+        if settings.LMS_SSO_ENABLED:
+            raise PermissionDenied("Please sign in through the LMS.")
         username_or_email = attrs.get("username")
         password = attrs.get("password")
 

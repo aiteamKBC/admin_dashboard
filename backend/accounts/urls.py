@@ -1,10 +1,14 @@
 from django.urls import path
+from . import lms_sso
 from .views import LoginView, MicrosoftCallbackView, MicrosoftLoginView, MicrosoftResultView
 from .evidence_views import GetStudentComponentsView, MarkEvidenceView, PollMarkingReportView
 from .learner_views import learner_result_tickets, update_learner_review, learner_history
 from .user_management import AddUserView
 
 urlpatterns = [
+    path("lms/config/", lms_sso.config),
+    path("lms/start/", lms_sso.start),
+    path("lms/complete/", lms_sso.complete),
     path("users/", AddUserView.as_view(), name="add-dashboard-user"),
     path("learner-result-tickets/", learner_result_tickets, name="learner_result_tickets"),
     path("learner-result-tickets/review/", update_learner_review, name="update_learner_review"),

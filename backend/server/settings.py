@@ -27,6 +27,10 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 # override=True ensures stale shell/OS variables do not mask .env values.
 load_dotenv(BASE_DIR / ".env", override=True)
 
+LMS_SSO_ENABLED = os.getenv("LMS_SSO_ENABLED", "false").lower() == "true"
+LMS_SSO_SECRET = os.getenv("LMS_SSO_SECRET", "").strip()
+LMS_BASE_URL = os.getenv("LMS_BASE_URL", "https://lms.kentbusinesscollege.org").strip().rstrip("/")
+
 # =========================
 # Security basics
 # =========================
