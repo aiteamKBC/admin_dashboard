@@ -3772,7 +3772,7 @@ export default function OnboardingTicketsView({ coachEmail }: { coachEmail?: str
         onNotes={() => { setNotesModal({ reportId: viewReport.id, learnerName: viewReport.learner_name }); setViewReport(null); }}
       /> : <OnboardingReportDetailPanel report={viewReport} onClose={() => setViewReport(null)} />}
 
-      {createTicketOpen && <CreateInclusionTicketModal reports={reports} onClose={() => setCreateTicketOpen(false)} onCreated={(report) => {
+      {createTicketOpen && <CreateInclusionTicketModal key={coachEmail || "all"} coachEmail={coachEmail} onClose={() => setCreateTicketOpen(false)} onCreated={(report) => {
         setReports((previous) => [report, ...previous.filter((item) => item.id !== report.id)]);
         setReportStatuses((previous) => new Map(previous).set(report.id, report.status || "active"));
         setSearch("");

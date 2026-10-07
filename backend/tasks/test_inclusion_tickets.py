@@ -7,6 +7,7 @@ from urllib.parse import urlsplit
 
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.test import TestCase, override_settings
+from django.db import DatabaseError
 from rest_framework.test import APIRequestFactory, force_authenticate
 
 from . import views
@@ -45,6 +46,14 @@ class InclusionTicketTests(TestCase):
 
         self.sources.using.return_value.get.side_effect = get_source
         self.sources.using.return_value.only.return_value.get.side_effect = get_source
+        self.sources.using.return_value.filter.return_value.order_by.return_value.first.return_value = None
+        self.member = {"id": 987, "full_name": "New Learner", "email": "new@example.com", "aptem_id": None,
+                       "programme": "Current Programme", "coach_name": "Current Coach", "coach_email": self.user.email}
+        self.index[1]["roster:987"] = {(self.user.email, "Current Coach")}
+        self.roster_patch = patch("tasks.views.read_roster", side_effect=lambda email="": [self.member]
+                                  if not email or email == self.member["coach_email"] else [])
+        self.roster = self.roster_patch.start()
+        self.addCleanup(self.roster_patch.stop)
 
     def call(self, view, method="get", data=None, user=None, **kwargs):
         request = getattr(self.factory, method)("/tasks-api/", data or {}, format="multipart" if method == "post" else "json")
@@ -61,6 +70,72 @@ class InclusionTicketTests(TestCase):
         response = self.call(views.create_inclusion_ticket, "post", self.payload(**changes))
         self.assertEqual(response.status_code, 201, response.data)
         return response.data["report"]
+
+    def roster_payload(self, **changes):
+        payload = self.payload(roster_learner_id=str(self.member["id"]), **changes)
+        payload.pop("source_report_id")
+        return payload
+
+    def test_picker_lists_current_learners_without_reports_and_coach_cannot_override_scope(self):
+        result = self.call(views.inclusion_ticket_learners, data={"coach_email": "other@example.com"})
+        self.assertEqual(result.status_code, 200)
+        self.assertEqual(result.data["learners"][0]["id"], "987")
+        self.assertEqual(result.data["learners"][0]["learner_name"], "New Learner")
+        self.roster.assert_called_once_with("coach@example.com")
+        self.sources.using.assert_not_called()
+
+    def test_admin_picker_uses_selected_coach_or_all_students(self):
+        self.user.profile.role = "qa"
+        self.assertEqual(len(self.call(views.inclusion_ticket_learners).data["learners"]), 1)
+        self.roster.assert_called_with("")
+        result = self.call(views.inclusion_ticket_learners, data={"coach_email": " OTHER@example.com "})
+        self.assertEqual(result.data["learners"], [])
+        self.roster.assert_called_with("other@example.com")
+
+    def test_picker_denies_other_roles_and_coach_without_email(self):
+        self.user.email = ""
+        self.assertEqual(self.call(views.inclusion_ticket_learners).status_code, 400)
+        self.user.profile.role = "learner"
+        self.assertEqual(self.call(views.inclusion_ticket_learners).status_code, 403)
+        self.roster.assert_not_called()
+
+    def test_roster_failure_returns_retryable_error_not_an_empty_caseload(self):
+        self.roster.side_effect = DatabaseError("Unavailable")
+        with patch("tasks.views.logger.exception"):
+            self.assertEqual(self.call(views.inclusion_ticket_learners).status_code, 503)
+        self.assertEqual(self.call(views.create_inclusion_ticket, "post", self.roster_payload()).status_code, 503)
+        self.assertEqual(InclusionTicket.objects.using("wellbeing").count(), 0)
+
+    def test_can_create_and_open_ticket_without_screening_report_or_aptem_id(self):
+        result = self.call(views.create_inclusion_ticket, "post", self.roster_payload(files=[
+            SimpleUploadedFile("evidence.txt", b"New learner evidence", "text/plain")]))
+        self.assertEqual(result.status_code, 201, result.data)
+        report_id = result.data["report"]["id"]
+        ticket = InclusionTicket.objects.using("wellbeing").get(id=report_id)
+        self.assertEqual(ticket.roster_learner_id, "987")
+        self.assertEqual(ticket.source_report_id, "")
+        self.assertIsNone(ticket.learner_id)
+        self.assertEqual(ticket.learner_name, "New Learner")
+        self.assertEqual(ticket.coach_email, "coach@example.com")
+        self.assertEqual(ticket.programme, "Current Programme")
+        self.assertEqual(len(ticket.evidence), 1)
+        self.assertEqual(self.call(views.onboarding_report_detail, report_id=report_id).status_code, 200)
+        self.sources.using.return_value.create.assert_not_called()
+
+    def test_submission_rechecks_current_coach_and_rejects_removed_or_changed_learner(self):
+        payload = self.roster_payload()
+        self.member["coach_email"] = "other@example.com"
+        self.assertEqual(self.call(views.create_inclusion_ticket, "post", payload).status_code, 403)
+        self.assertEqual(InclusionTicket.objects.using("wellbeing").count(), 0)
+
+    def test_roster_identity_keeps_retry_safe_if_email_changes(self):
+        payload = self.roster_payload()
+        first = self.call(views.create_inclusion_ticket, "post", payload)
+        self.member["email"] = "changed@example.com"
+        retry = self.call(views.create_inclusion_ticket, "post", payload)
+        self.assertEqual((first.status_code, retry.status_code), (201, 200))
+        self.assertEqual(first.data["report"]["id"], retry.data["report"]["id"])
+        self.assertEqual(InclusionTicket.objects.using("wellbeing").count(), 1)
 
     def test_creation_persists_details_multiple_files_and_current_owner(self):
         report = self.create(files=[SimpleUploadedFile("image.png", b"image-bytes", "image/png"),

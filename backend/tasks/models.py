@@ -147,7 +147,8 @@ class LearnerInclusivenessReport(models.Model):
 class InclusionTicket(models.Model):
     """Manual inclusion cases, separate from the one-per-learner screening report."""
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
-    source_report_id = models.TextField()
+    source_report_id = models.TextField(blank=True)
+    roster_learner_id = models.TextField(blank=True, default="", db_index=True)
     learner_id = models.BigIntegerField(null=True, blank=True)
     learner_email = models.TextField()
     learner_name = models.TextField(blank=True)

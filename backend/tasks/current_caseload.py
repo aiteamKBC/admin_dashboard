@@ -105,6 +105,7 @@ def inclusion_assignment_index():
     by_email, by_id = defaultdict(set), defaultdict(set)
     for row in read_roster():
         owner = (normalise(row["coach_email"]), row["coach_name"] or "")
+        by_id[f"roster:{row['id']}"].add(owner)
         if normalise(row["email"]):
             by_email[normalise(row["email"])].add(owner)
         if row["aptem_id"] is not None:
@@ -121,6 +122,16 @@ def inclusion_assignment(report, index):
     by_email, by_id = index
     get = report.get if isinstance(report, dict) else lambda key: getattr(report, key, None)
     candidates = set()
+    roster_id = get("roster_learner_id")
+    if roster_id:
+        # New manual tickets retain the canonical roster identity, even if email changes.
+        owners = by_id.get(f"roster:{roster_id}", set())
+        emails = {email for email, _ in owners}
+        if len(emails) != 1 or not next(iter(emails)):
+            return None
+        email = next(iter(emails))
+        names = sorted(name for _, name in owners if name)
+        return {"coach_name": names[0] if names else email, "coach_email": email}
     for field in ("learner_email", "academic_email"):
         candidates = by_email.get(normalise(get(field)), set())
         if candidates:

@@ -175,7 +175,7 @@ export type InclusionTicketDetails = {
 
 export type CreateInclusionTicketPayload = {
   ticket_id: string;
-  source_report_id: string;
+  roster_learner_id: string;
   subject: string;
   details: string;
   category: string;
@@ -185,6 +185,21 @@ export type CreateInclusionTicketPayload = {
   incident_time: string;
   evidence_description: string;
 };
+
+export type InclusionTicketLearner = {
+  id: string;
+  learner_name: string;
+  learner_email: string;
+  programme: string;
+  coach_name: string;
+  coach_email: string;
+};
+
+export async function getInclusionTicketLearners(coachEmail?: string): Promise<{ learners: InclusionTicketLearner[] }> {
+  const params = new URLSearchParams({ _: String(Date.now()) });
+  if (coachEmail) params.set("coach_email", coachEmail);
+  return await fetchWithAuth(`/onboarding-ticket-learners/?${params}`, { cache: "no-store" });
+}
 
 export async function createInclusionTicket(payload: CreateInclusionTicketPayload, files: File[]) {
   const form = new FormData();

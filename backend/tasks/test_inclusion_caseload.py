@@ -34,6 +34,13 @@ class InclusionCaseloadTests(SimpleTestCase):
         self.index[0]["student@example.com"].add(("other@example.com", "Other Coach"))
         self.assertIsNone(inclusion_assignment({"learner_email": "student@example.com"}, self.index))
 
+    def test_manual_ticket_uses_roster_identity_after_email_or_coach_changes(self):
+        self.index[1]["roster:987"] = {("transferred@example.com", "Current Owner")}
+        ticket = {"roster_learner_id": "987", "learner_email": "student@example.com"}
+        self.assertEqual(inclusion_assignment(ticket, self.index)["coach_email"], "transferred@example.com")
+        del self.index[1]["roster:987"]
+        self.assertIsNone(inclusion_assignment(ticket, self.index))
+
     def test_current_owner_can_open_archived_report_without_saving_or_syncing(self):
         report = LearnerInclusivenessReport(id="report", learner_email="student@example.com",
                                             coach_email="old@example.com", is_archived=True,

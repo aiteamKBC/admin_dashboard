@@ -23,7 +23,7 @@ import requests
 from datetime import datetime
 from rest_framework.decorators import api_view, permission_classes
 from django.db import connections, DatabaseError, IntegrityError, transaction
-from .current_caseload import current_monitoring_rows, current_assignment, SUMMARY_FIELDS, inclusion_assignment_index, inclusion_assignment
+from .current_caseload import current_monitoring_rows, current_assignment, SUMMARY_FIELDS, inclusion_assignment_index, inclusion_assignment, read_roster
 from django.db.models import Case, IntegerField, Q, Value, When
 from django.db.models.expressions import RawSQL
 from django.db.models.functions import Lower, Trim
@@ -4217,6 +4217,32 @@ INCLUSION_FILE_TYPES = {
 }
 
 
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+def inclusion_ticket_learners(request):
+    role = (getattr(getattr(request.user, "profile", None), "role", "") or "").strip().lower()
+    if not _is_inclusion_admin(request.user, role) and role != "coach":
+        return Response({"detail": "Forbidden"}, status=403)
+    coach_email = (request.query_params.get("coach_email") or "").strip().lower()
+    if role == "coach":
+        coach_email = (getattr(request.user, "email", "") or "").strip().lower()
+        if not coach_email:
+            return Response({"detail": "Coach email not found"}, status=400)
+    try:
+        members = read_roster(coach_email)
+    except DatabaseError:
+        logger.exception("Could not load inclusion ticket learners")
+        return Response({"detail": "Could not load learners. Please try again."}, status=503)
+    learners = [{
+        "id": str(member["id"]), "learner_name": member["full_name"] or "",
+        "learner_email": member["email"] or "", "programme": member["programme"] or "",
+        "coach_name": member["coach_name"] or "", "coach_email": (member["coach_email"] or "").strip().lower(),
+    } for member in members]
+    response = Response({"learners": learners})
+    response["Cache-Control"] = "no-store"
+    return response
+
+
 @api_view(["POST"])
 @permission_classes([IsAuthenticated])
 def create_inclusion_ticket(request):
@@ -4229,16 +4255,50 @@ def create_inclusion_ticket(request):
                            for key, errors in serializer.errors.items())
         return Response({"detail": message}, status=status.HTTP_400_BAD_REQUEST)
     data = dict(serializer.validated_data)
-    source, error = _check_onboarding_report_access(request, str(data.pop("source_report_id")))
-    if error is not None:
-        return error
-    if isinstance(source, InclusionTicket):
-        return Response({"detail": "Choose a learner screening report."}, status=status.HTTP_400_BAD_REQUEST)
+    roster_id = data.pop("roster_learner_id", "")
+    source_id = data.pop("source_report_id", None)
+    member = None
+    if roster_id:
+        coach_email = (getattr(request.user, "email", "") or "").strip().lower() if role == "coach" else ""
+        if role == "coach" and not coach_email:
+            return Response({"detail": "Coach email not found"}, status=400)
+        try:
+            member = next((row for row in read_roster(coach_email) if str(row["id"]) == roster_id), None)
+        except DatabaseError:
+            return Response({"detail": "Could not verify the current caseload. Please try again."}, status=503)
+        if not member:
+            return Response({"detail": "Learner is not in your current caseload."}, status=403)
+        # Existing screening metadata is optional; it never determines membership.
+        source_filter = Q()
+        email = (member["email"] or "").strip()
+        if email:
+            source_filter |= Q(learner_email__iexact=email) | Q(academic_email__iexact=email)
+        if member["aptem_id"] is not None:
+            source_filter |= Q(learner_id=member["aptem_id"])
+        source = (LearnerInclusivenessReport.objects.using("wellbeing").filter(source_filter)
+                  .order_by("-created_at").first()) if source_filter else None
+    else:
+        # Keep compatibility with already-open forms using a screening report ID.
+        source, error = _check_onboarding_report_access(request, str(source_id))
+        if error is not None:
+            return error
+        if isinstance(source, InclusionTicket):
+            return Response({"detail": "Choose a learner screening report."}, status=400)
+    snapshot = {field: getattr(source, field, None) or (None if field == "learner_id" else "")
+                for field in ("learner_id", "learner_email", "learner_name", "academic_email",
+                              "previous_emails", "programme", "organization_name", "coach_name",
+                              "coach_email", "manager_name", "manager_email")}
+    if member:
+        snapshot.update(learner_id=member["aptem_id"], learner_name=member["full_name"] or "",
+                        learner_email=(member["email"] or "").strip(), programme=member["programme"] or "",
+                        coach_name=member["coach_name"] or "", coach_email=(member["coach_email"] or "").strip().lower())
+    source_report_id = str(source.id) if source else ""
+    identity = {"roster_learner_id": roster_id} if roster_id else {"source_report_id": source_report_id}
     ticket_id = data.pop("ticket_id")
     actor = getattr(request.user, "email", "") or request.user.username
     existing = InclusionTicket.objects.using("wellbeing").filter(id=ticket_id).first()
     if existing:
-        if existing.created_by != actor or existing.source_report_id != str(source.id):
+        if existing.created_by != actor or any(getattr(existing, key) != value for key, value in identity.items()):
             return Response({"detail": "Ticket reference already in use."}, status=status.HTTP_409_CONFLICT)
         return Response({"report": _serialize_inclusion_ticket(existing, include_detail=True)})
 
@@ -4260,11 +4320,8 @@ def create_inclusion_ticket(request):
         with transaction.atomic(using="wellbeing"):
             # A stable client reference makes retrying a timed-out submission safe.
             ticket = InclusionTicket.objects.using("wellbeing").create(
-                id=ticket_id, source_report_id=str(source.id), created_by=actor, **data,
-                **{field: getattr(source, field, None) or (None if field == "learner_id" else "")
-                   for field in ("learner_id", "learner_email", "learner_name", "academic_email",
-                                 "previous_emails", "programme", "organization_name", "coach_name",
-                                 "coach_email", "manager_name", "manager_email")},
+                id=ticket_id, source_report_id=source_report_id, roster_learner_id=roster_id,
+                created_by=actor, **data, **snapshot,
             )
             evidence = []
             for file in files:
@@ -4285,8 +4342,7 @@ def create_inclusion_ticket(request):
             except OSError:
                 logger.exception("Could not clean up failed inclusion upload")
         if isinstance(exc, IntegrityError):
-            existing = InclusionTicket.objects.using("wellbeing").filter(id=ticket_id, created_by=actor,
-                                                                           source_report_id=str(source.id)).first()
+            existing = InclusionTicket.objects.using("wellbeing").filter(id=ticket_id, created_by=actor, **identity).first()
             if existing:
                 return Response({"report": _serialize_inclusion_ticket(existing, include_detail=True)})
         logger.exception("Inclusion ticket creation failed")

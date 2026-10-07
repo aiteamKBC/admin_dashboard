@@ -14,7 +14,8 @@ class CoachTaskUpdateSerializer(serializers.Serializer):
 
 class InclusionTicketCreateSerializer(serializers.Serializer):
     ticket_id = serializers.UUIDField()
-    source_report_id = serializers.UUIDField()
+    source_report_id = serializers.UUIDField(required=False)
+    roster_learner_id = serializers.CharField(max_length=100, required=False)
     subject = serializers.CharField(max_length=200)
     details = serializers.CharField(max_length=20000)
     category = serializers.ChoiceField(choices=[
@@ -28,6 +29,8 @@ class InclusionTicketCreateSerializer(serializers.Serializer):
     evidence_description = serializers.CharField(max_length=2000, required=False, allow_blank=True)
 
     def validate(self, attrs):
+        if bool(attrs.get("source_report_id")) == bool(attrs.get("roster_learner_id")):
+            raise serializers.ValidationError("Choose one learner from the current caseload.")
         if attrs.get("incident_time") and not attrs.get("incident_date"):
             raise serializers.ValidationError({"incident_date": "Choose a date for the incident time."})
         return attrs

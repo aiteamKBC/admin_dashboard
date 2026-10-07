@@ -1,7 +1,7 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { FileText, Loader2, Paperclip, Plus, X } from "lucide-react";
-import { createInclusionTicket, type CreateInclusionTicketPayload } from "@/services/coachWellbeing";
+import { createInclusionTicket, getInclusionTicketLearners, type CreateInclusionTicketPayload, type InclusionTicketLearner } from "@/services/coachWellbeing";
 import type { OnboardingReport } from "./OnboardingTicketsView";
 
 const ACCEPT = ".jpg,.jpeg,.png,.gif,.webp,.pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.txt,.csv";
@@ -25,8 +25,8 @@ function Attachment({ file, onRemove }: { file: File; onRemove: () => void }) {
   );
 }
 
-export default function CreateInclusionTicketModal({ reports, onClose, onCreated }: {
-  reports: OnboardingReport[];
+export default function CreateInclusionTicketModal({ coachEmail, onClose, onCreated }: {
+  coachEmail?: string;
   onClose: () => void;
   onCreated: (report: OnboardingReport) => void;
 }) {
@@ -37,16 +37,30 @@ export default function CreateInclusionTicketModal({ reports, onClose, onCreated
   const [fileError, setFileError] = useState("");
   const [files, setFiles] = useState<File[]>([]);
   const [learnerSearch, setLearnerSearch] = useState("");
+  const [learners, setLearners] = useState<InclusionTicketLearner[]>([]);
+  const [learnersLoading, setLearnersLoading] = useState(true);
+  const [learnersError, setLearnersError] = useState("");
+  const [learnerRetry, setLearnerRetry] = useState(0);
   const [form, setForm] = useState<CreateInclusionTicketPayload>(() => ({
-    ticket_id: crypto.randomUUID(), source_report_id: "", subject: "", details: "",
+    ticket_id: crypto.randomUUID(), roster_learner_id: "", subject: "", details: "",
     category: "General inclusion", risk_level: "Moderate", preferred_contact: "email",
     incident_date: "", incident_time: "", evidence_description: "",
   }));
-  const learners = useMemo(() => reports.filter((report) => !report.manual_ticket)
-    .sort((a, b) => a.learner_name.localeCompare(b.learner_name)), [reports]);
-  const selected = learners.find((report) => report.id === form.source_report_id);
-  const options = learners.filter((report) => report.id === form.source_report_id ||
-    `${report.learner_name} ${report.learner_email}`.toLowerCase().includes(learnerSearch.trim().toLowerCase()));
+  const selected = learners.find((learner) => learner.id === form.roster_learner_id);
+  const options = learners.filter((learner) => learner.id === form.roster_learner_id ||
+    `${learner.learner_name} ${learner.learner_email}`.toLowerCase().includes(learnerSearch.trim().toLowerCase()));
+
+  useEffect(() => {
+    let mounted = true;
+    setLearnersLoading(true);
+    setLearnersError("");
+    getInclusionTicketLearners(coachEmail).then((result) => {
+      if (mounted) setLearners(result.learners.sort((a, b) => a.learner_name.localeCompare(b.learner_name)));
+    }).catch(() => {
+      if (mounted) { setLearners([]); setLearnersError("Could not load learners. Please try again."); }
+    }).finally(() => { if (mounted) setLearnersLoading(false); });
+    return () => { mounted = false; };
+  }, [coachEmail, learnerRetry]);
 
   useEffect(() => {
     const previous = document.activeElement as HTMLElement | null;
@@ -77,7 +91,7 @@ export default function CreateInclusionTicketModal({ reports, onClose, onCreated
 
   async function submit(event: React.FormEvent) {
     event.preventDefault();
-    if (submitting.current) return;
+    if (submitting.current || learnersLoading || learnersError) return;
     if (!selected || !form.subject.trim() || !form.details.trim()) { setError("Choose a learner and enter a subject and ticket details."); return; }
     if (form.incident_time && !form.incident_date) { setError("Choose a date for the incident time."); return; }
     submitting.current = true;
@@ -105,14 +119,17 @@ export default function CreateInclusionTicketModal({ reports, onClose, onCreated
         <fieldset disabled={saving} className="space-y-5 p-6 disabled:opacity-70">
           <div className="rounded-2xl bg-[#F8F6FC] p-4">
             <label htmlFor="inclusion-learner-search" className="text-sm font-medium">Find learner</label>
-            <input id="inclusion-learner-search" value={learnerSearch} onChange={(event) => setLearnerSearch(event.target.value)} placeholder="Search name or email" className={inputClass} />
+            <input id="inclusion-learner-search" value={learnerSearch} disabled={learnersLoading || !!learnersError} onChange={(event) => setLearnerSearch(event.target.value)} placeholder="Search name or email" className={inputClass} />
             <label htmlFor="inclusion-learner" className="mt-3 block text-sm font-medium">Learner <span className="text-red-500">*</span></label>
-            <select id="inclusion-learner" required value={form.source_report_id} onChange={(event) => change("source_report_id", event.target.value)} className={inputClass}>
-              <option value="">Select learner...</option>
-              {options.map((report) => <option key={report.id} value={report.id}>{report.learner_name} — {report.learner_email}</option>)}
+            <select id="inclusion-learner" required disabled={learnersLoading || !!learnersError} value={form.roster_learner_id} onChange={(event) => change("roster_learner_id", event.target.value)} className={inputClass}>
+              <option value="">{learnersLoading ? "Loading learners..." : "Select learner..."}</option>
+              {options.map((learner) => <option key={learner.id} value={learner.id}>{learner.learner_name} — {learner.learner_email}</option>)}
             </select>
-            {!learners.length && <p className="mt-2 text-sm text-[#7B6D9B]">No learner reports are available in the current coach selection.</p>}
-            {selected && <dl className="mt-3 grid gap-3 text-xs sm:grid-cols-2">{[["Programme", selected.programme], ["Organisation", selected.organization_name], ["Coach", selected.coach_name], ["Learner email", selected.learner_email]].map(([label, value]) => <div key={label}><dt className="text-[#7B6D9B]">{label}</dt><dd className="mt-1 break-words font-medium">{value || "—"}</dd></div>)}</dl>}
+            {learnersLoading && <p role="status" className="mt-2 text-sm text-[#7B6D9B]">Loading current caseload...</p>}
+            {learnersError && <p role="alert" className="mt-2 text-sm text-red-600">{learnersError} <button type="button" onClick={() => setLearnerRetry((value) => value + 1)} className="font-semibold underline">Retry</button></p>}
+            {!learnersLoading && !learnersError && !learners.length && <p className="mt-2 text-sm text-[#7B6D9B]">No learners are assigned to the selected coach.</p>}
+            {!learnersLoading && !learnersError && learners.length > 0 && !options.length && <p role="status" className="mt-2 text-sm text-[#7B6D9B]">No learners match your search.</p>}
+            {selected && <dl className="mt-3 grid gap-3 text-xs sm:grid-cols-2">{[["Programme", selected.programme], ["Coach", selected.coach_name], ["Learner email", selected.learner_email]].map(([label, value]) => <div key={label}><dt className="text-[#7B6D9B]">{label}</dt><dd className="mt-1 break-words font-medium">{value || "—"}</dd></div>)}</dl>}
           </div>
           <label className="block text-sm font-medium">Subject <span className="text-red-500">*</span><input required maxLength={200} value={form.subject} onChange={(event) => change("subject", event.target.value)} placeholder="Briefly describe the concern" className={inputClass} /></label>
           <label className="block text-sm font-medium">Ticket details <span className="text-red-500">*</span><textarea required maxLength={20000} rows={5} value={form.details} onChange={(event) => change("details", event.target.value)} placeholder="Describe what happened, the support needed, people involved and any action already taken." className={inputClass} /></label>
@@ -134,7 +151,7 @@ export default function CreateInclusionTicketModal({ reports, onClose, onCreated
         </fieldset>
         <div className="sticky bottom-0 border-t border-[#EEE8F8] bg-white px-6 py-4">
           {error && <p role="alert" className="mb-3 rounded-xl bg-red-50 p-3 text-sm text-red-600">{error}</p>}
-          <div className="flex justify-end gap-3"><button type="button" onClick={onClose} disabled={saving} className="rounded-xl border border-[#DED5F3] px-5 py-2.5 text-sm font-medium disabled:opacity-50">Cancel</button><button type="submit" disabled={saving || !learners.length} className="inline-flex items-center gap-2 rounded-xl bg-[#241453] px-5 py-2.5 text-sm font-medium text-white hover:bg-[#362063] disabled:opacity-50">{saving ? <Loader2 className="h-4 w-4 animate-spin" /> : <Plus className="h-4 w-4" />}{saving ? "Saving ticket & evidence..." : "Create ticket"}</button></div>
+          <div className="flex justify-end gap-3"><button type="button" onClick={onClose} disabled={saving} className="rounded-xl border border-[#DED5F3] px-5 py-2.5 text-sm font-medium disabled:opacity-50">Cancel</button><button type="submit" disabled={saving || learnersLoading || !!learnersError || !learners.length} className="inline-flex items-center gap-2 rounded-xl bg-[#241453] px-5 py-2.5 text-sm font-medium text-white hover:bg-[#362063] disabled:opacity-50">{saving ? <Loader2 className="h-4 w-4 animate-spin" /> : <Plus className="h-4 w-4" />}{saving ? "Saving ticket & evidence..." : "Create ticket"}</button></div>
         </div>
       </form>
     </dialog>, document.body,
