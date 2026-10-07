@@ -27,6 +27,7 @@ import {
   ArchiveRestore,
   Check,
   Loader2,
+  Plus,
 } from "lucide-react";
 import { jsPDF } from "jspdf";
 import autoTable, { CellHookData } from "jspdf-autotable";
@@ -42,6 +43,8 @@ import {
   restoreOnboardingReport,
 } from "@/services/coachWellbeing";
 import { OnboardingActionsDropdown, resolveMediaUrl } from "@/components/wellbeing/TicketActions";
+import CreateInclusionTicketModal from "./CreateInclusionTicketModal";
+import type { InclusionTicketDetails } from "@/services/coachWellbeing";
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
@@ -69,6 +72,7 @@ export type OnboardingReport = {
   expected_reports: number | null;
   section_progress?: { label: string; badge: string | null; summary: string | null; done: boolean; data: any }[];
   master_report: any;
+  manual_ticket?: InclusionTicketDetails;
   status?: string;
   assigned_owner?: string;
   assigned_owner_email?: string;
@@ -796,6 +800,7 @@ function cleanOnboardingRisk(value: any) {
 }
 
 function normaliseOnboardingReportRow(report: OnboardingReport): OnboardingReport {
+  if (report.manual_ticket) return report;
   const { overview } = normaliseReportContent(report);
   const overallScore = asNumber(firstPresent(overview.overallScore, report.overall_score));
   const overallMaxScore = asNumber(firstPresent(overview.overallMaxScore, report.overall_max_score));
@@ -1730,6 +1735,39 @@ function SectionReportModal({ section, onClose }: { section: SectionView | null;
 
 // ── Detail Modal (Report Viewer) ───────────────────────────────────────────
 
+function InclusionTicketDetailPanel({ report, onClose, onEvidence, onNotes }: {
+  report: OnboardingReport;
+  onClose: () => void;
+  onEvidence: () => void;
+  onNotes: () => void;
+}) {
+  const dialog = useRef<HTMLDialogElement>(null);
+  useEffect(() => {
+    const previous = document.activeElement as HTMLElement | null;
+    const overflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    dialog.current?.showModal();
+    return () => { document.body.style.overflow = overflow; previous?.focus(); };
+  }, []);
+  const ticket = report.manual_ticket!;
+  return createPortal(
+    <dialog ref={dialog} aria-labelledby="inclusion-ticket-title" onCancel={(event) => { event.preventDefault(); onClose(); }} className="m-auto max-h-[90dvh] w-[calc(100%_-_2rem)] max-w-3xl overflow-y-auto rounded-3xl bg-white p-6 text-[#241453] shadow-2xl backdrop:bg-black/45">
+      <div className="flex items-start justify-between gap-4">
+        <div><p className="text-xs font-semibold uppercase text-[#7B6D9B]">Inclusion ticket · INC-{report.id.slice(0, 8).toUpperCase()}</p><h2 id="inclusion-ticket-title" className="mt-2 break-words text-xl font-semibold">{ticket.subject}</h2><p className="mt-2 text-sm text-[#7B6D9B]">{report.learner_name} · {report.learner_email}</p></div>
+        <button type="button" onClick={onClose} aria-label="Close ticket details" className="rounded-xl p-2 hover:bg-[#F8F5FF]"><X className="h-5 w-5" /></button>
+      </div>
+      <div className="mt-4 flex flex-wrap gap-2"><span className={`rounded-full px-3 py-1 text-xs font-semibold ${riskBadgeClass(report.overall_risk_level)}`}>{report.overall_risk_level} risk</span><span className="rounded-full bg-[#EEE8F8] px-3 py-1 text-xs font-semibold capitalize">{report.status || "active"}</span><span className="rounded-full bg-[#F8F6FC] px-3 py-1 text-xs">{ticket.category}</span></div>
+      <dl className="mt-5 grid gap-4 rounded-2xl bg-[#F8F6FC] p-4 text-sm sm:grid-cols-2">{[
+        ["Programme", report.programme], ["Organisation", report.organization_name], ["Coach", report.coach_name || report.coach_email],
+        ["Created by", ticket.created_by], ["Created", formatDate(report.created_at)], ["Preferred contact", ticket.preferred_contact],
+        ["Ticket date", ticket.incident_date || "Not provided"], ["Incident time", ticket.incident_time?.slice(0, 5) || "Not provided"],
+      ].map(([label, value]) => <div key={label}><dt className="text-xs text-[#7B6D9B]">{label}</dt><dd className="mt-1 break-words">{value || "—"}</dd></div>)}</dl>
+      <h3 className="mt-5 text-sm font-semibold">Ticket details</h3><p className="mt-2 whitespace-pre-wrap break-words text-sm leading-6">{ticket.details}</p>
+      <div className="mt-6 flex flex-wrap gap-3 border-t border-[#EEE8F8] pt-4"><button type="button" onClick={onEvidence} className="inline-flex items-center gap-2 rounded-xl border border-[#DED5F3] px-4 py-2.5 text-sm"><Paperclip className="h-4 w-4" />Evidence ({report.evidence_count || 0})</button><button type="button" onClick={onNotes} className="inline-flex items-center gap-2 rounded-xl border border-[#DED5F3] px-4 py-2.5 text-sm"><MessageSquare className="h-4 w-4" />Notes ({report.notes_count || 0})</button></div>
+    </dialog>, document.body,
+  );
+}
+
 function OnboardingReportDetailPanel({
   report,
   onClose,
@@ -2428,7 +2466,7 @@ function NotesEvidenceModal({
                     className="inline-flex items-center gap-1.5 text-xs text-[#9D6912] hover:underline"
                   >
                     <ExternalLink className="h-3 w-3" />
-                    Preview
+                    {e.file_name || "Preview"}
                   </button>
                 ) : e.file_name ? (
                   <p className="text-xs text-slate-500">{e.file_name}</p>
@@ -2684,6 +2722,8 @@ export default function OnboardingTicketsView({ coachEmail }: { coachEmail?: str
   const [archivingId, setArchivingId] = useState<string | null>(null);
   const [archivedPanelOpen, setArchivedPanelOpen] = useState(false);
   const [tierSavingIds, setTierSavingIds] = useState<Set<string>>(new Set());
+  const [createTicketOpen, setCreateTicketOpen] = useState(false);
+  const [createdTicket, setCreatedTicket] = useState<OnboardingReport | null>(null);
 
   function applyReportRows(rows: OnboardingReport[]) {
     const normalisedRows = rows.map((row) => {
@@ -2800,7 +2840,7 @@ export default function OnboardingTicketsView({ coachEmail }: { coachEmail?: str
   }
 
   async function openReportDetail(report: OnboardingReport) {
-    const fullReport = report.master_report && Object.keys(report.master_report || {}).length
+    const fullReport = report.manual_ticket?.details || (report.master_report && Object.keys(report.master_report || {}).length)
       ? normaliseOnboardingReportRow(report)
       : await fetchReportDetail(report.id);
     if (fullReport) setViewReport(fullReport);
@@ -2824,6 +2864,9 @@ export default function OnboardingTicketsView({ coachEmail }: { coachEmail?: str
         const match =
           (r.learner_name || "").toLowerCase().includes(q) ||
           (r.learner_email || "").toLowerCase().includes(q) ||
+          (r.manual_ticket?.subject || "").toLowerCase().includes(q) ||
+          (r.manual_ticket?.category || "").toLowerCase().includes(q) ||
+          (r.manual_ticket ? `inc-${r.id.slice(0, 8)}` : "").toLowerCase().includes(q) ||
           (r.programme || "").toLowerCase().includes(q) ||
           (r.organization_name || "").toLowerCase().includes(q) ||
           (r.coach_name || "").toLowerCase().includes(q);
@@ -2985,6 +3028,9 @@ export default function OnboardingTicketsView({ coachEmail }: { coachEmail?: str
       "Percentage": r.percentage != null ? `${r.percentage}%` : "—",
       "Reports Completed": r.completed_reports != null ? `${r.completed_reports}/${r.expected_reports}` : "—",
       "Date": formatDate(r.created_at),
+      "Record type": r.manual_ticket ? "Manual ticket" : "Screening report",
+      "Ticket subject": r.manual_ticket?.subject || "",
+      "Category": r.manual_ticket?.category || "",
     }));
     const ws = XLSX.utils.json_to_sheet(rows);
     ws["!cols"] = [{ wch: 22 }, { wch: 30 }, { wch: 35 }, { wch: 25 }, { wch: 22 }, { wch: 12 }, { wch: 10 }, { wch: 10 }, { wch: 16 }, { wch: 14 }];
@@ -3148,7 +3194,12 @@ export default function OnboardingTicketsView({ coachEmail }: { coachEmail?: str
             <h2 className="text-[20px] font-semibold text-[#241453]">Inclusion Dashboard</h2>
             <p className="mt-1 text-sm text-[#7B6D9B]">Learner inclusiveness screening reports</p>
           </div>
+          <button type="button" onClick={() => setCreateTicketOpen(true)} className="inline-flex items-center justify-center gap-2 self-start rounded-2xl bg-[#241453] px-5 py-3 text-sm font-semibold text-white hover:bg-[#362063]">
+            <Plus className="h-4 w-4" />Create ticket
+          </button>
         </div>
+
+        {createdTicket && <div role="status" className="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-800"><span>Ticket created successfully{createdTicket.evidence_count ? ` with ${createdTicket.evidence_count} attachment(s)` : ""}.</span><button type="button" onClick={() => openReportDetail(createdTicket)} className="font-semibold underline">View ticket</button></div>}
 
         {/* Search + Filters */}
         <div className="rounded-3xl border border-[#E9E3F5] p-4">
@@ -3158,7 +3209,7 @@ export default function OnboardingTicketsView({ coachEmail }: { coachEmail?: str
               <input
                 value={search}
                 onChange={(e) => setSearch(e.target.value)}
-                placeholder="Search learner, programme, organisation, coach..."
+                placeholder="Search learner, ticket, programme, organisation, coach..."
                 className="w-full bg-transparent text-sm outline-none"
               />
             </div>
@@ -3451,6 +3502,7 @@ export default function OnboardingTicketsView({ coachEmail }: { coachEmail?: str
                         <td className="px-5 py-4">
                           <div className="truncate font-medium text-[#241453]" title={r.learner_name || ""}>{r.learner_name || "-"}</div>
                           <div className="truncate text-xs text-slate-500" title={r.learner_email || ""}>{r.learner_email || ""}</div>
+                          {r.manual_ticket && <div className="mt-1 truncate text-xs font-medium text-[#644D93]" title={r.manual_ticket.subject}>Ticket: {r.manual_ticket.subject}</div>}
                         </td>
                         <td className="px-5 py-4 text-[#241453]">
                           <div className="line-clamp-2" title={r.programme || ""}>{r.programme || "-"}</div>
@@ -3496,6 +3548,7 @@ export default function OnboardingTicketsView({ coachEmail }: { coachEmail?: str
                         </td>
                         <td className="px-5 py-4">
                           {(() => {
+                            if (r.manual_ticket) return <span className="inline-flex rounded-lg bg-[#EEE8F8] px-2.5 py-1 text-xs font-semibold text-[#644D93]">Manual ticket</span>;
                             const done = r.completed_reports ?? 0;
                             const total = r.expected_reports ?? 6;
                             const pct = total > 0 ? Math.round((done / total) * 100) : 0;
@@ -3664,7 +3717,7 @@ export default function OnboardingTicketsView({ coachEmail }: { coachEmail?: str
                             const complete = done >= total && total > 0;
                             const sections = r.section_progress ?? [];
 
-                            if (complete) {
+                            if (complete || r.manual_ticket) {
                               return (
                                 <button
                                   type="button"
@@ -3714,7 +3767,21 @@ export default function OnboardingTicketsView({ coachEmail }: { coachEmail?: str
       </div>
 
       {/* Report Detail Panel */}
-      <OnboardingReportDetailPanel report={viewReport} onClose={() => setViewReport(null)} />
+      {viewReport?.manual_ticket ? <InclusionTicketDetailPanel report={{ ...viewReport, status: reportStatuses.get(viewReport.id) || viewReport.status }} onClose={() => setViewReport(null)}
+        onEvidence={() => { setEvidenceModal({ reportId: viewReport.id, learnerName: viewReport.learner_name }); setViewReport(null); }}
+        onNotes={() => { setNotesModal({ reportId: viewReport.id, learnerName: viewReport.learner_name }); setViewReport(null); }}
+      /> : <OnboardingReportDetailPanel report={viewReport} onClose={() => setViewReport(null)} />}
+
+      {createTicketOpen && <CreateInclusionTicketModal reports={reports} onClose={() => setCreateTicketOpen(false)} onCreated={(report) => {
+        setReports((previous) => [report, ...previous.filter((item) => item.id !== report.id)]);
+        setReportStatuses((previous) => new Map(previous).set(report.id, report.status || "active"));
+        setSearch("");
+        setFilters(emptyFilters);
+        setSortConfig({ key: "date", direction: "desc" });
+        setError("");
+        setCreatedTicket(report);
+        setCreateTicketOpen(false);
+      }} />}
 
       {/* Section Report Modal */}
       <SectionReportModal section={viewSection} onClose={() => setViewSection(null)} />

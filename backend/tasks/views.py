@@ -22,7 +22,7 @@ import requests
 # wellbeing
 from datetime import datetime
 from rest_framework.decorators import api_view, permission_classes
-from django.db import connections, DatabaseError
+from django.db import connections, DatabaseError, IntegrityError, transaction
 from .current_caseload import current_monitoring_rows, current_assignment, SUMMARY_FIELDS, inclusion_assignment_index, inclusion_assignment
 from django.db.models import Case, IntegerField, Q, Value, When
 from django.db.models.expressions import RawSQL
@@ -33,7 +33,8 @@ import json
 from collections import Counter
 
 from .models import SafeguardingWellbeingAutomation, WellbeingSafeguardingMonitoringSystem, CoachData, SupportTicket, LearnerInclusivenessReport, SafeguardingQuestion, Coach, MicrosoftOAuthState, MicrosoftConnection
-from .serializers import CoachTaskCreateSerializer, CoachTaskUpdateSerializer
+from .serializers import CoachTaskCreateSerializer, CoachTaskUpdateSerializer, InclusionTicketCreateSerializer
+from .models import InclusionTicket
 
 import os
 import traceback
@@ -3997,6 +3998,8 @@ def _onboarding_assigned_owner_from_notes(notes):
 
 
 def _serialize_onboarding_report(r, include_detail=False):
+    if isinstance(r, InclusionTicket):
+        return _serialize_inclusion_ticket(r, include_detail=include_detail)
     master = _parse_json_field(r.master_report)
     overview = master.get("overview", {}) if isinstance(master, dict) else {}
     if not isinstance(overview, dict):
@@ -4171,6 +4174,127 @@ def _serialize_onboarding_report_summary(r):
     }
 
 
+def _serialize_inclusion_ticket(ticket, include_detail=False):
+    owner = _onboarding_assigned_owner_from_notes(ticket.notes)
+    manual = {
+        "subject": ticket.subject, "category": ticket.category,
+        "source_report_id": ticket.source_report_id, "created_by": ticket.created_by,
+        "preferred_contact": ticket.preferred_contact,
+        "incident_date": ticket.incident_date.isoformat() if ticket.incident_date else None,
+        "incident_time": ticket.incident_time.isoformat() if ticket.incident_time else None,
+    }
+    if include_detail:
+        manual["details"] = ticket.details
+    return {
+        "id": str(ticket.id),
+        **{field: getattr(ticket, field) for field in (
+            "learner_id", "learner_name", "learner_email", "academic_email", "programme",
+            "organization_name", "coach_name", "coach_email", "manager_name", "manager_email",
+            "status", "progress_tier",
+        )},
+        "manual_ticket": manual,
+        "overall_risk_level": ticket.risk_level,
+        "system_tier": _onboarding_system_tier_from_risk(ticket.risk_level),
+        "overall_score": None, "overall_max_score": None, "percentage": None,
+        "completed_reports": None, "expected_reports": None, "section_progress": [],
+        "master_report": {},
+        "assigned_owner": owner["name"], "assigned_owner_email": owner["email"],
+        "notes_count": len(ticket.notes or []), "evidence_count": len(ticket.evidence or []),
+        "created_at": ticket.created_at.isoformat(), "updated_at": ticket.updated_at.isoformat(),
+    }
+
+
+INCLUSION_FILE_TYPES = {
+    ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".png": "image/png",
+    ".gif": "image/gif", ".webp": "image/webp", ".pdf": "application/pdf",
+    ".doc": "application/msword",
+    ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    ".xls": "application/vnd.ms-excel",
+    ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    ".ppt": "application/vnd.ms-powerpoint",
+    ".pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+    ".txt": "text/plain", ".csv": "text/csv",
+}
+
+
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+def create_inclusion_ticket(request):
+    role = (getattr(getattr(request.user, "profile", None), "role", "") or "").lower()
+    if not _is_inclusion_admin(request.user, role) and role != "coach":
+        return Response({"detail": "Forbidden"}, status=status.HTTP_403_FORBIDDEN)
+    serializer = InclusionTicketCreateSerializer(data=request.data)
+    if not serializer.is_valid():
+        message = " ".join(f"{key.replace('_', ' ').capitalize()}: {' '.join(map(str, errors))}"
+                           for key, errors in serializer.errors.items())
+        return Response({"detail": message}, status=status.HTTP_400_BAD_REQUEST)
+    data = dict(serializer.validated_data)
+    source, error = _check_onboarding_report_access(request, str(data.pop("source_report_id")))
+    if error is not None:
+        return error
+    if isinstance(source, InclusionTicket):
+        return Response({"detail": "Choose a learner screening report."}, status=status.HTTP_400_BAD_REQUEST)
+    ticket_id = data.pop("ticket_id")
+    actor = getattr(request.user, "email", "") or request.user.username
+    existing = InclusionTicket.objects.using("wellbeing").filter(id=ticket_id).first()
+    if existing:
+        if existing.created_by != actor or existing.source_report_id != str(source.id):
+            return Response({"detail": "Ticket reference already in use."}, status=status.HTTP_409_CONFLICT)
+        return Response({"report": _serialize_inclusion_ticket(existing, include_detail=True)})
+
+    files = request.FILES.getlist("files")
+    if len(files) > 10 or sum(f.size for f in files) > 25 * 1024 * 1024:
+        return Response({"detail": "Attach up to 10 files, with a total size of 25 MB."}, status=400)
+    for file in files:
+        extension = os.path.splitext(file.name)[1].lower()
+        if extension not in INCLUSION_FILE_TYPES or (file.content_type not in ALLOWED_EVIDENCE_TYPES
+                                                    and file.content_type not in ("", "application/octet-stream")):
+            return Response({"detail": f"Unsupported file: {file.name}. Use images, PDF, Office, CSV or TXT."}, status=400)
+        if not file.size or file.size > 10 * 1024 * 1024:
+            return Response({"detail": f"{file.name}: files must be non-empty and no larger than 10 MB."}, status=400)
+
+    description = data.pop("evidence_description", "")
+    storage = FileSystemStorage(location=settings.MEDIA_ROOT, base_url=settings.MEDIA_URL)
+    saved_paths = []
+    try:
+        with transaction.atomic(using="wellbeing"):
+            # A stable client reference makes retrying a timed-out submission safe.
+            ticket = InclusionTicket.objects.using("wellbeing").create(
+                id=ticket_id, source_report_id=str(source.id), created_by=actor, **data,
+                **{field: getattr(source, field, None) or (None if field == "learner_id" else "")
+                   for field in ("learner_id", "learner_email", "learner_name", "academic_email",
+                                 "previous_emails", "programme", "organization_name", "coach_name",
+                                 "coach_email", "manager_name", "manager_email")},
+            )
+            evidence = []
+            for file in files:
+                filename = get_valid_filename(os.path.basename(file.name))
+                path = storage.save(f"evidence/inclusion/{ticket.id}/{uuid.uuid4().hex}_{filename}", file)
+                saved_paths.append(path)
+                evidence.append({
+                    "id": str(uuid.uuid4()), "description": description, "file_name": file.name,
+                    "file_url": request.build_absolute_uri(storage.url(path)), "mime_type": INCLUSION_FILE_TYPES[os.path.splitext(file.name)[1].lower()],
+                    "size": file.size, "created_by": actor, "created_at": timezone.now().isoformat(),
+                })
+            ticket.evidence = evidence
+            ticket.save(using="wellbeing", update_fields=["evidence", "updated_at"])
+    except Exception as exc:
+        for path in saved_paths:
+            try:
+                storage.delete(path)
+            except OSError:
+                logger.exception("Could not clean up failed inclusion upload")
+        if isinstance(exc, IntegrityError):
+            existing = InclusionTicket.objects.using("wellbeing").filter(id=ticket_id, created_by=actor,
+                                                                           source_report_id=str(source.id)).first()
+            if existing:
+                return Response({"report": _serialize_inclusion_ticket(existing, include_detail=True)})
+        logger.exception("Inclusion ticket creation failed")
+        return Response({"detail": "Could not save the ticket and evidence. Please try again."}, status=500)
+    _clear_onboarding_reports_cache()
+    return Response({"report": _serialize_inclusion_ticket(ticket, include_detail=True)}, status=201)
+
+
 @api_view(["GET"])
 @permission_classes([IsAuthenticated])
 def onboarding_reports_list(request):
@@ -4285,6 +4409,15 @@ def onboarding_reports_list(request):
                 r = {**r, **owner}
             rows.append(_serialize_onboarding_report_summary(r))
 
+        tickets = InclusionTicket.objects.using("wellbeing").filter(is_archived=show_archived)
+        for ticket in tickets:
+            owner = inclusion_assignment(ticket, assignment_index)
+            if coach_email_filter and (not owner or owner["coach_email"] != coach_email_filter):
+                continue
+            if owner:
+                ticket.coach_name, ticket.coach_email = owner["coach_name"], owner["coach_email"]
+            rows.append(_serialize_inclusion_ticket(ticket))
+        rows.sort(key=lambda row: (row["created_at"] or "", str(row["id"])), reverse=True)
         data = {"reports": rows, "total": len(rows)}
         return Response(data)
 
@@ -4353,7 +4486,9 @@ def onboarding_report_notes(request, report_id: str):
         "created_at": timezone.now().isoformat(),
     }
     notes.append(new_note)
-    LearnerInclusivenessReport.objects.using("wellbeing").filter(id=report_id).update(notes=notes)
+    report.notes = notes
+    report.updated_at = timezone.now()
+    report.save(using="wellbeing", update_fields=["notes", "updated_at"])
     _clear_onboarding_reports_cache()
     return Response(new_note, status=status.HTTP_201_CREATED)
 
@@ -4380,7 +4515,9 @@ def onboarding_report_evidence(request, report_id: str):
         "created_at": timezone.now().isoformat(),
     }
     evidence_list.append(new_entry)
-    LearnerInclusivenessReport.objects.using("wellbeing").filter(id=report_id).update(evidence=evidence_list)
+    report.evidence = evidence_list
+    report.updated_at = timezone.now()
+    report.save(using="wellbeing", update_fields=["evidence", "updated_at"])
     _clear_onboarding_reports_cache()
     return Response(new_entry, status=status.HTTP_201_CREATED)
 
@@ -4414,7 +4551,10 @@ def update_onboarding_report(request, report_id: str):
             update_kwargs["progress_tier"] = progress_tier
 
     if update_kwargs:
-        LearnerInclusivenessReport.objects.using("wellbeing").filter(id=report_id).update(**update_kwargs)
+        for field, value in update_kwargs.items():
+            setattr(_report, field, value)
+        _report.updated_at = timezone.now()
+        _report.save(using="wellbeing", update_fields=[*update_kwargs, "updated_at"])
         _clear_onboarding_reports_cache()
         webhook_result = None
         if requested_status == "flagged" and original_status != "flagged":
@@ -4437,7 +4577,11 @@ def _check_onboarding_report_access(request, report_id: str, only_fields=None):
             qs = qs.only(*(set(only_fields) | {"learner_id", "learner_email", "academic_email", "previous_emails"}))
         report = qs.get(id=report_id)
     except LearnerInclusivenessReport.DoesNotExist:
-        return None, Response({"detail": "Not found"}, status=status.HTTP_404_NOT_FOUND)
+        try:
+            ticket_id = uuid.UUID(str(report_id))
+            report = InclusionTicket.objects.using("wellbeing").get(id=ticket_id)
+        except (ValueError, InclusionTicket.DoesNotExist):
+            return None, Response({"detail": "Not found"}, status=status.HTTP_404_NOT_FOUND)
     if _is_excluded_inclusion_org(getattr(report, "organization_name", "")):
         return None, Response({"detail": "Not found"}, status=status.HTTP_404_NOT_FOUND)
     owner = inclusion_assignment(report, inclusion_assignment_index())

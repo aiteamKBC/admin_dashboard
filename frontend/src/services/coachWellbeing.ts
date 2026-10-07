@@ -162,6 +162,50 @@ export async function getOnboardingReportDetail(reportId: string) {
   return await fetchWithAuth(`/onboarding-reports/${encodeURIComponent(reportId)}/`);
 }
 
+export type InclusionTicketDetails = {
+  subject: string;
+  category: string;
+  source_report_id: string;
+  created_by: string;
+  preferred_contact: "email" | "phone";
+  incident_date: string | null;
+  incident_time: string | null;
+  details?: string;
+};
+
+export type CreateInclusionTicketPayload = {
+  ticket_id: string;
+  source_report_id: string;
+  subject: string;
+  details: string;
+  category: string;
+  risk_level: "Low" | "Moderate" | "High";
+  preferred_contact: "email" | "phone";
+  incident_date: string;
+  incident_time: string;
+  evidence_description: string;
+};
+
+export async function createInclusionTicket(payload: CreateInclusionTicketPayload, files: File[]) {
+  const form = new FormData();
+  Object.entries(payload).forEach(([key, value]) => {
+    if (value) form.append(key, value);
+  });
+  files.forEach((file) => form.append("files", file));
+  try {
+    return await fetchWithAuth("/onboarding-tickets/", { method: "POST", body: form });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Could not create ticket. Please try again.";
+    const jsonStart = message.indexOf("{");
+    if (jsonStart >= 0) {
+      let detail: string | undefined;
+      try { detail = JSON.parse(message.slice(jsonStart)).detail; } catch { /* Keep the original error. */ }
+      if (detail) throw new Error(detail);
+    }
+    throw new Error(message);
+  }
+}
+
 export async function getOnboardingReportNotes(reportId: string) {
   return await fetchWithAuth(`/onboarding-reports/${reportId}/notes/`);
 }

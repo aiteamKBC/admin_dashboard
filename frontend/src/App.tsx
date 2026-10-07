@@ -16,6 +16,10 @@ import useMediaQuery from "./helpers/useMediaQuery";
 const CoachWellbeingPage = lazy(() => import("./components/wellbeing/CoachWellbeingPage"));
 const LearnerResultTickets = lazy(() => import("./pages/admin/learner-result-tickets/page"));
 const ConnectMicrosoftPage = lazy(() => import("./components/ConnectMicrosoftPage"));
+const LocalLogin = lazy(() => import("./login/Login"));
+const useLocalLogin = import.meta.env.DEV
+  && import.meta.env.VITE_LOCAL_LOGIN === "true"
+  && ["localhost", "127.0.0.1", "[::1]"].includes(window.location.hostname);
 
 function DashboardPage({ onOpenSidebar }: { onOpenSidebar: () => void }) {
   return <AnalyticsMeetings onOpenSidebar={onOpenSidebar} />;
@@ -118,7 +122,11 @@ export default function App() {
       <main className={`transition-all duration-300 ${token ? contentPad : ""}`}>
         <div className="p-3 sm:p-4 lg:p-6 min-h-screen overflow-x-hidden">
           <Routes>
-            <Route path="/login" element={<LmsLogin key="login" />} />
+            <Route path="/login" element={useLocalLogin ? (
+              <Suspense fallback={<div role="status">Loading sign-in...</div>}>
+                <LocalLogin />
+              </Suspense>
+            ) : <LmsLogin key="login" />} />
             <Route path="/auth/lms/callback" element={<LmsLogin key="callback" callback />} />
             <Route path="/login/lms/callback" element={<LmsLogin key="callback" callback />} />
 

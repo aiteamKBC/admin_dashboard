@@ -12,7 +12,47 @@ IDs and legacy coach mappings are retained. New users receive an unusable local
 password. Disabled and ambiguous accounts are rejected. Current Inclusion
 caseloads continue to resolve by verified email.
 
-## Local configuration
+## Direct local sign-in (without starting the LMS)
+
+To work on the dashboard by itself, use an existing dashboard account's email
+or username and password. Set these values in the ignored local environment files:
+
+```dotenv
+# backend/.env
+LMS_SSO_ENABLED=false
+
+# frontend/.env
+VITE_LOCAL_LOGIN=true
+VITE_API_ORIGIN=http://127.0.0.1:8001
+VITE_AUTH_BACKEND_ORIGIN=http://127.0.0.1:8001
+VITE_DEV_PORT=5174
+```
+
+Start the backend and frontend in separate terminals:
+
+```powershell
+# From admin_dashboard/backend
+.venv/Scripts/python.exe manage.py runserver 127.0.0.1:8001
+
+# From admin_dashboard/frontend
+npm run dev
+```
+
+Open `http://localhost:5174/login` and sign in with your dashboard credentials.
+This uses the existing password authentication and role permissions; it does not
+create an account or skip authentication. Accounts created only through LMS SSO
+have no local password and must use the LMS flow instead.
+
+`VITE_LOCAL_LOGIN` only takes effect in the Vite development server on a loopback
+hostname. Production builds always use LMS sign-in. Keep production
+`LMS_SSO_ENABLED=true`. Restart the backend and Vite after changing these values.
+If `Failed to fetch` appears, check that the dashboard backend is running on
+**8001**, matching both frontend API settings (plain `runserver` uses 8000).
+
+## Local LMS configuration
+
+To test LMS sign-in instead, set `VITE_LOCAL_LOGIN=false` in `frontend/.env`
+and `LMS_SSO_ENABLED=true` in `backend/.env`, then restart both servers.
 
 Local environment files are configured with matching generated SSO secrets:
 
@@ -47,7 +87,7 @@ The callback and starting page must use the same origin (do not interchange
 
 ## Deployment
 
-The dashboard login route always starts LMS SSO, including when reached from `/`.
+The production dashboard login route always starts LMS SSO, including when reached from `/`.
 It no longer falls back to the old password form based on a config response.
 Disabled or unavailable SSO displays an error instead. Auth requests bypass the
 browser HTTP cache.

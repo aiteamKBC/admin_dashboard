@@ -1,4 +1,5 @@
 from django.db import models
+import uuid
 
 # Create your models here.
 # import uuid
@@ -141,6 +142,42 @@ class LearnerInclusivenessReport(models.Model):
     class Meta:
         managed = False
         db_table = "learner_inclusiveness_reports"
+
+
+class InclusionTicket(models.Model):
+    """Manual inclusion cases, separate from the one-per-learner screening report."""
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    source_report_id = models.TextField()
+    learner_id = models.BigIntegerField(null=True, blank=True)
+    learner_email = models.TextField()
+    learner_name = models.TextField(blank=True)
+    academic_email = models.TextField(blank=True)
+    previous_emails = models.TextField(blank=True)
+    programme = models.TextField(blank=True)
+    organization_name = models.TextField(blank=True)
+    coach_name = models.TextField(blank=True)
+    coach_email = models.TextField(blank=True)
+    manager_name = models.TextField(blank=True)
+    manager_email = models.TextField(blank=True)
+    subject = models.CharField(max_length=200)
+    details = models.TextField()
+    category = models.CharField(max_length=50)
+    risk_level = models.CharField(max_length=20)
+    preferred_contact = models.CharField(max_length=10, default="email")
+    incident_date = models.DateField(null=True, blank=True)
+    incident_time = models.TimeField(null=True, blank=True)
+    created_by = models.TextField()
+    status = models.TextField(default="active")
+    progress_tier = models.PositiveSmallIntegerField(null=True, blank=True)
+    notes = models.JSONField(default=list)
+    evidence = models.JSONField(default=list)
+    is_archived = models.BooleanField(default=False)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = "inclusion_tickets"
+        ordering = ["-created_at", "-id"]
 
 
 class Coach(models.Model):
