@@ -12,6 +12,14 @@ IDs and legacy coach mappings are retained. New users receive an unusable local
 password. Disabled and ambiguous accounts are rejected. Current Inclusion
 caseloads continue to resolve by verified email.
 
+The dashboard also accepts signed LMS `learner` assertions for
+`Emma.Leavey@ofsted.gov.uk` and `rowaneltash2@gmail.com`, mapping them to dashboard
+`qa` without changing their LMS role. Email matching is case-insensitive. All
+signature, expiry, browser-state, single-use and account-link checks still apply.
+The LMS must also allow these two accounts through its Inclusion authorization
+endpoint and show the Inclusion link; the dashboard exception cannot bypass a
+rejection in the LMS before it issues an assertion.
+
 ## Direct local sign-in (without starting the LMS)
 
 To work on the dashboard by itself, use an existing dashboard account's email

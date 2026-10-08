@@ -55,6 +55,41 @@ class LMSLoginTests(TestCase):
         LMSLoginAttempt.objects.update(expires_at=timezone.now() - timedelta(seconds=1))
         self.assertEqual(self.complete().status_code, 401)
 
+    def test_named_learner_exceptions_sign_in_as_qa_and_preserve_accounts(self):
+        for account_id, email in enumerate([
+            "Emma.Leavey@ofsted.gov.uk", "rowaneltash2@gmail.com",
+        ], start=20):
+            with self.subTest(email=email):
+                LMSLoginAttempt.objects.update_or_create(
+                    state=self.state,
+                    defaults={"expires_at": timezone.now() + timedelta(minutes=10)},
+                )
+                user = User.objects.create_user(username=f"qa_{account_id}", email=email)
+                Profile.objects.filter(user=user).update(role="qa")
+                result = self.complete(role="learner", email=f" {email.upper()} ", account_id=account_id)
+                self.assertEqual(result.status_code, 200)
+                self.assertEqual(result.data["role"], "qa")
+                self.assertEqual(result.data["username"], user.username)
+                user.profile.refresh_from_db()
+                self.assertEqual(user.profile.role, "qa")
+                self.assertEqual(user.profile.lms_account_id, account_id)
+                self.assertEqual(self.complete(role="learner", email=email, account_id=account_id).status_code, 401)
+        self.assertEqual(User.objects.count(), 2)
+
+    def test_learner_exception_does_not_bypass_other_claim_checks(self):
+        for changes in [
+            {"aud": "other"}, {"state": "x" * 64}, {"account_id": True},
+            {"role": "admin"}, {"email": "emma.leavey@ofsted.gov.uk.attacker.test"},
+        ]:
+            with self.subTest(changes=changes):
+                claims = {"role": "learner", "email": "Emma.Leavey@ofsted.gov.uk", **changes}
+                self.assertEqual(self.complete(**claims).status_code, 401)
+        self.assertEqual(User.objects.count(), 0)
+
+    def test_disabled_learner_exception_is_denied(self):
+        User.objects.create_user(username="disabled_qa", email="rowaneltash2@gmail.com", is_active=False)
+        self.assertEqual(self.complete(role="learner", email="rowaneltash2@gmail.com").status_code, 403)
+
     def test_denies_expired_signature(self):
         with patch("django.core.signing.time.time", return_value=1):
             assertion = signing.dumps({}, key=settings.LMS_SSO_SECRET, salt=lms_sso.SALT)

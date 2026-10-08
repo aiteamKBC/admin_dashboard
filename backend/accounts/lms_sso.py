@@ -17,6 +17,10 @@ from .models import LMSLoginAttempt, Profile
 from .views import _auth_payload_for_user
 
 SALT = "kbc-inclusion-sso-v1"
+QA_LEARNER_EMAIL_EXCEPTIONS = frozenset({
+    "emma.leavey@ofsted.gov.uk",
+    "rowaneltash2@gmail.com",
+})
 
 
 def configured():
@@ -104,8 +108,14 @@ def complete(request):
     state = hashlib.sha256(verifier.encode()).hexdigest()
     if (not isinstance(claims, dict) or claims.get("aud") != "inclusion-dashboard"
             or claims.get("state") != state or type(claims.get("account_id")) is not int
-            or claims["account_id"] <= 0 or claims.get("role") not in ("qa", "coach")
+            or claims["account_id"] <= 0
             or not isinstance(claims.get("email"), str) or not claims["email"].strip()):
+        return Response({"detail": "Invalid login response."}, status=401)
+    # Only trust the email from the verified LMS assertion, never request fields.
+    if (claims.get("role") == "learner"
+            and claims["email"].strip().lower() in QA_LEARNER_EMAIL_EXCEPTIONS):
+        claims = {**claims, "role": "qa"}
+    if claims.get("role") not in ("qa", "coach"):
         return Response({"detail": "Invalid login response."}, status=401)
     try:
         with transaction.atomic():
